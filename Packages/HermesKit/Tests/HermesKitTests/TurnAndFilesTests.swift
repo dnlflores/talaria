@@ -47,7 +47,7 @@ import Testing
     var drafting = ChatState()
     event(&drafting, "tool.generating", ["name": "write_file"], at: 60)
     #expect(drafting.isStreaming)
-    #expect(drafting.activity == .thinking)
+    #expect(drafting.activity == .running(ToolCall(callID: "preparing", name: "write_file")))
   }
 
   @Test func anEmptyThinkingLineDoesNotStartATurn() {

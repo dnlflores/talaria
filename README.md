@@ -54,7 +54,8 @@ T3 Tools.
 - **Cron:** every job with its schedule, next and last run and recent runs;
   pause, resume and run now.
 - **iPad:** a sidebar with the areas, the list beside it and the open chat or
-  page on the right, in either orientation.
+  page on the right, in either orientation. On iPhone the tab bar holds Chats,
+  Bots and Cron; Kanban and Settings are in the inbox's ••• menu.
 
 ## What is next
 

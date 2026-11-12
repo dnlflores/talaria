@@ -93,6 +93,30 @@ public struct ToolCall: Sendable, Equatable, Identifiable {
   public var answers: [ClarifyAnswer]?
   public var isCancelled = false
 
+  /// One line saying what the call works on: the backend's context line, else its summary, else
+  /// the main argument. Calls read back from stored rows carry only their arguments.
+  public var preview: String {
+    let text: String
+    if !context.isEmpty {
+      text = context
+    } else if !summary.isEmpty {
+      text = summary
+    } else {
+      let keys = ["command", "path", "query", "url", "pattern", "code", "goal", "name"]
+      text = keys.lazy.compactMap { self.args[$0].string }.first { !$0.isEmpty } ?? ""
+    }
+    let line = text.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) ?? ""
+    return line.count > 160 ? String(line.prefix(159)) + "…" : line
+  }
+
+  /// A tool's name as the rest of the stream names it: `tool.generating` reports Claude's
+  /// `mcp__terminal` for the `terminal` that `tool.start` then reports.
+  public static func displayName(_ raw: String) -> String {
+    guard raw.hasPrefix("mcp__") else { return raw.isEmpty ? "tool" : raw }
+    let rest = String(raw.dropFirst(5))
+    return rest.contains("__") || rest.isEmpty ? raw : rest
+  }
+
   public init(callID: String, name: String, context: String = "", args: JSONValue = .null, isDone: Bool = false) {
     self.callID = callID
     self.name = name

@@ -115,14 +115,14 @@ struct WorkingRow: View {
 
   private var detail: String {
     guard case .running(let tool) = activity else { return "" }
-    let text = tool.context.isEmpty ? tool.summary : tool.context
-    return text.replacingOccurrences(of: "\n", with: " ")
+    return tool.preview
   }
 
   static func label(for activity: TurnActivity) -> String {
     switch activity {
     case .thinking: return "Thinking"
-    case .writing: return "Writing the answer"
+    // Text that is streaming may be a note before the next step or the answer itself.
+    case .writing: return "Writing"
     case .waiting: return "Waiting for you"
     case .running(let tool): return verb(for: tool.name)
     }

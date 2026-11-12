@@ -7,9 +7,14 @@ enum Route: Hashable {
   case chat(profile: String, storedID: String)
   /// Every conversation of one bot (iPhone; iPad shows it in the list column).
   case agent(profile: String)
+  /// Kanban and Settings on iPhone, opened from the inbox's More menu: the tab bar keeps the
+  /// areas used most. iPad lists every area in its sidebar.
+  case kanban
+  case settings
 }
 
-/// The top-level areas: a tab bar on iPhone, a sidebar on iPad.
+/// The top-level areas: every one in the iPad sidebar; on iPhone the tab bar holds Chats, Bots
+/// and Cron, and Kanban and Settings open from the inbox's More menu.
 enum AppTab: String, Hashable, CaseIterable, Identifiable {
   case chats, bots, kanban, cron, settings
 
@@ -731,8 +736,24 @@ final class AppModel {
 
   /// Opens a chat from any area (a bot's page, a cron run, a kanban card) in the Chats area.
   func openChat(profile: String, storedID: String) {
+    let route = Route.chat(profile: profile, storedID: storedID)
+    // On iPhone, Kanban lives on the Chats stack: a card's run opens over it, and back returns.
+    if tab == .chats, !usesSplitLayout {
+      path.append(route)
+    } else {
+      tab = .chats
+      path = [route]
+    }
+  }
+
+  /// Opens an area that has no tab of its own on iPhone; on iPad, selects it in the sidebar.
+  func openArea(_ area: AppTab) {
+    guard !usesSplitLayout, area == .kanban || area == .settings else {
+      tab = area
+      return
+    }
     tab = .chats
-    path = [.chat(profile: profile, storedID: storedID)]
+    path.append(area == .kanban ? .kanban : .settings)
   }
 
   /// The stored id of the chat on screen, for marking it in the inbox on iPad.

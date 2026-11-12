@@ -63,6 +63,28 @@ struct HomeView: View {
       }
       .sharedBackgroundVisibility(.hidden)
 
+      // iPhone keeps Kanban and Settings out of the tab bar; they are one menu away here.
+      if !app.usesSplitLayout {
+        ToolbarItem(placement: .topBarTrailing) {
+          Menu {
+            Button {
+              app.openArea(.kanban)
+            } label: {
+              Label(AppTab.kanban.title, systemImage: AppTab.kanban.symbol)
+            }
+            Button {
+              app.openArea(.settings)
+            } label: {
+              Label(AppTab.settings.title, systemImage: AppTab.settings.symbol)
+            }
+          } label: {
+            Image(systemName: "ellipsis")
+          }
+          .accessibilityLabel("More")
+          .accessibilityIdentifier("home.more")
+        }
+      }
+
       ToolbarItem(placement: .topBarTrailing) {
         Button(action: beginNewChat) {
           if isStartingChat {

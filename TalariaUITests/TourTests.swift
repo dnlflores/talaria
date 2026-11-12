@@ -37,14 +37,41 @@ final class TourTests: XCTestCase {
     }
   }
 
+  /// An area: the iPad sidebar row, an iPhone tab, or on iPhone the inbox's More menu, which
+  /// holds Kanban and Settings.
   private func open(tab title: String) {
     let area = app.buttons["area.\(title.lowercased())"]
-    let candidates = [area, app.tabBars.buttons[title], app.buttons[title]]
-    for candidate in candidates where candidate.waitForExistence(timeout: 2) && candidate.isHittable {
-      candidate.tap()
+    if area.waitForExistence(timeout: 2) && area.isHittable {
+      area.tap()
       return
     }
-    XCTFail("no way to reach \(title)")
+    let tab = app.tabBars.buttons[title]
+    if tab.exists && tab.isHittable {
+      tab.tap()
+      return
+    }
+    app.tabBars.buttons["Chats"].tap()
+    let more = app.buttons["home.more"]
+    for _ in 0..<4 where !more.exists {
+      let back = app.buttons["BackButton"].firstMatch
+      guard back.exists else { break }
+      back.tap()
+    }
+    guard more.waitForExistence(timeout: 3) else {
+      XCTFail("no way to reach \(title)")
+      return
+    }
+    more.tap()
+    let item = app.buttons[title].firstMatch
+    XCTAssertTrue(item.waitForExistence(timeout: 3), "\(title) is not in the More menu")
+    item.tap()
+  }
+
+  /// The iPhone tab bar holds only the areas used most.
+  private func checkPhoneTabs() {
+    guard UIDevice.current.userInterfaceIdiom == .phone else { return }
+    let names = app.tabBars.buttons.allElementsBoundByIndex.map(\.label)
+    XCTAssertEqual(names, ["Chats", "Bots", "Cron"], "tab bar: \(names)")
   }
 
   /// The first such row that is not working: opening a chat that another client is running can
@@ -59,6 +86,7 @@ final class TourTests: XCTestCase {
 
   func testTour() throws {
     XCTAssertTrue(app.buttons["New chat"].waitForExistence(timeout: 30), "home did not load")
+    checkPhoneTabs()
     sleep(3)
     shoot("01-chats")
     app.swipeUp()

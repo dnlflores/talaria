@@ -17,7 +17,7 @@ public struct WorkLog: Identifiable, Sendable, Equatable {
   /// (the transcript's working row says what is happening now).
   public var label: String {
     let tools = toolCount
-    if isLive { return tools == 0 ? "Reasoning" : tools == 1 ? "1 tool so far" : "\(tools) tools so far" }
+    if isLive { return tools == 0 ? "Working" : tools == 1 ? "1 tool so far" : "\(tools) tools so far" }
     if let seconds, seconds >= 1 { return "\(tools > 0 ? "Worked" : "Thought") for \(WorkLog.duration(seconds))" }
     if tools > 0 { return tools == 1 ? "1 tool" : "\(tools) tools" }
     return "Thought"
@@ -64,8 +64,13 @@ public enum TranscriptRow: Identifiable, Sendable, Equatable {
 public enum TranscriptLayout {
   /// Groups raw items into rows.
   ///
-  /// Within a turn, the last assistant text is the answer; everything before it (tool calls,
-  /// interim notes) folds into a work group. Questions split a group so they stay visible.
+  /// Within a finished turn, the last assistant text is the answer; everything before it (tool
+  /// calls, interim notes) folds into a work group. Questions split a group so they stay visible.
+  ///
+  /// A running turn has no answer yet: text the model is writing may be a note before its next
+  /// tool call, and the backend says so only once that call is under way. Shown as the answer it
+  /// would jump into the steps a moment later, so all of it stays in the steps until the turn
+  /// ends, and the last text becomes the answer then.
   public static func rows(for items: [TranscriptItem], isStreaming: Bool) -> [TranscriptRow] {
     var cache: [String: [FileReference]] = [:]
     return rows(for: items, isStreaming: isStreaming, fileCache: &cache)
@@ -85,9 +90,7 @@ public enum TranscriptLayout {
       defer { turn = [] }
       guard !turn.isEmpty else { return }
       let live = isLastTurn && isStreaming
-      // The answer is the last assistant text, unless activity came after it in a turn that is still running.
-      var answerIndex = turn.lastIndex { $0.kind == .assistant && !$0.text.isEmpty }
-      if let index = answerIndex, live, index != turn.count - 1 { answerIndex = nil }
+      let answerIndex = live ? nil : turn.lastIndex { $0.kind == .assistant && !$0.text.isEmpty }
 
       var group: [TranscriptItem] = []
       var emitted: [TranscriptRow] = []

@@ -9,8 +9,16 @@ public struct ChatState: Sendable, Equatable {
   public var items: [TranscriptItem] = []
   /// A turn is running on the Mac: the model is thinking, a tool is running, or the answer is streaming.
   public var isStreaming = false {
-    didSet { if !isStreaming { turnStartedAt = nil } }
+    didSet {
+      if !isStreaming {
+        turnStartedAt = nil
+        preparingTool = nil
+      }
+    }
   }
+  /// The model is writing the arguments of a call to this tool (a file's contents, a command).
+  /// The call has not started, but the text before it is settled as a step.
+  public var preparingTool: String?
   /// The short "what it is doing" line the backend sends between tokens.
   public var status = ""
   public var info = SessionInfo()
@@ -24,6 +32,7 @@ public struct ChatState: Sendable, Equatable {
   public var activity: TurnActivity? {
     guard isStreaming else { return nil }
     if items.contains(where: { $0.tool?.pendingRequest != nil }) { return .waiting }
+    if let name = preparingTool { return .running(ToolCall(callID: "preparing", name: name)) }
     guard let last = items.last else { return .thinking }
     if let tool = last.tool, !tool.isDone { return .running(tool) }
     if last.kind == .assistant, last.isStreaming, !last.text.isEmpty { return .writing }
@@ -92,13 +101,63 @@ public struct ChatState: Sendable, Equatable {
       } ?? false
       if !known { items.append(incoming) }
     }
-    let partial = inflight["assistant"].stringValue
+    // `assistant` is everything the turn has streamed, the steps already settled included; the
+    // history holds those steps as their own messages, so only what follows them is still open.
+    let turnStart = items.lastIndex { $0.kind == .user }.map { $0 + 1 } ?? 0
+    let settled = items[turnStart...].filter { $0.kind == .assistant }.map(\.text)
+    let partial = ChatState.unsettledText(inflight["assistant"].stringValue, settled: settled)
     if !partial.isEmpty || streaming {
       var item = TranscriptItem(kind: .assistant, text: partial, timestamp: now)
       item.isStreaming = streaming
       items.append(item)
     }
     if streaming { beginTurn(now: now) } else { isStreaming = false }
+  }
+
+  /// The end of a turn's streamed text that is not one of its settled steps.
+  static func unsettledText(_ streamed: String, settled: [String]) -> String {
+    var rest = Substring(streamed)
+    for text in settled {
+      let step = text.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !step.isEmpty else { continue }
+      let trimmed = rest.drop { $0.isWhitespace }
+      if trimmed.hasPrefix(step) {
+        rest = trimmed.dropFirst(step.count)
+      } else if let range = rest.range(of: step) {
+        rest = rest[range.upperBound...]
+      }
+    }
+    return String(rest.drop { $0.isWhitespace })
+  }
+
+  /// Adds the calls a running turn has started that the resumed history leaves out:
+  /// `session.resume` lists a call only once its result is stored, while the stored rows name it
+  /// as soon as it starts. Returns whether anything was added.
+  public mutating func addRunningTools(fromStoredRows rows: [JSONValue], now: Double) -> Bool {
+    guard isStreaming else { return false }
+    let stored = TranscriptItem.items(fromStoredRows: rows)
+    let turn = stored.lastIndex { $0.kind == .user }.map { stored[($0 + 1)...] } ?? stored[...]
+    let known = Set(items.compactMap { $0.tool?.callID })
+    // Questions arrive as requests and attach to their own row.
+    let running = turn.filter { item in
+      guard let tool = item.tool else { return false }
+      return !tool.isDone && !tool.isClarify && !known.contains(tool.callID)
+    }
+    guard !running.isEmpty else { return false }
+    settleStream()
+    preparingTool = nil
+    items.append(contentsOf: running)
+    return true
+  }
+
+  /// Ends the text being streamed: a step that is done, or nothing if it never got text.
+  private mutating func settleStream() {
+    guard let index = streamIndex else { return }
+    if items[index].text.isEmpty, items[index].reasoning.isEmpty {
+      items.remove(at: index)
+    } else {
+      items[index].isStreaming = false
+    }
   }
 
   /// Whether the user message at `index` is the one the running turn answers.
@@ -126,6 +185,7 @@ public struct ChatState: Sendable, Equatable {
     case "message.delta":
       let index = ensureStream(now: now)
       items[index].text += payload["text"].stringValue
+      preparingTool = nil
       beginTurn(now: now)
       status = ""
 
@@ -138,13 +198,23 @@ public struct ChatState: Sendable, Equatable {
       status = payload["text"].stringValue
       if !status.isEmpty { beginTurn(now: now) }
 
-    case "tool.generating", "tool.progress":
-      // The model is drafting a tool call, or a running tool reported progress: work is under way.
+    case "tool.generating":
+      // The model has moved on to writing a tool call, so the text before it is a step, not the
+      // answer. Its `message.interim` comes later, sometimes much later for a large file.
+      settleStream()
+      preparingTool = ToolCall.displayName(payload["name"].stringValue)
+      beginTurn(now: now)
+
+    case "tool.progress":
       beginTurn(now: now)
 
     case "message.interim":
+      // Seals the text before a tool call. It was usually streamed already, and may have been
+      // settled by `tool.generating`; the interim text replaces it rather than repeating it.
       let text = payload["text"].stringValue
-      if let index = streamIndex {
+      if let index = items.indices.last, items[index].kind == .assistant,
+        items[index].isStreaming || items[index].text == text || payload["already_streamed"].truthy
+      {
         if !text.isEmpty { items[index].text = text }
         items[index].isStreaming = false
       } else if !text.isEmpty {
@@ -153,13 +223,8 @@ public struct ChatState: Sendable, Equatable {
       beginTurn(now: now)
 
     case "tool.start":
-      if let index = streamIndex {
-        if items[index].text.isEmpty, items[index].reasoning.isEmpty {
-          items.remove(at: index)
-        } else {
-          items[index].isStreaming = false
-        }
-      }
+      settleStream()
+      preparingTool = nil
       let call = ToolCall(
         callID: payload["tool_id"].scalarText ?? UUID().uuidString, name: payload["name"].string ?? "tool",
         context: payload["context"].stringValue, args: payload["args"])
@@ -372,7 +437,7 @@ public enum TurnActivity: Sendable, Equatable {
   case thinking
   /// A tool call has started and not finished.
   case running(ToolCall)
-  /// The answer is streaming in.
+  /// Text is streaming in: a note between steps, or the answer.
   case writing
   /// The agent asked a question and is waiting for the answer.
   case waiting

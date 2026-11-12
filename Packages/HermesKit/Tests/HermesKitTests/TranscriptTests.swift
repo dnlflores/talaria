@@ -102,10 +102,13 @@ import Testing
     #expect(group.isLive)
     #expect(group.label == "1 tool so far")
 
+    // Text being written joins the steps: it may be a note before the next tool call.
     var streaming = note("The answer is")
     streaming.isStreaming = true
     let answering = TranscriptLayout.rows(for: [user("go", at: 1), tool("terminal"), streaming], isStreaming: true)
-    #expect(shape(answering) == ["user", "work(1)", "answer"])
+    #expect(shape(answering) == ["user", "work(2)"])
+    let answered = TranscriptLayout.rows(for: [user("go", at: 1), tool("terminal"), note("The answer is 4.")], isStreaming: false)
+    #expect(shape(answered) == ["user", "work(1)", "answer"])
   }
 
   @Test func questionsAndSystemNotesSplitTheWork() {

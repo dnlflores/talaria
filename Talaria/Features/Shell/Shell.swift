@@ -28,8 +28,24 @@ struct MainShell: View {
     .onAppear { app.usesSplitLayout = sizeClass == .regular }
     .onChange(of: sizeClass) { _, size in
       app.usesSplitLayout = size == .regular
-      // Leaving the split keeps only the chat on screen, so back still lands on the inbox.
-      if size != .regular, app.path.count > 1, let last = app.path.last { app.path = [last] }
+      if size != .regular {
+        // Kanban and Settings have no tab on iPhone: they open on the Chats stack.
+        if app.tab == .kanban || app.tab == .settings {
+          let route: Route = app.tab == .kanban ? .kanban : .settings
+          app.tab = .chats
+          app.path = [route]
+        } else if app.path.count > 1, let last = app.path.last {
+          // Leaving the split keeps only the chat on screen, so back still lands on the inbox.
+          app.path = [last]
+        }
+      } else if let last = app.path.last {
+        switch last {
+        case .kanban: app.tab = .kanban; app.path = []
+        case .settings: app.tab = .settings; app.path = []
+        case .agent(let profile): app.splitAgent = profile; app.path = []
+        case .chat: break
+        }
+      }
     }
   }
 }
@@ -53,6 +69,13 @@ private struct TabShell: View {
                   .id(storedID)
               case .agent(let profile):
                 AgentSessionsView(profile: profile)
+              case .kanban:
+                KanbanBoardView(model: areas.kanban, selection: $areas.kanbanCard)
+                  .navigationDestination(item: $areas.kanbanCard) { id in
+                    KanbanTaskView(model: areas.kanban, taskID: id, select: { areas.kanbanCard = $0 })
+                  }
+              case .settings:
+                SettingsView()
               }
             }
         }
@@ -63,22 +86,11 @@ private struct TabShell: View {
             .navigationDestination(item: $areas.bot) { name in BotDetailView(name: name) }
         }
       }
-      Tab(AppTab.kanban.title, systemImage: AppTab.kanban.symbol, value: AppTab.kanban) {
-        NavigationStack {
-          KanbanBoardView(model: areas.kanban, selection: $areas.kanbanCard)
-            .navigationDestination(item: $areas.kanbanCard) { id in
-              KanbanTaskView(model: areas.kanban, taskID: id, select: { areas.kanbanCard = $0 })
-            }
-        }
-      }
       Tab(AppTab.cron.title, systemImage: AppTab.cron.symbol, value: AppTab.cron) {
         NavigationStack {
           CronList(model: areas.cron, selection: $areas.cronJob)
             .navigationDestination(item: $areas.cronJob) { id in CronDetailView(model: areas.cron, jobID: id) }
         }
-      }
-      Tab(AppTab.settings.title, systemImage: AppTab.settings.symbol, value: AppTab.settings) {
-        NavigationStack { SettingsView() }
       }
     }
   }

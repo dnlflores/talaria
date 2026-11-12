@@ -55,6 +55,11 @@ final class LiveFlowTests: XCTestCase {
     app.descendants(matching: .any).matching(identifier: "transcript.working").firstMatch
   }
 
+  /// Answers on screen. A running turn shows none: its text stays with its steps until it ends.
+  private var answers: XCUIElementQuery {
+    app.descendants(matching: .any).matching(identifier: "transcript.answer")
+  }
+
   /// Waits for assistant text containing `needle` that is not part of the user's own message.
   private func waitForAnswer(containing needle: String, timeout: TimeInterval) -> Bool {
     let predicate = NSPredicate(format: "identifier == 'transcript.answer' AND label CONTAINS[c] %@", needle)
@@ -86,10 +91,12 @@ final class LiveFlowTests: XCTestCase {
     shoot("03-answer")
 
     // 2. A turn that uses a tool shows what it is running, then its work, collapsed once it finishes.
-    send("Run this in the terminal and tell me exactly what it printed: sleep 4; echo wing-$((40+2))")
+    let answersBefore = answers.count
+    send("Say one short sentence about what you are about to do, then run this in the terminal and tell me exactly what it printed: sleep 6; echo wing-$((40+2))")
     let running = app.descendants(matching: .any).matching(
       NSPredicate(format: "identifier == 'transcript.working' AND label CONTAINS 'Running a command'")).firstMatch
     XCTAssertTrue(running.waitForExistence(timeout: 90), "the working row never named the running command")
+    XCTAssertEqual(answers.count, answersBefore, "a running turn showed its note as an answer")
     shoot("04a-running")
     XCTAssertTrue(waitForAnswer(containing: "wing-42", timeout: 180), "no answer after the tool call")
     let workRows = app.buttons.matching(NSPredicate(format: "identifier == 'transcript.work' AND label BEGINSWITH 'Worked'"))
@@ -101,7 +108,8 @@ final class LiveFlowTests: XCTestCase {
 
     // 2a. Leaving a chat while its reply runs and coming back still shows it working, and the
     // inbox says so in between.
-    send("Run this in the terminal and tell me exactly what it printed: sleep 15; echo heron-$((5+2))")
+    let answersBeforeHeron = answers.count
+    send("Say one short sentence about what you are about to do, then run this in the terminal and tell me exactly what it printed: sleep 20; echo heron-$((5+2))")
     XCTAssertTrue(running.waitForExistence(timeout: 90), "the second command never showed as running")
     app.navigationBars.buttons.element(boundBy: 0).tap()
     // The inbox groups chats by bot; the bot's lead row is its newest chat, this one.
@@ -114,6 +122,10 @@ final class LiveFlowTests: XCTestCase {
     XCTAssertTrue(workingRow.waitForExistence(timeout: 30), "reopening a running chat did not show it working")
     let asked = app.staticTexts.matching(NSPredicate(format: "identifier == 'transcript.user' AND label CONTAINS 'heron'"))
     XCTAssertEqual(asked.count, 1, "reopening a running chat repeated the message that started it")
+    // The note the turn wrote before its command is a step, not an answer, after reopening too,
+    // and the command it is running shows by name.
+    XCTAssertEqual(answers.count, answersBeforeHeron, "reopening a running chat showed its note as an answer")
+    XCTAssertTrue(running.waitForExistence(timeout: 10), "reopening a running chat did not name the running command")
     shoot("04d-reopened-working")
     XCTAssertTrue(waitForAnswer(containing: "heron-7", timeout: 180), "no answer after coming back")
     XCTAssertTrue(workingRow.waitForNonExistence(timeout: 20), "the working row outlived the reopened turn")

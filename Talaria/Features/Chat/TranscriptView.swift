@@ -375,10 +375,7 @@ private struct ToolRow: View {
     .accessibilityLabel("\(ToolPresentation.title(for: tool.name)) \(detail)")
   }
 
-  private var detail: String {
-    let text = tool.context.isEmpty ? tool.summary : tool.context
-    return text.replacingOccurrences(of: "\n", with: " ")
-  }
+  private var detail: String { tool.preview }
 
   @ViewBuilder
   private var trailing: some View {

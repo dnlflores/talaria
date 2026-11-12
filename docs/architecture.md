@@ -10,7 +10,8 @@ Talaria (SwiftUI app)
   AppModel        connection phase, inbox, navigation, prompts from the agent
   ChatModel       one open conversation and its composer
   AreaState       what Bots, Kanban and Cron have open (CronModel, KanbanModel)
-  Views           Shell (tabs on iPhone, sidebar split on iPad), Connect,
+  Views           Shell (Chats, Bots and Cron tabs on iPhone with Kanban and
+                  Settings in the inbox's More menu; sidebar split on iPad), Connect,
                   Home, Chat, Bots, Kanban, Cron, Settings
         │
 HermesKit (Swift package, no UI)
@@ -111,6 +112,27 @@ true across reconnects:
 - The inbox marks chats whose live session is `working` in the same list,
   refreshed on `sessions.changed` and every few seconds while anything works.
   The sidebar's own `is_active` still only means "touched recently".
+
+### Steps and the answer
+
+A turn's text is either a note between steps or the answer, and the backend
+says which only after the fact: Claude streams a note through
+`message.delta` like an answer, then `tool.generating` starts the next call
+(it can last a minute while a file's contents are written) and
+`message.interim` seals the note (`already_streamed: true`); some models send
+the note only as `message.interim`. So:
+
+- A running turn shows no answer. Everything it writes stays in its live
+  steps, and the last text becomes the answer when the turn ends. Nothing
+  shown as the answer ever moves into the steps.
+- `tool.generating` settles the text before it and names the call being
+  drafted ("Writing a file"); `message.interim` replaces that text rather
+  than repeating it.
+- `session.resume` mid-turn holds the turn's notes as messages and repeats
+  them all, joined, in `inflight.assistant`. Only the text after them is
+  added as still being written. The history also leaves out a call that has
+  not finished; the stored rows (`/messages?order=latest`) name it, so the
+  reopened chat says what is running.
 
 ### Turns another Hermes process runs
 

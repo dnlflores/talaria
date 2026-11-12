@@ -224,6 +224,17 @@ final class ChatModel: Identifiable {
     state = next
     lastEventAt = Date()
     for request in live.openRequests { app?.deliver(request) }
+    if live.isRunning { Task { await fillRunningTools() } }
+  }
+
+  /// `session.resume` lists a tool call only once its result is stored, so a chat opened while
+  /// a tool runs would say "Thinking". The stored rows name the call as soon as it starts.
+  private func fillRunningTools() async {
+    guard state.isStreaming, let client,
+      let rows = try? await client.latestMessages(storedID: storedID, profile: profile, limit: 12), !isClosed
+    else { return }
+    var next = state
+    if next.addRunningTools(fromStoredRows: rows, now: now) { state = next }
   }
 
   /// Past questions: the resumed transcript names them but leaves out the answers, which live in the stored rows.
