@@ -240,6 +240,9 @@ extension TranscriptItem {
   /// a message they sent into a running reply (`steer`). Other kinds are notices Hermes wrote.
   static let userKinds: Set<String> = ["", "skill_invocation", "steer"]
 
+  /// The note Hermes writes when it picks up a turn that was cut off; older rows carry no kind.
+  static let autoContinueNote = "[System note: Your previous turn was interrupted mid-run"
+
   /// The display projection `session.resume` returns: user/assistant text plus finished tool rows.
   public static func items(fromHistory messages: [JSONValue]) -> [TranscriptItem] {
     var items: [TranscriptItem] = []
@@ -306,23 +309,45 @@ extension TranscriptItem {
 
   /// Raw stored rows (`GET /api/sessions/{id}/messages`): assistant rows carry their tool calls,
   /// tool rows carry results. A call with no result row is still running wherever the chat is open.
+  ///
+  /// Shown the way `session.resume` shows them (`tui_gateway/session_history.py`): notices Hermes
+  /// wrote (a finished background process, a model switch) are system lines, a `/skill` turn shows
+  /// as its invocation, and `[System:` markers and hidden rows are left out.
+  /// Rows must start where a turn or a step starts: a result whose call is in an earlier row is
+  /// dropped (`HistoryPage` keeps pages to that).
   public static func items(fromStoredRows rows: [JSONValue]) -> [TranscriptItem] {
     var items: [TranscriptItem] = []
     var callIndex: [String: Int] = [:]
     for row in rows {
       let timestamp = seconds(row["timestamp"])
+      let displayKind = row["display_kind"].string ?? ""
       switch row["role"].stringValue {
       case "user":
-        if row["display_kind"].string == "hidden" { continue }
-        let body = UserContent.unwrappingOutOfBand(text(row["content"]))
-        if !body.isEmpty, !body.hasPrefix("[System") {
+        if displayKind == "hidden" { continue }
+        let raw = row["display_content"].string.flatMap { $0.isEmpty ? nil : $0 } ?? text(row["content"])
+        var body = UserContent.unwrappingOutOfBand(raw)
+        if body.isEmpty { continue }
+        // Bracketed `[System` rows are Hermes talking to the model; the one about picking up a
+        // turn that was cut off is worth a line in the transcript.
+        if body.trimmingCharacters(in: .whitespaces).hasPrefix("[System") {
+          if body.trimmingCharacters(in: .whitespaces).hasPrefix(autoContinueNote) {
+            items.append(TranscriptItem(kind: .system, text: body, timestamp: timestamp))
+          }
+          continue
+        }
+        if let invocation = SkillInvocation.text(body) { body = invocation }
+        if userKinds.contains(displayKind) {
           items.append(.user(body, timestamp: timestamp))
+        } else {
+          items.append(TranscriptItem(kind: .system, text: body, timestamp: timestamp))
         }
       case "assistant":
         let shown = row["display_content"].string.flatMap { $0.isEmpty ? nil : $0 } ?? text(row["content"])
-        if !shown.isEmpty {
+        let reasoning = row["reasoning"].string.flatMap { $0.isEmpty ? nil : $0 } ?? row["reasoning_content"].stringValue
+        // A hidden row's words are for the model; its calls still show.
+        if displayKind != "hidden", !shown.isEmpty || !reasoning.isEmpty {
           var item = TranscriptItem(kind: .assistant, text: shown, timestamp: timestamp)
-          item.reasoning = row["reasoning"].stringValue
+          item.reasoning = reasoning
           items.append(item)
         }
         for call in row["tool_calls"].parsedIfJSONString.array ?? [] {

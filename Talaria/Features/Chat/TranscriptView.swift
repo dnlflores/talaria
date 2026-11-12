@@ -4,8 +4,10 @@ import SwiftUI
 /// The scrolling conversation. It follows the newest message while you are at the bottom
 /// and leaves you alone once you scroll up.
 ///
-/// The rows are laid out eagerly (a lazy stack with a bottom anchor mis-places its content
-/// when a row changes height), so only the newest `visibleLimit` rows are shown until asked.
+/// A chat opens on its newest messages. Scrolling within a screen of the top brings in more:
+/// first rows already read (the rows are laid out eagerly, since a lazy stack with a bottom
+/// anchor mis-places its content when a row changes height, so only the newest `visibleLimit`
+/// show at first), then older pages from the Mac. What was on screen stays where it was.
 struct TranscriptView: View {
   let chat: ChatModel
   @Environment(AppModel.self) private var app
@@ -17,17 +19,41 @@ struct TranscriptView: View {
   @State private var visibleLimit = TranscriptView.pageSize
   @State private var expanded: Set<UUID> = []
   @State private var inspected: ToolCall?
+  @State private var tracker = ScrollTracker()
 
-  private static let pageSize = 60
+  private static let pageSize = 40
 
   private struct Extent: Equatable {
     var content: CGFloat
     var container: CGFloat
   }
 
+  /// Where the scroll stands, read on every frame of a scroll.
+  private struct Position: Equatable {
+    var offset: CGFloat
+    var content: CGFloat
+    var container: CGFloat
+    var topInset: CGFloat
+  }
+
+  /// Scroll bookkeeping kept out of SwiftUI's state: it changes on every frame of a scroll, and a
+  /// state change there would lay the whole transcript out again each frame.
+  private final class ScrollTracker {
+    /// The top row as last laid out, and as last seen by the scroll handler.
+    var firstRow: UUID?
+    var settledFirstRow: UUID?
+    /// The person has scrolled this transcript; until then the top is not reached by accident
+    /// while the view settles at the bottom.
+    var hasScrolled = false
+    /// Rows just added above finish laying out over a few frames; their growth is offset too.
+    var settlingUntil = Date.distantPast
+  }
+
   var body: some View {
     let rows = chat.rows
     let hidden = max(0, rows.count - visibleLimit)
+    let shown = rows.suffix(visibleLimit)
+    let _ = tracker.firstRow = shown.first?.id
     ScrollView {
       VStack(alignment: .leading, spacing: 18) {
         if chat.isLoading {
@@ -35,19 +61,10 @@ struct TranscriptView: View {
         } else if chat.isEmpty {
           EmptyChat(profile: chat.profile)
         } else {
-          if hidden > 0 {
-            Button {
-              showEarlier(firstVisible: rows[hidden].id)
-            } label: {
-              Text(hidden == 1 ? "Show 1 earlier message" : "Show \(min(hidden, Self.pageSize)) earlier messages")
-                .font(AppFont.labelMedium)
-                .foregroundStyle(palette.primaryText)
-                .frame(maxWidth: .infinity)
-                .frame(height: 36)
-            }
-            .buttonStyle(.plain)
+          if hidden > 0 || chat.hasOlder {
+            EarlierRow(isLoading: chat.isLoadingOlder) { loadEarlier() }
           }
-          ForEach(rows.suffix(visibleLimit)) { row in
+          ForEach(shown) { row in
             rowView(row).id(row.id)
           }
           if let activity = chat.activity {
@@ -68,7 +85,27 @@ struct TranscriptView: View {
     .scrollDismissesKeyboard(.interactively)
     .onScrollPhaseChange { _, phase in
       isUserScrolling = phase == .interacting || phase == .decelerating || phase == .tracking
+      if phase == .interacting || phase == .tracking { tracker.hasScrolled = true }
     }
+    .onScrollGeometryChange(for: Position.self) { geometry in
+      Position(
+        offset: geometry.contentOffset.y, content: geometry.contentSize.height,
+        container: geometry.containerSize.height, topInset: geometry.contentInsets.top)
+    } action: { old, new in
+      // This report is from before rows added above were offset; the next one is from after.
+      if keepPlace(old: old, new: new) { return }
+      // Within a screen of the top, read on; a transcript shorter than the screen fills it.
+      let nearTop = new.offset + new.topInset < new.container
+      if nearTop, new.content < new.container {
+        loadEarlier()
+      } else if nearTop, tracker.hasScrolled {
+        // Up here the person is reading back, whatever the follow logic last caught: what
+        // arrives above must not move them.
+        if isFollowing { isFollowing = false }
+        loadEarlier()
+      }
+    }
+
     .onScrollGeometryChange(for: Bool.self) { geometry in
       geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height + geometry.contentInsets.bottom - 60
     } action: { _, atBottom in
@@ -114,11 +151,46 @@ struct TranscriptView: View {
     }
   }
 
-  /// Reveals another page above and keeps the row that was on top where it was.
-  private func showEarlier(firstVisible: UUID) {
-    isFollowing = false
-    visibleLimit += Self.pageSize
-    position.scrollTo(id: firstVisible, anchor: .top)
+  /// Shows more above: rows already read first, else the next older page from the Mac.
+  private func loadEarlier() {
+    guard !chat.isLoading, !chat.isLoadingOlder else { return }
+    if chat.rows.count > visibleLimit {
+      visibleLimit += Self.pageSize
+    } else if chat.hasOlder {
+      Task {
+        await chat.loadOlder {
+          while isUserScrolling { try? await Task.sleep(for: .milliseconds(50)) }
+        }
+        // Everything read is shown: the page just read, and the row it may have merged into.
+        visibleLimit = max(visibleLimit, chat.rows.count)
+      }
+    }
+  }
+
+  /// Rows added above push what is on screen down by their height; scrolling down by the same
+  /// amount keeps it in place. Rows count as added above when the top row changed and the
+  /// content grew.
+  @discardableResult
+  private func keepPlace(old: Position, new: Position) -> Bool {
+    let grew = new.content - old.content
+    if let first = tracker.firstRow, first != tracker.settledFirstRow {
+      let isFirstLayout = tracker.settledFirstRow == nil
+      tracker.settledFirstRow = first
+      guard !isFirstLayout, !isFollowing, grew > 0 else { return false }
+      tracker.settlingUntil = Date().addingTimeInterval(0.6)
+      scroll(toOffset: old.offset + grew, inset: new.topInset)
+      return true
+    } else if grew != 0, Date() < tracker.settlingUntil, !isFollowing, !isUserScrolling {
+      scroll(toOffset: old.offset + grew, inset: new.topInset)
+      return true
+    }
+    return false
+  }
+
+  /// `ScrollPosition` counts from the top of the content below the bars; `contentOffset`, which
+  /// the scroll geometry reports, counts from under them.
+  private func scroll(toOffset offset: CGFloat, inset: CGFloat) {
+    position.scrollTo(y: offset + inset)
   }
 
   private func toggle(_ id: UUID) {
@@ -150,6 +222,40 @@ struct TranscriptView: View {
     case .files(let turn):
       TurnFilesView(turn: turn, chat: chat)
     }
+  }
+}
+
+/// The top of a transcript that goes back further: a spinner while the next page is read, else a
+/// button that reads it (scrolling up does the same).
+private struct EarlierRow: View {
+  let isLoading: Bool
+  let load: () -> Void
+  @Environment(\.palette) private var palette
+
+  var body: some View {
+    Group {
+      if isLoading {
+        HStack(spacing: 8) {
+          ProgressView().controlSize(.small)
+          Text("Loading earlier messages")
+            .font(AppFont.label)
+            .foregroundStyle(palette.foregroundMuted)
+        }
+      } else {
+        Button(action: load) {
+          Text("Earlier messages")
+            .font(AppFont.labelMedium)
+            .foregroundStyle(palette.primaryText)
+            .frame(maxWidth: .infinity)
+            .frame(height: 36)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+      }
+    }
+    .frame(maxWidth: .infinity)
+    .frame(height: 36)
+    .accessibilityIdentifier("transcript.earlier")
   }
 }
 

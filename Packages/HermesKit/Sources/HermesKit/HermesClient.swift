@@ -122,6 +122,17 @@ public final class HermesClient: Sendable {
     return (rows, json["total"].int ?? rows.count)
   }
 
+  /// One page of a conversation's stored rows: `limit` rows, `offset` rows back from the newest,
+  /// oldest first. Rows archived by compaction are included, so the whole conversation can be
+  /// paged through (the desktop app reads its transcripts this way).
+  public func historyPage(storedID: String, profile: String, offset: Int, limit: Int) async throws -> [JSONValue] {
+    let json = try await http.json("GET", "/api/sessions/\(storedID)/messages", query: [
+      ("profile", profile), ("limit", String(limit)), ("offset", String(offset)), ("order", "latest"),
+      ("include_compacted", "true"), ("inline_images", "false"),
+    ], timeout: 45)
+    return json["messages"].array ?? []
+  }
+
   /// The newest few stored rows of a conversation, oldest first, without inline images.
   public func latestMessages(storedID: String, profile: String, limit: Int = 8) async throws -> [JSONValue] {
     let json = try await http.json("GET", "/api/sessions/\(storedID)/messages", query: [
@@ -166,9 +177,12 @@ public final class HermesClient: Sendable {
 
   /// Binds a stored conversation to a live session and returns its transcript.
   /// `lazy` re-attaches a session that is still live but refuses (4007) to build a new one.
-  public func resume(storedID: String, profile: String, lazy: Bool = false) async throws -> LiveSession {
+  /// `omitMessages` leaves the transcript out (a long chat's runs to megabytes): read it a page
+  /// at a time with `historyPage` instead, as the desktop app does.
+  public func resume(storedID: String, profile: String, lazy: Bool = false, omitMessages: Bool = false) async throws -> LiveSession {
     let params = JSONValue.fields([
       "session_id": .string(storedID), "profile": .string(profile), "cols": 100, "lazy": lazy ? true : nil,
+      "omit_messages": omitMessages ? true : nil, "inline_images": false,
     ])
     return LiveSession(json: try await rpc.call("session.resume", params, timeout: 90), fallbackStoredID: storedID)
   }

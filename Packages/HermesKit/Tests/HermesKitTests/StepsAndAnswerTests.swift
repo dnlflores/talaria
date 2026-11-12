@@ -102,29 +102,22 @@ import Testing
     #expect(ChatState.unsettledText("", settled: ["A."]) == "")
   }
 
-  /// The resumed history leaves out a call that has not finished; the stored rows name it.
+  /// A chat opened while a tool runs reads its stored rows, which name the call as soon as it
+  /// starts: it shows running, the inflight text is not repeated, and the next event finds it.
   @Test func aToolRunningWhenTheChatIsReopenedIsShownRunning() {
     var state = ChatState()
-    state.items = TranscriptItem.items(fromHistory: [
-      ["role": "user", "text": .string(user), "timestamp": 100],
-      ["role": "assistant", "text": "It printed \"one\".", "timestamp": 109],
+    state.items = TranscriptItem.items(fromStoredRows: [
+      ["id": 1, "role": "user", "content": .string(user), "timestamp": 100],
+      ["id": 2, "role": "assistant", "content": "It printed \"one\".", "timestamp": 109,
+       "tool_calls": [["id": "t2", "function": ["name": "terminal", "arguments": "{\"command\": \"sleep 14; echo two\"}"]]]],
     ])
     state.applyInflight(["user": .string(user), "assistant": "It printed \"one\".", "streaming": true], turnStartedAt: 100, now: 112)
-    let stored: [JSONValue] = [
-      ["role": "user", "content": .string(user), "timestamp": 100],
-      ["role": "assistant", "content": "It printed \"one\".", "timestamp": 109,
-       "tool_calls": [["id": "t2", "function": ["name": "terminal", "arguments": "{\"command\": \"sleep 14; echo two\"}"]]]],
-    ]
-    let added = state.addRunningTools(fromStoredRows: stored, now: 113)
-    #expect(added)
+    #expect(state.items.filter { $0.kind == .user }.count == 1)
     guard case .running(let call)? = state.activity else {
       Issue.record("expected the stored call to be running")
       return
     }
     #expect(call.callID == "t2")
-    // Not twice, and the next event finds it.
-    let addedAgain = state.addRunningTools(fromStoredRows: stored, now: 114)
-    #expect(!addedAgain)
     state.apply(event: "tool.complete", payload: ["tool_id": "t2", "name": "terminal", "result": "two"], now: 120)
     #expect(state.items.filter { $0.tool != nil }.count == 1)
     #expect(state.activity == .thinking)

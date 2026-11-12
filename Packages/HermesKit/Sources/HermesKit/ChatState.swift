@@ -121,7 +121,9 @@ public struct ChatState: Sendable, Equatable {
     let turnStart = first.map { $0 + 1 } ?? 0
     let settled = items[turnStart...].filter { $0.kind == .assistant }.map(\.text)
     let partial = ChatState.unsettledText(inflight["assistant"].stringValue, settled: settled)
-    if !partial.isEmpty || streaming {
+    // A call that is running is what the turn is doing; an empty text after it would say "Thinking".
+    let callRunning = items.last?.tool.map { !$0.isDone } ?? false
+    if !partial.isEmpty || (streaming && !callRunning) {
       var item = TranscriptItem(kind: .assistant, text: partial, timestamp: now)
       item.isStreaming = streaming
       items.append(item)
@@ -143,26 +145,6 @@ public struct ChatState: Sendable, Equatable {
       }
     }
     return String(rest.drop { $0.isWhitespace })
-  }
-
-  /// Adds the calls a running turn has started that the resumed history leaves out:
-  /// `session.resume` lists a call only once its result is stored, while the stored rows name it
-  /// as soon as it starts. Returns whether anything was added.
-  public mutating func addRunningTools(fromStoredRows rows: [JSONValue], now: Double) -> Bool {
-    guard isStreaming else { return false }
-    let stored = TranscriptItem.items(fromStoredRows: rows)
-    let turn = stored.lastIndex { $0.kind == .user }.map { stored[($0 + 1)...] } ?? stored[...]
-    let known = Set(items.compactMap { $0.tool?.callID })
-    // Questions arrive as requests and attach to their own row.
-    let running = turn.filter { item in
-      guard let tool = item.tool else { return false }
-      return !tool.isDone && !tool.isClarify && !known.contains(tool.callID)
-    }
-    guard !running.isEmpty else { return false }
-    settleStream()
-    preparingTool = nil
-    items.append(contentsOf: running)
-    return true
   }
 
   /// The Mac started the turn for messages handed to its queue: they show as the message that
@@ -407,6 +389,68 @@ public struct ChatState: Sendable, Equatable {
     syncTools(with: fresh)
     applyInflight(inflight, turnStartedAt: turnStartedAt, now: now)
     if inflight.isNull { isStreaming = false }
+  }
+
+  /// Puts a fresh copy of the transcript in place of what is on screen, keeping messages typed
+  /// here that it does not hold yet.
+  public mutating func replace(with fresh: [TranscriptItem], inflight: JSONValue, turnStartedAt: Double? = nil, now: Double) {
+    if let index = streamIndex { items.remove(at: index) }
+    let pending = items.filter { item in
+      item.isPending && !fresh.contains { $0.kind == .user && $0.signature == item.signature }
+    }
+    items = fresh + pending
+    applyInflight(inflight, turnStartedAt: turnStartedAt, now: now)
+    if inflight.isNull { isStreaming = false }
+  }
+
+  /// Folds the newest page of the stored transcript into what is on screen, when only that page
+  /// was read and older items may be held above it.
+  ///
+  /// The page has to line up with the end of what is held: either the held items run on into
+  /// the page, or the page reaches back past all of them. What it adds goes on the end; items
+  /// already held keep their identity. Returns false, touching nothing, when the page does not
+  /// line up (more happened than one page shows, or the conversation changed elsewhere): then the
+  /// caller replaces the transcript with the page.
+  public mutating func reconcileTail(fresh: [TranscriptItem], inflight: JSONValue, turnStartedAt: Double? = nil, now: Double) -> Bool {
+    var next = self
+    if let index = next.streamIndex { next.items.remove(at: index) }
+    let settled = next.items.filter { !$0.isPending && !$0.isLocal }
+    guard let start = ChatState.alignment(held: settled.map(\.signature), page: fresh.map(\.signature)) else { return false }
+    for item in fresh[start...] {
+      if item.kind == .user,
+        let pendingIndex = next.items.firstIndex(where: { $0.isPending && !$0.hasLanded && $0.signature == item.signature })
+      {
+        next.items[pendingIndex].hasLanded = true
+        continue
+      }
+      next.items.append(item)
+    }
+    next.syncTools(with: fresh)
+    next.applyInflight(inflight, turnStartedAt: turnStartedAt, now: now)
+    if inflight.isNull { next.isStreaming = false }
+    self = next
+    return true
+  }
+
+  /// Where the new part of `page` begins, when the end of `held` lines up with it; nil when it
+  /// does not. The longest overlap wins: all of `held` inside the page (its last place there),
+  /// else the longest run at the end of `held` that begins the page.
+  static func alignment(held: [String], page: [String]) -> Int? {
+    if held.isEmpty { return 0 }
+    if page.isEmpty { return nil }
+    // The page reaches back past everything held.
+    if held.count <= page.count {
+      for offset in stride(from: page.count - held.count, through: 0, by: -1)
+      where page[offset..<(offset + held.count)].elementsEqual(held) {
+        return offset + held.count
+      }
+    }
+    // The page starts inside what is held.
+    for start in max(1, held.count - page.count)..<held.count {
+      let overlap = held.count - start
+      if held[start...].elementsEqual(page[..<overlap]) { return overlap }
+    }
+    return nil
   }
 
   /// Tool calls that finished elsewhere since the last look are completed in place.

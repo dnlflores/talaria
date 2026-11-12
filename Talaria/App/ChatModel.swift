@@ -61,6 +61,9 @@ final class ChatModel: Identifiable {
   private(set) var uploadStatus = ""
   private(set) var catalog: [ModelProvider]?
   private(set) var catalogError: String?
+  /// Older messages are on the Mac beyond what is on screen; they load as the transcript scrolls up.
+  private(set) var hasOlder = false
+  private(set) var isLoadingOlder = false
   /// Bumped when the view should scroll to the newest message.
   private(set) var scrollToEnd = 0
 
@@ -85,6 +88,17 @@ final class ChatModel: Identifiable {
   /// Last time the gateway said anything about this chat's turn.
   @ObservationIgnored private var lastEventAt = Date()
   @ObservationIgnored private var livenessTask: Task<Void, Never>?
+  /// The part of the stored history on screen, and where the next older page starts.
+  @ObservationIgnored private var window = HistoryWindow.complete
+  /// Bumped whenever `window` changes outside `loadOlder`, so a page read for an older window is dropped.
+  @ObservationIgnored private var windowGeneration = 0
+
+  /// Rows read when a chat opens and on each look for news, and per older page while scrolling up.
+  /// A long agentic turn runs to a hundred rows and more, most of them tool output.
+  static let newestPageRows = 60
+  static let olderPageRows = 100
+  /// An idle chat whose newest turn is longer than this opens part way into that turn.
+  static let openingRowCap = 400
 
   init(app: AppModel, profile: String, storedID: String, row: SessionSummary?, live: LiveSession?) {
     self.app = app
@@ -165,7 +179,8 @@ final class ChatModel: Identifiable {
 
     if let live = prepared {
       prepared = nil
-      adopt(live, replacingTranscript: true)
+      // A new chat, or a copy that brought its whole history along.
+      adopt(live, history: .replace(TranscriptItem.items(fromHistory: live.messages), .complete))
       isLoading = false
       if sendWhenReady {
         sendWhenReady = false
@@ -192,13 +207,21 @@ final class ChatModel: Identifiable {
       await openWatching()
       return
     }
+    // The session comes back without its transcript (a long chat's runs to megabytes); the newest
+    // page of stored history is read alongside it, and older pages as the transcript scrolls up.
+    let newest = Task { try await self.readNewest(client: client, toTurnStart: false) }
     do {
       try await client.rpc.waitUntilReady(timeout: 45)
-      let live = try await client.resume(storedID: storedID, profile: profile)
+      let live = try await client.resume(storedID: storedID, profile: profile, omitMessages: true)
+      var history = try await newest.value
       if isClosed { return }
-      adopt(live, replacingTranscript: true)
+      if live.isRunning, history.window.hasOlder, !history.items.contains(where: { $0.kind == .user }) {
+        // A running turn longer than an idle chat opens on: its start is needed to place it.
+        history = try await readNewest(client: client, toTurnStart: true)
+        if isClosed { return }
+      }
+      adopt(live, history: .replace(history.items, history.window))
       isLoading = false
-      await fillClarifyAnswers()
       if let row = app?.row(storedID), row.unread { app?.setUnread(row, false) }
       if sendWhenReady {
         sendWhenReady = false
@@ -207,21 +230,37 @@ final class ChatModel: Identifiable {
     } catch {
       if isClosed { return }
       loadError = error.localizedDescription
-      if let stored = try? await client.storedMessages(storedID: storedID, profile: profile) {
-        state.items = TranscriptItem.items(fromStoredRows: stored)
+      if let history = try? await newest.value {
+        state.items = history.items
+        setWindow(history.window)
         isReadOnly = true
       }
       isLoading = false
     }
   }
 
-  private func adopt(_ live: LiveSession, replacingTranscript: Bool) {
+  /// Stored history to put on screen with a live session.
+  private enum History {
+    /// Start the transcript over with these items.
+    case replace([TranscriptItem], HistoryWindow)
+    /// Fold the newest page into what is on screen; `items` and `window` are the page on its own,
+    /// for when it does not line up.
+    case newest(page: [JSONValue], items: [TranscriptItem], window: HistoryWindow)
+
+    var items: [TranscriptItem] {
+      switch self {
+      case .replace(let items, _), .newest(_, let items, _): return items
+      }
+    }
+  }
+
+  private func adopt(_ live: LiveSession, history: History) {
     liveID = live.liveID
     app?.noteLive(live.liveID, storedID: storedID)
     var next = state
     next.info.merge(live.info)
     if next.title.isEmpty { next.title = next.info.title }
-    var fresh = TranscriptItem.items(fromHistory: live.messages)
+    var fresh = history.items
     if !queue.onMac.isEmpty {
       let texts = queue.onMac.map(\.text)
       let running = ChatState.normalized(live.inflight["user"].stringValue)
@@ -241,44 +280,113 @@ final class ChatModel: Identifiable {
         queue.returnFromMac(handed.filter { !check.hasUserMessage($0.text) })
       }
     }
-    if replacingTranscript {
+    switch history {
+    case .replace(_, let newWindow):
       next.items = fresh
       next.applyInflight(live.inflight, turnStartedAt: live.turnStartedAt, now: now)
-    } else {
-      next.reconcile(fresh: fresh, inflight: live.inflight, turnStartedAt: live.turnStartedAt, now: now)
+      setWindow(newWindow)
+    case .newest(let page, _, let pageWindow):
+      fold(newest: page, items: fresh, pageWindow: pageWindow, into: &next, inflight: live.inflight, turnStartedAt: live.turnStartedAt)
     }
     next.applyLiveStatus(isRunning: live.isRunning, startedAt: live.turnStartedAt, now: now)
     state = next
     lastEventAt = Date()
     for request in live.openRequests { app?.deliver(request) }
-    if live.isRunning { Task { await fillRunningTools() } }
   }
 
-  /// `session.resume` lists a tool call only once its result is stored, so a chat opened while
-  /// a tool runs would say "Thinking". The stored rows name the call as soon as it starts.
-  private func fillRunningTools() async {
-    guard state.isStreaming, let client,
-      let rows = try? await client.latestMessages(storedID: storedID, profile: profile, limit: 12), !isClosed
-    else { return }
-    var next = state
-    if next.addRunningTools(fromStoredRows: rows, now: now) { state = next }
+  // MARK: Stored history, a page at a time
+
+  /// The newest stored history: the newest page, read on back to where the newest turn starts
+  /// (`toTurnStart`), else no further than `openingRowCap` rows. It starts where a turn starts
+  /// when one was read, so no turn is shown in part.
+  private func readNewest(client: HermesClient, toTurnStart: Bool) async throws -> (items: [TranscriptItem], window: HistoryWindow) {
+    var window = HistoryWindow()
+    let rows = try await HistoryWindow.readOlder(
+      into: &window, firstLimit: Self.newestPageRows, nextLimit: Self.olderPageRows, wholeTurns: true,
+      fetch: { [storedID, profile] offset, limit in
+        try await client.historyPage(storedID: storedID, profile: profile, offset: offset, limit: limit)
+      },
+      until: { rows in
+        TranscriptItem.items(fromStoredRows: rows).contains { $0.kind == .user } || (!toTurnStart && rows.count >= Self.openingRowCap)
+      })
+    return (TranscriptItem.items(fromStoredRows: rows), window)
   }
 
-  /// Past questions: the resumed transcript names them but leaves out the answers, which live in the stored rows.
-  private func fillClarifyAnswers() async {
-    let missing = state.items.contains { $0.tool?.isClarify == true && $0.tool?.answers == nil && $0.tool?.pendingRequest == nil && $0.tool?.isDone == true }
-    guard missing, let client, let stored = try? await client.storedMessages(storedID: storedID, profile: profile) else { return }
-    var results: [String: String] = [:]
-    for row in stored where row["role"].string == "tool" {
-      if let id = row["tool_call_id"].scalarText, let content = row["content"].string { results[id] = content }
+  /// The newest page alone, to fold into what is on screen: the raw page, its items, and a window
+  /// of just that page for when it does not line up.
+  private func readNewestPage(client: HermesClient) async throws -> History {
+    var window = HistoryWindow()
+    var newestPage: [JSONValue] = []
+    let rows = try await HistoryWindow.readOlder(
+      into: &window, firstLimit: Self.newestPageRows, nextLimit: Self.olderPageRows,
+      fetch: { [storedID, profile] offset, limit in
+        let page = try await client.historyPage(storedID: storedID, profile: profile, offset: offset, limit: limit)
+        if offset == 0 { newestPage = page }
+        return page
+      },
+      until: { _ in true })
+    return .newest(page: newestPage, items: TranscriptItem.items(fromStoredRows: rows), window: window)
+  }
+
+  /// Folds the newest page into `next`: on the end of what is held when it lines up, else in
+  /// place of it (then older pages read again from there as the transcript scrolls up).
+  private func fold(
+    newest page: [JSONValue], items fresh: [TranscriptItem], pageWindow: HistoryWindow, into next: inout ChatState,
+    inflight: JSONValue, turnStartedAt: Double?
+  ) {
+    let unnamed = window.reachedStart && !window.overlaps(newest: page) && window == HistoryWindow.complete
+    if window.overlaps(newest: page) || unnamed,
+      next.reconcileTail(fresh: fresh, inflight: inflight, turnStartedAt: turnStartedAt, now: now)
+    {
+      var updated = window
+      if unnamed { updated.identify(newest: page) } else { updated.absorb(newest: page) }
+      setWindow(updated)
+    } else {
+      next.replace(with: fresh, inflight: inflight, turnStartedAt: turnStartedAt, now: now)
+      setWindow(pageWindow)
     }
-    var next = state
-    for index in next.items.indices {
-      guard var tool = next.items[index].tool, tool.isClarify, tool.answers == nil, let raw = results[tool.callID] else { continue }
-      tool.answers = ClarifyAnswer.parse(raw, questionCount: tool.questions.count)
-      next.items[index].tool = tool
+  }
+
+  private func setWindow(_ new: HistoryWindow) {
+    window = new
+    windowGeneration += 1
+    if hasOlder != new.hasOlder { hasOlder = new.hasOlder }
+  }
+
+  /// Reads the next older page and puts it above what is on screen. The transcript calls this as
+  /// it is scrolled near the top, and passes `untilStill` so the page lands once the scrolling
+  /// stops: moving the content back into place mid-fling would cut the fling short.
+  func loadOlder(untilStill: () async -> Void = {}) async {
+    guard hasOlder, !isLoadingOlder, !isLoading, !isClosed, let client else { return }
+    isLoadingOlder = true
+    defer { isLoadingOlder = false }
+    let generation = windowGeneration
+    var older = window
+    do {
+      let rows = try await HistoryWindow.readOlder(
+        into: &older, firstLimit: Self.olderPageRows, nextLimit: Self.olderPageRows, wholeTurns: true,
+        fetch: { [storedID, profile] offset, limit in
+          #if DEBUG
+            // UI tests stand in for a slow connection: `TALARIA_UITEST_PAGE_DELAY=<seconds>`.
+            if let delay = ProcessInfo.processInfo.environment["TALARIA_UITEST_PAGE_DELAY"].flatMap(Double.init) {
+              try await Task.sleep(for: .seconds(delay))
+            }
+          #endif
+          return try await client.historyPage(storedID: storedID, profile: profile, offset: offset, limit: limit)
+        },
+        until: { $0.contains(where: HistoryWindow.startsTurn) })
+      await untilStill()
+      // The transcript was replaced meanwhile: this page belongs to the old one.
+      guard generation == windowGeneration, !isClosed else { return }
+      setWindow(older)
+      let items = TranscriptItem.items(fromStoredRows: rows)
+      guard !items.isEmpty else { return }
+      var next = state
+      next.items.insert(contentsOf: items, at: 0)
+      state = next
+    } catch {
+      if !isClosed { app?.show("Could not load earlier messages: \(error.localizedDescription)", kind: .failure) }
     }
-    state = next
   }
 
   // MARK: Chats this app cannot drive right now
@@ -297,15 +405,18 @@ final class ChatModel: Identifiable {
 
   private func refreshWatched(first: Bool = false) async throws {
     guard let client else { return }
-    let fresh = TranscriptItem.items(fromStoredRows: try await client.storedMessages(storedID: storedID, profile: profile))
-    if isClosed { return }
     if first || state.items.isEmpty {
-      state.items = fresh
-    } else {
-      var next = state
-      next.reconcile(fresh: fresh, inflight: nil, now: now)
-      if next != state { state = next }
+      let history = try await readNewest(client: client, toTurnStart: isRunningElsewhere)
+      if isClosed { return }
+      state.items = history.items
+      setWindow(history.window)
+      return
     }
+    // Only the newest page: polling a long chat must not read all of it every few seconds.
+    guard case .newest(let page, let fresh, let pageWindow) = try await readNewestPage(client: client), !isClosed else { return }
+    var next = state
+    fold(newest: page, items: fresh, pageWindow: pageWindow, into: &next, inflight: nil, turnStartedAt: nil)
+    if next != state { state = next }
   }
 
   private func startWatching() {
@@ -355,7 +466,6 @@ final class ChatModel: Identifiable {
     await dropLive()
     do {
       try await reattach()
-      await fillClarifyAnswers()
     } catch {
       if !isClosed { app?.show("Could not reopen the chat: \(error.localizedDescription)", kind: .failure) }
     }
@@ -460,7 +570,7 @@ final class ChatModel: Identifiable {
       let spoken = self.state.items.contains { !$0.isPending && !$0.isLocal }
       var live: LiveSession
       do {
-        live = try await client.resume(storedID: self.storedID, profile: self.profile, lazy: !spoken)
+        live = try await client.resume(storedID: self.storedID, profile: self.profile, lazy: !spoken, omitMessages: true)
       } catch {
         let wrapped = error as? HermesError ?? .transport(error.localizedDescription)
         if self.isClosed || wrapped.isConnectionLoss || spoken { throw error }
@@ -473,7 +583,11 @@ final class ChatModel: Identifiable {
         self.draft = words
       }
       if self.isClosed { return }
-      self.adopt(live, replacingTranscript: false)
+      // A chat minted just now has no stored history yet; what was typed in it stays.
+      let history = spoken
+        ? try await self.readNewestPage(client: client) : History.newest(page: [], items: [], window: .complete)
+      if self.isClosed { return }
+      self.adopt(live, history: history)
     }
     reattachTask = task
     defer { reattachTask = nil }

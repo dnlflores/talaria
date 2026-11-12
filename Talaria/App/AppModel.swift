@@ -265,6 +265,14 @@ final class AppModel {
     Task { await refreshSessions() }
     Task { await refreshStatus() }
     startActivityProbe()
+    #if DEBUG
+      // UI tests open one conversation straight away: `TALARIA_OPEN_CHAT=<profile>/<stored id>`.
+      if let target = ProcessInfo.processInfo.environment["TALARIA_OPEN_CHAT"], let slash = target.firstIndex(of: "/"),
+        path.isEmpty
+      {
+        openChat(profile: String(target[..<slash]), storedID: String(target[target.index(after: slash)...]))
+      }
+    #endif
   }
 
   /// Foreground: the socket has usually died while the phone slept.
