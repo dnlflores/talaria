@@ -160,6 +160,14 @@ public struct ModelProvider: Identifiable, Sendable, Hashable {
     public let name: String
     public let supportsReasoning: Bool
     public let supportsFast: Bool
+    /// False when thinking cannot be turned off; nil when the catalog does not say (only
+    /// aggregators such as Nous Portal report it).
+    public var canDisableReasoning: Bool? = nil
+
+    /// The thinking efforts this model offers through `provider`.
+    public func reasoningLevels(provider: String) -> ReasoningLevels {
+      ReasoningLevels(provider: provider, model: name, supportsReasoning: supportsReasoning, canDisableReasoning: canDisableReasoning)
+    }
   }
 
   public var id: String { slug }
@@ -194,7 +202,8 @@ public struct ModelProvider: Identifiable, Sendable, Hashable {
     }
     models = ordered.map { name in
       Model(name: name, supportsReasoning: capabilities[name]?["reasoning"].truthy ?? false,
-            supportsFast: capabilities[name]?["fast"].truthy ?? false)
+            supportsFast: capabilities[name]?["fast"].truthy ?? false,
+            canDisableReasoning: capabilities[name]?["can_disable_reasoning"].bool)
     }
   }
 
@@ -233,4 +242,5 @@ public struct ChatOwner: Sendable, Hashable {
   }
 }
 
-public let reasoningEfforts = ["none", "minimal", "low", "medium", "high", "xhigh"]
+/// Hermes's whole effort ladder, Off first. What one model offers is `ReasoningLevels`.
+public let reasoningEfforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]

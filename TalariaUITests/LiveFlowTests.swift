@@ -161,6 +161,16 @@ final class LiveFlowTests: XCTestCase {
       NSPredicate(format: "identifier == 'model.provider' AND label CONTAINS 'In use'")).firstMatch
     XCTAssertTrue(inUseProvider.waitForExistence(timeout: 60), "the providers did not load, or none is marked in use")
     shoot("08-models")
+    // Effort: every level the model offers is named in full, and a pick round-trips the backend.
+    let efforts = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'effort.'"))
+    XCTAssertGreaterThan(efforts.count, 0, "no thinking efforts shown")
+    let names = efforts.allElementsBoundByIndex.map(\.label)
+    XCTAssertEqual(Set(names).count, names.count, "an effort is listed twice: \(names)")
+    let pick = efforts.matching(NSPredicate(format: "NOT (identifier == 'effort.none')")).element(boundBy: 0)
+    pick.tap()
+    let picked = NSPredicate(format: "isSelected == true")
+    expectation(for: picked, evaluatedWith: pick)
+    waitForExpectations(timeout: 15)
     inUseProvider.tap()
     let rows = app.buttons.matching(identifier: "model.row")
     XCTAssertTrue(rows.matching(NSPredicate(format: "label CONTAINS 'in use'")).firstMatch.waitForExistence(timeout: 10),
@@ -181,6 +191,12 @@ final class LiveFlowTests: XCTestCase {
     }
     XCTAssertTrue(switched.exists, "the chat's title bar does not show \(otherName)")
     XCTAssertFalse(app.buttons.matching(identifier: "model.row").firstMatch.exists, "the model sheet stayed open")
+    // The efforts follow the new model.
+    sleep(4)
+    app.buttons["Model and effort"].tap()
+    XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'effort.'")).firstMatch.waitForExistence(timeout: 20))
+    shoot("08c-efforts-after-switch")
+    app.buttons["Done"].firstMatch.tap()
 
     // 5. Renaming reaches the backend: back home the chat is listed under its new name, and archiving removes it.
     // The switch's toast sits over the title bar for a moment; a tap on it only dismisses it.

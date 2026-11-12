@@ -108,7 +108,12 @@ struct ChatView: View {
   private var subtitle: String {
     var parts = [app.title(forProfile: chat.profile)]
     if !chat.info.model.isEmpty { parts.append(Format.modelName(chat.info.model)) }
-    if !chat.info.reasoningEffort.isEmpty, chat.info.reasoningEffort != "none" { parts.append(chat.info.reasoningEffort) }
+    let effort = chat.info.reasoningEffort
+    if !effort.isEmpty, effort != "none" {
+      // Named as the level the model actually gets (Extra high sends Max on Opus 4.6).
+      let levels = ReasoningLevels(provider: chat.info.provider, model: chat.info.model, supportsReasoning: true)
+      parts.append(levels.level(for: effort)?.label ?? ReasoningLevels.label(effort))
+    }
     return parts.joined(separator: " · ")
   }
 

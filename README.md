@@ -64,6 +64,10 @@ T3 Tools.
 - **Model:** pick a provider, then one of its models, named the way people say
   them ("Opus 4.5", "GPT-6.1 Sol 900K") and newest first. Models a plan does not
   include are folded away; a search box finds a model across every provider.
+  Thinking effort lists only the levels the model in use really has: Opus 5.5
+  offers Low through Max and no Off (it always thinks), Opus 4.6 has no Extra
+  high, Opus 4.5 no Max. `scripts/record-effort-levels.py` checks those rules
+  against the backend's own request builders.
 - **iPad:** a sidebar with Chats, Bots, Kanban and Settings, the list beside it
   and the open chat or page on the right, in either orientation. On iPhone the
   tab bar holds Chats and Bots; Kanban, Cron and Settings are in the inbox's

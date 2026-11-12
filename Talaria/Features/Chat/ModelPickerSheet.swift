@@ -20,12 +20,21 @@ struct ModelPickerSheet: View {
         VStack(alignment: .leading, spacing: 24) {
           if query.isEmpty {
             current
-            if showsEffort {
-              GroupedSection("Thinking effort") {
-                EffortPicker(selection: chat.info.reasoningEffort) { effort in
-                  Task { await chat.setEffort(effort) }
+            let levels = reasoningLevels
+            if !levels.isEmpty {
+              VStack(alignment: .leading, spacing: 8) {
+                GroupedSection("Thinking effort") {
+                  EffortPicker(levels: levels, selection: chat.info.reasoningEffort) { effort in
+                    Task { await chat.setEffort(effort) }
+                  }
+                  .padding(4)
                 }
-                .padding(4)
+                if !levels.canTurnOff {
+                  Text("This model always thinks, so it has no Off.")
+                    .font(AppFont.caption)
+                    .foregroundStyle(palette.foregroundMuted)
+                    .padding(.horizontal, 4)
+                }
               }
             }
             providers
@@ -205,12 +214,15 @@ struct ModelPickerSheet: View {
     model.name == chat.info.model && isCurrentProvider(provider)
   }
 
-  /// Effort applies to models that think; the control stays while the catalog loads.
-  private var showsEffort: Bool {
-    guard let provider = chat.catalog?.first(where: isCurrentProvider),
-      let model = provider.models.first(where: { $0.name == chat.info.model })
-    else { return true }
-    return model.supportsReasoning
+  /// The efforts the model in use offers. Before the catalog loads (or for a model it does not
+  /// list) Hermes's rules for the model's name apply.
+  private var reasoningLevels: ReasoningLevels {
+    let provider = chat.catalog?.first(where: isCurrentProvider)
+    let slug = provider?.slug ?? chat.info.provider
+    if let model = provider?.models.first(where: { $0.name == chat.info.model }) {
+      return model.reasoningLevels(provider: slug)
+    }
+    return ReasoningLevels(provider: slug, model: chat.info.model, supportsReasoning: true)
   }
 
   private func choose(_ model: String, provider: String, confirmed: Bool) {
@@ -359,22 +371,35 @@ private struct ModelChoiceRow: View {
   }
 }
 
+/// The model's efforts as one row of segments: full names when they fit, short ones otherwise.
 private struct EffortPicker: View {
+  let levels: ReasoningLevels
   let selection: String
   let choose: (String) -> Void
   @Environment(\.palette) private var palette
 
   var body: some View {
+    let selected = levels.level(for: selection)?.effort
+    ViewThatFits(in: .horizontal) {
+      row(selected: selected, short: false)
+      row(selected: selected, short: true)
+    }
+  }
+
+  private func row(selected: String?, short: Bool) -> some View {
     HStack(spacing: 4) {
-      ForEach(reasoningEfforts, id: \.self) { effort in
-        let isOn = effort == selection
+      ForEach(levels.levels) { level in
+        let isOn = level.effort == selected
         Button {
           UISelectionFeedbackGenerator().selectionChanged()
-          choose(effort)
+          choose(level.effort)
         } label: {
-          Text(label(effort))
+          Text(short ? level.shortLabel : level.label)
             .font(AppFont.sans(13, isOn ? .semibold : .regular))
             .foregroundStyle(isOn ? palette.foreground : palette.foregroundMuted)
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 6)
             .frame(maxWidth: .infinity)
             .frame(height: 34)
             .background(isOn ? palette.card : Color.clear, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -383,18 +408,10 @@ private struct EffortPicker: View {
             }
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(effort)
+        .accessibilityLabel(level.label)
+        .accessibilityIdentifier("effort.\(level.effort)")
         .accessibilityAddTraits(isOn ? .isSelected : [])
       }
-    }
-  }
-
-  private func label(_ effort: String) -> String {
-    switch effort {
-    case "minimal": return "Min"
-    case "medium": return "Med"
-    case "xhigh": return "Max"
-    default: return effort.capitalized
     }
   }
 }
