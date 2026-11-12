@@ -715,15 +715,25 @@ final class ChatModel: Identifiable {
 
   // MARK: Model and effort
 
+  /// Loads the providers and their models. What is on screen stays while a fresh copy loads, and
+  /// a plan the backend had not checked yet is looked at again shortly.
   func loadCatalog() async {
-    guard catalog == nil, let client else { return }
+    guard let client else { return }
     catalogError = nil
-    do {
-      try await ensureLive()
-      guard let liveID else { return }
-      catalog = try await client.modelCatalog(liveID: liveID, profile: profile)
-    } catch {
-      catalogError = error.localizedDescription
+    for attempt in 0..<2 {
+      do {
+        try await ensureLive()
+        guard let liveID else { return }
+        let fresh = try await client.modelCatalog(liveID: liveID, profile: profile)
+        if fresh != catalog { catalog = fresh }
+        guard attempt == 0, fresh.contains(where: \.isCheckingPlan) else { return }
+        try await Task.sleep(for: .seconds(4))
+      } catch is CancellationError {
+        return
+      } catch {
+        if catalog == nil { catalogError = error.localizedDescription }
+        return
+      }
     }
   }
 
@@ -735,14 +745,16 @@ final class ChatModel: Identifiable {
       guard let liveID else { return nil }
       let result = try await client.setModel(liveID: liveID, profile: profile, model: model, provider: provider, confirmed: confirmed)
       if result.needsConfirmation {
-        return result.confirmationMessage.isEmpty ? "\(model) costs more than usual. Use it for this chat?" : result.confirmationMessage
+        return result.confirmationMessage.isEmpty
+          ? "\(ModelName(model).display) costs more than usual. Use it for this chat?" : result.confirmationMessage
       }
       state.info.model = result.model
       state.info.provider = provider
       preferredModel = result.model
       preferredProvider = provider
       catalog = nil
-      app?.show(result.isDeferred ? "\(model) takes over after this reply" : "This chat now uses \(model)", kind: .success)
+      let name = ModelName(result.model).display
+      app?.show(result.isDeferred ? "\(name) takes over after this reply" : "This chat now uses \(name)", kind: .success)
       if !result.warning.isEmpty { app?.show(result.warning, seconds: 5) }
     } catch {
       app?.show("Could not switch model: \(error.localizedDescription)", kind: .failure)

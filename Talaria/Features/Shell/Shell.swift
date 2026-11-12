@@ -29,9 +29,8 @@ struct MainShell: View {
     .onChange(of: sizeClass) { _, size in
       app.usesSplitLayout = size == .regular
       if size != .regular {
-        // Kanban and Settings have no tab on iPhone: they open on the Chats stack.
-        if app.tab == .kanban || app.tab == .settings {
-          let route: Route = app.tab == .kanban ? .kanban : .settings
+        // Kanban, Cron and Settings have no tab on iPhone: they open on the Chats stack.
+        if let route = Route.area(app.tab) {
           app.tab = .chats
           app.path = [route]
         } else if app.path.count > 1, let last = app.path.last {
@@ -41,6 +40,7 @@ struct MainShell: View {
       } else if let last = app.path.last {
         switch last {
         case .kanban: app.tab = .kanban; app.path = []
+        case .cron: app.tab = .cron; app.path = []
         case .settings: app.tab = .settings; app.path = []
         case .agent(let profile): app.splitAgent = profile; app.path = []
         case .chat: break
@@ -74,6 +74,9 @@ private struct TabShell: View {
                   .navigationDestination(item: $areas.kanbanCard) { id in
                     KanbanTaskView(model: areas.kanban, taskID: id, select: { areas.kanbanCard = $0 })
                   }
+              case .cron:
+                CronList(model: areas.cron, selection: $areas.cronJob)
+                  .navigationDestination(item: $areas.cronJob) { id in CronDetailView(model: areas.cron, jobID: id) }
               case .settings:
                 SettingsView()
               }
@@ -84,12 +87,6 @@ private struct TabShell: View {
         NavigationStack {
           BotsList(selection: $areas.bot)
             .navigationDestination(item: $areas.bot) { name in BotDetailView(name: name) }
-        }
-      }
-      Tab(AppTab.cron.title, systemImage: AppTab.cron.symbol, value: AppTab.cron) {
-        NavigationStack {
-          CronList(model: areas.cron, selection: $areas.cronJob)
-            .navigationDestination(item: $areas.cronJob) { id in CronDetailView(model: areas.cron, jobID: id) }
         }
       }
     }
@@ -135,7 +132,20 @@ private struct SidebarShell: View {
           }
         case .bots: BotsList(selection: $areas.bot)
         case .kanban: KanbanBoardView(model: areas.kanban, selection: $areas.kanbanCard)
-        case .cron: CronList(model: areas.cron, selection: $areas.cronJob)
+        case .cron:
+          // Not in the sidebar: opened from the inbox's More menu, with a way back to Chats.
+          CronList(model: areas.cron, selection: $areas.cronJob)
+            .toolbar {
+              ToolbarItem(placement: .topBarLeading) {
+                Button {
+                  app.tab = .chats
+                } label: {
+                  Image(systemName: "chevron.left")
+                }
+                .accessibilityLabel("Chats")
+                .accessibilityIdentifier("BackButton")
+              }
+            }
         case .settings: SettingsView()
         }
       }
@@ -147,6 +157,9 @@ private struct SidebarShell: View {
     // Swapping the list column (a bot's full list in, back to the inbox) reads to the split
     // view as navigation, and in portrait it then hides the areas column. Keep all three.
     .onChange(of: app.splitAgent) { _, _ in
+      Task { @MainActor in columns = .all }
+    }
+    .onChange(of: app.tab) { _, _ in
       Task { @MainActor in columns = .all }
     }
   }
@@ -200,7 +213,7 @@ private struct AreaSidebar: View {
 
   var body: some View {
     List {
-      ForEach(AppTab.allCases) { tab in
+      ForEach(AppTab.sidebar) { tab in
         let isSelected = app.tab == tab
         Button {
           app.tab = tab

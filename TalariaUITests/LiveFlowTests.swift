@@ -154,16 +154,42 @@ final class LiveFlowTests: XCTestCase {
     XCTAssertTrue(app.staticTexts["Answered"].waitForExistence(timeout: 10))
     shoot("07-question-answered")
 
-    // 4. The model sheet loads the catalog for this chat.
+    // 4. Model: pick the provider, then a model. The chat switches to it.
     app.buttons["Model and effort"].tap()
-    XCTAssertTrue(app.staticTexts["THINKING EFFORT"].waitForExistence(timeout: 20))
-    XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier == 'model.row'")).firstMatch.waitForExistence(timeout: 60), "model catalog did not load")
+    XCTAssertTrue(app.descendants(matching: .any)["model.current"].waitForExistence(timeout: 20), "no model in use shown")
+    let inUseProvider = app.buttons.matching(
+      NSPredicate(format: "identifier == 'model.provider' AND label CONTAINS 'In use'")).firstMatch
+    XCTAssertTrue(inUseProvider.waitForExistence(timeout: 60), "the providers did not load, or none is marked in use")
     shoot("08-models")
-    app.buttons["Done"].tap()
+    inUseProvider.tap()
+    let rows = app.buttons.matching(identifier: "model.row")
+    XCTAssertTrue(rows.matching(NSPredicate(format: "label CONTAINS 'in use'")).firstMatch.waitForExistence(timeout: 10),
+                  "the model in use is not marked in its provider's list")
+    let other = rows.matching(NSPredicate(format: "NOT (label CONTAINS 'in use') AND isEnabled == true")).firstMatch
+    XCTAssertTrue(other.exists, "no other model to switch to")
+    let otherName = other.label.components(separatedBy: ",").first ?? other.label
+    shoot("08b-provider-models")
+    other.tap()
+    // The title bar names the model in use ("Hermes · Opus 5 · xhigh"); an expensive model asks first.
+    let useIt = app.alerts.buttons["Use it"]
+    let inTitle = NSPredicate(format: "label CONTAINS %@ OR label ENDSWITH %@", "\(otherName) ·", " \(otherName)")
+    let switched = app.staticTexts.matching(inTitle).firstMatch
+    let deadline = Date().addingTimeInterval(20)
+    while !switched.exists, Date() < deadline {
+      if useIt.exists { useIt.tap() }
+      usleep(300_000)
+    }
+    XCTAssertTrue(switched.exists, "the chat's title bar does not show \(otherName)")
+    XCTAssertFalse(app.buttons.matching(identifier: "model.row").firstMatch.exists, "the model sheet stayed open")
 
     // 5. Renaming reaches the backend: back home the chat is listed under its new name, and archiving removes it.
-    app.buttons["More"].firstMatch.tap()
-    app.buttons["Rename"].firstMatch.tap()
+    // The switch's toast sits over the title bar for a moment; a tap on it only dismisses it.
+    let rename = app.buttons["Rename"].firstMatch
+    for _ in 0..<3 where !rename.exists {
+      app.buttons["More"].firstMatch.tap()
+      _ = rename.waitForExistence(timeout: 2)
+    }
+    rename.tap()
     let titleField = app.alerts.textFields["Title"]
     XCTAssertTrue(titleField.waitForExistence(timeout: 5), "rename alert")
     let existing = (titleField.value as? String) ?? ""

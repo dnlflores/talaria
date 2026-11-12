@@ -43,8 +43,11 @@ final class CronFlowTests: XCTestCase {
 
   func testPauseAndResume() throws {
     XCTAssertTrue(app.buttons["New chat"].waitForExistence(timeout: 30), "home did not load")
-    let area = app.buttons["area.cron"]
-    if area.exists { area.tap() } else { app.tabBars.buttons["Cron"].tap() }
+    // Cron is not in the dock: it opens from the inbox's More menu.
+    app.buttons["home.more"].tap()
+    let cron = app.buttons["Cron"].firstMatch
+    XCTAssertTrue(cron.waitForExistence(timeout: 5), "Cron is not in the More menu")
+    cron.tap()
 
     let row = app.buttons.matching(NSPredicate(format: "identifier == 'cron.row' AND label CONTAINS %@", jobName)).firstMatch
     XCTAssertTrue(row.waitForExistence(timeout: 30), "the test job is not listed")

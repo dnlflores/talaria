@@ -107,7 +107,7 @@ struct ChatView: View {
 
   private var subtitle: String {
     var parts = [app.title(forProfile: chat.profile)]
-    if !chat.info.model.isEmpty { parts.append(Format.shortModel(chat.info.model)) }
+    if !chat.info.model.isEmpty { parts.append(Format.modelName(chat.info.model)) }
     if !chat.info.reasoningEffort.isEmpty, chat.info.reasoningEffort != "none" { parts.append(chat.info.reasoningEffort) }
     return parts.joined(separator: " · ")
   }

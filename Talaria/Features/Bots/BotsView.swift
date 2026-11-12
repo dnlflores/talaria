@@ -94,7 +94,7 @@ private struct BotRow: View {
 
   private var meta: String {
     var parts: [String] = []
-    if !profile.model.isEmpty { parts.append(Format.shortModel(profile.model)) }
+    if !profile.model.isEmpty { parts.append(Format.modelName(profile.model)) }
     if let count = app.agentTotals[profile.name], count > 0 {
       parts.append(count == 1 ? "1 session" : "\(count.formatted()) sessions")
     }

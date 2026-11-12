@@ -52,10 +52,14 @@ T3 Tools.
 - **Kanban:** the board one column at a time, cards with their brief, runs,
   comments and linked cards.
 - **Cron:** every job with its schedule, next and last run and recent runs;
-  pause, resume and run now.
-- **iPad:** a sidebar with the areas, the list beside it and the open chat or
-  page on the right, in either orientation. On iPhone the tab bar holds Chats,
-  Bots and Cron; Kanban and Settings are in the inbox's ••• menu.
+  pause, resume and run now. Opened from the inbox's ••• menu.
+- **Model:** pick a provider, then one of its models, named the way people say
+  them ("Opus 4.5", "GPT-6.1 Sol 900K") and newest first. Models a plan does not
+  include are folded away; a search box finds a model across every provider.
+- **iPad:** a sidebar with Chats, Bots, Kanban and Settings, the list beside it
+  and the open chat or page on the right, in either orientation. On iPhone the
+  tab bar holds Chats and Bots; Kanban, Cron and Settings are in the inbox's
+  ••• menu.
 
 ## What is next
 

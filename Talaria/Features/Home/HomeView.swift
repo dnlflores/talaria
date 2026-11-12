@@ -63,26 +63,21 @@ struct HomeView: View {
       }
       .sharedBackgroundVisibility(.hidden)
 
-      // iPhone keeps Kanban and Settings out of the tab bar; they are one menu away here.
-      if !app.usesSplitLayout {
-        ToolbarItem(placement: .topBarTrailing) {
-          Menu {
+      // Areas that are not in the dock are one menu away here.
+      ToolbarItem(placement: .topBarTrailing) {
+        Menu {
+          ForEach(AppTab.moreMenu(splitLayout: app.usesSplitLayout)) { area in
             Button {
-              app.openArea(.kanban)
+              app.openArea(area)
             } label: {
-              Label(AppTab.kanban.title, systemImage: AppTab.kanban.symbol)
+              Label(area.title, systemImage: area.symbol)
             }
-            Button {
-              app.openArea(.settings)
-            } label: {
-              Label(AppTab.settings.title, systemImage: AppTab.settings.symbol)
-            }
-          } label: {
-            Image(systemName: "ellipsis")
           }
-          .accessibilityLabel("More")
-          .accessibilityIdentifier("home.more")
+        } label: {
+          Image(systemName: "ellipsis")
         }
+        .accessibilityLabel("More")
+        .accessibilityIdentifier("home.more")
       }
 
       ToolbarItem(placement: .topBarTrailing) {
@@ -326,7 +321,7 @@ struct SessionRow: View {
     var parts: [String] = []
     if !session.cwd.isEmpty { parts.append(session.cwd == app.macHome ? "~" : Format.folder(session.cwd)) }
     if !session.gitBranch.isEmpty { parts.append(session.gitBranch) }
-    if !session.model.isEmpty { parts.append(Format.shortModel(session.model)) }
+    if !session.model.isEmpty { parts.append(Format.modelName(session.model)) }
     return parts.isEmpty ? SessionSection.sourceLabel(session.source) : parts.joined(separator: " · ")
   }
 
@@ -443,7 +438,7 @@ struct BotPickerSheet: View {
                 AvatarView(profile: profile.name, size: 34)
                 VStack(alignment: .leading, spacing: 2) {
                   Text(profile.title).font(AppFont.bodyMedium).foregroundStyle(palette.foreground)
-                  Text(Format.shortModel(profile.model))
+                  Text(Format.modelName(profile.model))
                     .font(AppFont.mono(12))
                     .foregroundStyle(palette.foregroundMuted)
                     .lineLimit(1)

@@ -7,16 +7,35 @@ enum Route: Hashable {
   case chat(profile: String, storedID: String)
   /// Every conversation of one bot (iPhone; iPad shows it in the list column).
   case agent(profile: String)
-  /// Kanban and Settings on iPhone, opened from the inbox's More menu: the tab bar keeps the
-  /// areas used most. iPad lists every area in its sidebar.
+  /// Areas with no place in the dock, opened from the inbox's More menu onto the Chats stack
+  /// (iPhone). On iPad Kanban and Settings are in the sidebar and Cron replaces the list column.
   case kanban
+  case cron
   case settings
+
+  /// The route that shows an area on the Chats stack, for areas that have one.
+  static func area(_ tab: AppTab) -> Route? {
+    switch tab {
+    case .kanban: return .kanban
+    case .cron: return .cron
+    case .settings: return .settings
+    case .chats, .bots: return nil
+    }
+  }
 }
 
-/// The top-level areas: every one in the iPad sidebar; on iPhone the tab bar holds Chats, Bots
-/// and Cron, and Kanban and Settings open from the inbox's More menu.
+/// The top-level areas. The iPhone tab bar holds Chats and Bots; the iPad sidebar adds Kanban and
+/// Settings. Everything else opens from the inbox's More menu.
 enum AppTab: String, Hashable, CaseIterable, Identifiable {
   case chats, bots, kanban, cron, settings
+
+  /// The areas in the iPad sidebar.
+  static let sidebar: [AppTab] = [.chats, .bots, .kanban, .settings]
+
+  /// The areas in the inbox's More menu: those not in the dock.
+  static func moreMenu(splitLayout: Bool) -> [AppTab] {
+    splitLayout ? allCases.filter { !sidebar.contains($0) } : [.kanban, .cron, .settings]
+  }
 
   var id: String { rawValue }
 
@@ -748,12 +767,12 @@ final class AppModel {
 
   /// Opens an area that has no tab of its own on iPhone; on iPad, selects it in the sidebar.
   func openArea(_ area: AppTab) {
-    guard !usesSplitLayout, area == .kanban || area == .settings else {
+    guard !usesSplitLayout, let route = Route.area(area) else {
       tab = area
       return
     }
     tab = .chats
-    path.append(area == .kanban ? .kanban : .settings)
+    path.append(route)
   }
 
   /// The stored id of the chat on screen, for marking it in the inbox on iPad.

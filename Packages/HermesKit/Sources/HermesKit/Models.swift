@@ -168,12 +168,24 @@ public struct ModelProvider: Identifiable, Sendable, Hashable {
   public let isCurrent: Bool
   public let isAuthenticated: Bool
   public let models: [Model]
+  /// Models listed that this plan does not include (a free tier lists the rest of the catalog).
+  public let unavailable: Set<String>
+  /// The backend has not checked this plan yet and locks every model meanwhile.
+  public let isCheckingPlan: Bool
+  /// The backend's note about this provider ("Checking Nous plan entitlement…").
+  public let warning: String
 
   public init(json: JSONValue) {
     slug = json["slug"].stringValue
     name = json["name"].string ?? slug
     isCurrent = json["is_current"].truthy
     isAuthenticated = json["authenticated"].truthy
+    let locked = Set((json["unavailable_models"].array ?? []).compactMap(\.string))
+    unavailable = locked
+    warning = json["warning"].stringValue
+    let listed = (json["models"].array ?? []).compactMap(\.string)
+    isCheckingPlan = json["free_tier_pending"].truthy
+      || (json["pricing_pending"].truthy && !listed.isEmpty && listed.allSatisfy { locked.contains($0) })
     let capabilities = json["capabilities"].object ?? [:]
     var seen = Set<String>()
     var ordered: [String] = []

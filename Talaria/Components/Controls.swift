@@ -166,6 +166,11 @@ enum Format {
     return date.formatted(.dateTime.month(.abbreviated).day().hour().minute())
   }
 
+  /// A model as people say it: `claude-opus-5-5` is "Opus 5.5".
+  static func modelName(_ model: String) -> String {
+    model.isEmpty ? "" : ModelName(model).display
+  }
+
   /// `claude-opus-5-5` from `anthropic/claude-opus-5-5`.
   static func shortModel(_ model: String) -> String {
     model.split(separator: "/").last.map(String.init) ?? model

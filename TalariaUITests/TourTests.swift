@@ -50,7 +50,8 @@ final class TourTests: XCTestCase {
       tab.tap()
       return
     }
-    app.tabBars.buttons["Chats"].tap()
+    let chats = app.buttons["area.chats"]
+    if chats.exists { chats.tap() } else { app.tabBars.buttons["Chats"].tap() }
     let more = app.buttons["home.more"]
     for _ in 0..<4 where !more.exists {
       let back = app.buttons["BackButton"].firstMatch
@@ -67,11 +68,16 @@ final class TourTests: XCTestCase {
     item.tap()
   }
 
-  /// The iPhone tab bar holds only the areas used most.
-  private func checkPhoneTabs() {
-    guard UIDevice.current.userInterfaceIdiom == .phone else { return }
-    let names = app.tabBars.buttons.allElementsBoundByIndex.map(\.label)
-    XCTAssertEqual(names, ["Chats", "Bots", "Cron"], "tab bar: \(names)")
+  /// The dock holds only the areas used most: Chats and Bots on iPhone, plus Kanban and
+  /// Settings in the iPad sidebar. Cron is in the More menu on both.
+  private func checkDock() {
+    if UIDevice.current.userInterfaceIdiom == .phone {
+      let names = app.tabBars.buttons.allElementsBoundByIndex.map(\.label)
+      XCTAssertEqual(names, ["Chats", "Bots"], "tab bar: \(names)")
+    } else {
+      XCTAssertTrue(app.buttons["area.kanban"].waitForExistence(timeout: 5))
+      XCTAssertFalse(app.buttons["area.cron"].exists, "Cron is in the iPad sidebar")
+    }
   }
 
   /// The first such row that is not working: opening a chat that another client is running can
@@ -86,7 +92,7 @@ final class TourTests: XCTestCase {
 
   func testTour() throws {
     XCTAssertTrue(app.buttons["New chat"].waitForExistence(timeout: 30), "home did not load")
-    checkPhoneTabs()
+    checkDock()
     sleep(3)
     shoot("01-chats")
     app.swipeUp()
@@ -111,6 +117,21 @@ final class TourTests: XCTestCase {
         sleep(3)
         shoot("02b-file")
         app.buttons["Done"].firstMatch.tap()
+      }
+      // The model chooser: providers first, then one provider's models. Nothing is switched.
+      let modelButton = app.buttons["Model and effort"]
+      if modelButton.waitForExistence(timeout: 3) {
+        modelButton.tap()
+        let provider = app.buttons.matching(identifier: "model.provider").firstMatch
+        if provider.waitForExistence(timeout: 60) {
+          sleep(1)
+          shoot("02c-model-providers")
+          provider.tap()
+          sleep(2)
+          shoot("02d-model-list")
+        }
+        app.buttons["Done"].firstMatch.tap()
+        sleep(1)
       }
       if UIDevice.current.userInterfaceIdiom != .pad { app.navigationBars.buttons.element(boundBy: 0).tap() }
     }

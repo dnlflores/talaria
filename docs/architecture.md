@@ -10,8 +10,8 @@ Talaria (SwiftUI app)
   AppModel        connection phase, inbox, navigation, prompts from the agent
   ChatModel       one open conversation and its composer
   AreaState       what Bots, Kanban and Cron have open (CronModel, KanbanModel)
-  Views           Shell (Chats, Bots and Cron tabs on iPhone with Kanban and
-                  Settings in the inbox's More menu; sidebar split on iPad), Connect,
+  Views           Shell (Chats and Bots tabs on iPhone, Kanban, Cron and Settings
+                  in the inbox's More menu; sidebar split on iPad without Cron), Connect,
                   Home, Chat, Bots, Kanban, Cron, Settings
         │
 HermesKit (Swift package, no UI)
