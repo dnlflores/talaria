@@ -144,6 +144,12 @@ final class AppModel {
   @ObservationIgnored private var activityTask: Task<Void, Never>?
   private var toastTask: Task<Void, Never>?
   private var isLoadingSessions = false
+  /// A reload was asked for while one ran: that one may have read the list before the change
+  /// the caller made, so run once more when it ends instead of dropping the request.
+  @ObservationIgnored private var reloadAgain = false
+  /// Chats archived here whose archive the Mac has not confirmed yet: a list read before it landed
+  /// must not bring them back.
+  @ObservationIgnored private var archiving: Set<String> = []
 
   // MARK: Launch and sign-in
 
@@ -480,9 +486,19 @@ final class AppModel {
   // MARK: Lists
 
   func refreshSessions(quiet: Bool = false) async {
-    guard let client, !isLoadingSessions else { return }
+    guard let client else { return }
+    guard !isLoadingSessions else {
+      reloadAgain = true
+      return
+    }
     isLoadingSessions = true
-    defer { isLoadingSessions = false }
+    defer {
+      isLoadingSessions = false
+      if reloadAgain {
+        reloadAgain = false
+        Task { await refreshSessions(quiet: true) }
+      }
+    }
     async let ownersJob = try? client.owners()
     async let activeJob = try? client.activeSessions(profiles: profileNames)
     async let totalsJob = sessionTotals(client)
@@ -491,6 +507,7 @@ final class AppModel {
       let totals = await totalsJob
       if !totals.isEmpty, totals != agentTotals { agentTotals = totals }
       rows += await topUpRows(client, loaded: rows)
+      if !archiving.isEmpty { rows.removeAll { archiving.contains($0.id) } }
       let currentOwners = await ownersJob ?? owners
       if let active = await activeJob { setLiveStatuses(active) }
       if rows != sessions {
@@ -709,6 +726,7 @@ final class AppModel {
   private func refreshStatus() async {
     guard let client else { return }
     if macHome.isEmpty, case .open(let health)? = try? await client.http.probe() { macHome = health.home }
+    if macHome.isEmpty, let home = try? await client.macHome(), !home.isEmpty { macHome = home }
     guard let status = try? await client.status() else { return }
     hermesVersion = status["version"].stringValue
   }
@@ -760,18 +778,32 @@ final class AppModel {
   }
 
   func archive(_ session: SessionSummary) {
+    archiving.insert(session.id)
     sessions.removeAll { $0.id == session.id }
+    families = SessionGrouping.families(sessions)
     mutate(session, failure: "Could not archive the chat") { client in
       try await client.update(session, archived: true)
+    } done: { [weak self] landed in
+      // A list read that began before the archive landed can still finish after it: keep hiding
+      // the chat a while (the Mac's own list leaves it out from now on).
+      Task { @MainActor [weak self] in
+        if landed { try? await Task.sleep(for: .seconds(30)) }
+        self?.archiving.remove(session.id)
+      }
     }
   }
 
-  private func mutate(_ session: SessionSummary, failure: String, _ work: @escaping @MainActor (HermesClient) async throws -> Void) {
+  private func mutate(
+    _ session: SessionSummary, failure: String, _ work: @escaping @MainActor (HermesClient) async throws -> Void,
+    done: (@MainActor (_ landed: Bool) -> Void)? = nil
+  ) {
     guard let client else { return }
     Task {
       do {
         try await work(client)
+        done?(true)
       } catch {
+        done?(false)
         show("\(failure): \(error.localizedDescription)", kind: .failure)
       }
       await refreshSessions(quiet: true)

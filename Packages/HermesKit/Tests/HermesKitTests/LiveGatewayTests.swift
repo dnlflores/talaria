@@ -35,7 +35,7 @@ enum Live {
       return
     }
     #expect(health.gatewayRunning)
-    #expect(!health.home.isEmpty)
+    #expect(!(try await client.macHome()).isEmpty)
     let sessions = try await client.sessions(recents: 5, messaging: 3, cron: 3)
     for session in sessions {
       #expect(!session.id.isEmpty)

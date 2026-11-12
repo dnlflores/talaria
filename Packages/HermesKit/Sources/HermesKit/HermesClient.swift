@@ -195,6 +195,23 @@ public final class HermesClient: Sendable {
     try await http.json("GET", "/api/status", timeout: 15)
   }
 
+  /// The Mac's home folder, for showing a chat folder there as `~`. Hermes does not report it, but
+  /// the default profile lives in `<home>/.hermes`; empty when it lives somewhere else.
+  public func macHome() async throws -> String {
+    let json = try await http.json("GET", "/api/profiles", timeout: 15)
+    let rows = json["profiles"].array ?? json.array ?? []
+    guard let row = rows.first(where: { $0["is_default"].truthy }) ?? rows.first(where: { $0["name"] == "default" }) else {
+      return ""
+    }
+    return Self.home(fromDefaultProfilePath: row["path"].stringValue)
+  }
+
+  static func home(fromDefaultProfilePath path: String) -> String {
+    let trimmed = path.hasSuffix("/") ? String(path.dropLast()) : path
+    guard trimmed.hasSuffix("/.hermes") else { return "" }
+    return String(trimmed.dropLast("/.hermes".count))
+  }
+
   // MARK: Opening conversations
 
   /// Attaches this socket to a chat on the gateway (the process the desktop app runs its chats

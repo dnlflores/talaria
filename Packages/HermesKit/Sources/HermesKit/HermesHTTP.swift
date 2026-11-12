@@ -12,6 +12,7 @@ public enum GateStatus: Sendable, Equatable {
 
 public struct GateHealth: Sendable, Equatable {
   public var version: String
+  /// `hermes_home` when the status names it; Hermes' own listener leaves it out (see `HermesClient.macHome`).
   public var home: String
   public var gatewayRunning: Bool
 

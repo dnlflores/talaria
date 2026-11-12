@@ -165,6 +165,12 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
     #expect(health.home == "/h" && health.gatewayRunning)
   }
 
+  @Test func theMacsHomeComesFromTheDefaultProfilesFolder() {
+    #expect(HermesClient.home(fromDefaultProfilePath: "/Users/me/.hermes") == "/Users/me")
+    #expect(HermesClient.home(fromDefaultProfilePath: "/Users/me/.hermes/") == "/Users/me")
+    #expect(HermesClient.home(fromDefaultProfilePath: "/opt/hermes-data") == "")
+  }
+
   @Test func theSocketIsAdmittedWithATicketSubprotocol() async throws {
     StubProtocol.reset { request in
       request.url!.path == "/api/auth/ws-ticket" && Self.bearer(request) == "A1"
