@@ -32,6 +32,14 @@ T3 Tools.
   with the elapsed time, the title bar says "Working", and the inbox marks the
   chat. It holds across leaving the chat and the phone sleeping, and also
   covers chats the desktop app is running in its own backend.
+- **Sending while it works:** a message written while a reply runs waits in a
+  queue above the composer instead of cutting in, and goes out as the next turn
+  when the reply ends. "Send now" puts a queued message into the running reply,
+  and the agent answers it right away. Tap a queued message to edit it; Stop
+  pauses the queue. If the phone sleeps first, the queue is handed to the Mac.
+- **Pictures:** pictures sent in a chat show as pictures, from any app (the
+  desktop app, a terminal, the phone), and so do pictures a reply delivers or
+  names by path. Tap one to see it full screen and share it.
 - **Files the chat made:** files a turn writes, edits or hands over (`MEDIA:`)
   are listed under its answer and in the chat's Files list. Text and code open
   in the app; images, PDFs, audio and documents open in Quick Look; Share saves

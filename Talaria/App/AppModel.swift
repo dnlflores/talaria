@@ -277,6 +277,7 @@ final class AppModel {
 
   /// Background: no polling while nobody is looking.
   func wentToBackground() {
+    openChat?.wentToBackground()
     activityTask?.cancel()
     activityTask = nil
     // A turn that starts while the app is away would look as if it started on return.

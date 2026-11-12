@@ -67,6 +67,8 @@ final class ChatModel: Identifiable {
   var draft: String { didSet { app?.preferences.setDraft(draft, for: storedID) } }
   var attachments: [ComposerAttachment] = []
   var sendWhenReady = false
+  /// Messages written while a reply runs. They go out one per turn once it ends, or now on request.
+  private(set) var queue = PromptQueue<ComposerAttachment>()
 
   private weak var app: AppModel?
   private var prepared: LiveSession?
@@ -141,8 +143,14 @@ final class ChatModel: Identifiable {
     return out
   }
   var info: SessionInfo { state.info }
+  /// A reply is running or a message is on its way, so what is sent now waits in the queue.
+  var isBusy: Bool { state.isStreaming || isSending }
+  /// Sending now would queue the message rather than start a turn.
+  var sendQueues: Bool { isBusy && !continuesAsNewVersion }
   var canSend: Bool {
-    guard !isReadOnly, !isSending, !isBranching else { return false }
+    guard !isReadOnly, !isBranching else { return false }
+    // A photo still being shrunk has no bytes yet; it is ready in a moment.
+    if attachments.contains(where: { $0.status == .preparing }) { return false }
     return !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || attachments.contains { $0.isUsable }
   }
   var showsStop: Bool { state.isStreaming && !continuesAsNewVersion && !canSend }
@@ -213,7 +221,26 @@ final class ChatModel: Identifiable {
     var next = state
     next.info.merge(live.info)
     if next.title.isEmpty { next.title = next.info.title }
-    let fresh = TranscriptItem.items(fromHistory: live.messages)
+    var fresh = TranscriptItem.items(fromHistory: live.messages)
+    if !queue.onMac.isEmpty {
+      let texts = queue.onMac.map(\.text)
+      let running = ChatState.normalized(live.inflight["user"].stringValue)
+      if live.isRunning, !running.isEmpty, texts.contains(where: { running.contains(ChatState.normalized($0)) }) {
+        // The reply running now is theirs: the history already holds them in place.
+        _ = queue.takeOnMac()
+      } else if live.isRunning {
+        // Still waiting behind the running reply: the Mac's early copies stay out of the transcript.
+        fresh = TranscriptItem.withoutEarlyQueued(
+          fresh, queued: texts, runningUser: live.inflight["user"].string, turnStartedAt: live.turnStartedAt)
+      } else {
+        // The Mac ran them while the phone was away, or dropped them (a stopped reply clears its
+        // queue). What is not in the transcript comes back to the phone's queue, held.
+        var check = ChatState()
+        check.items = fresh
+        let handed = queue.takeOnMac()
+        queue.returnFromMac(handed.filter { !check.hasUserMessage($0.text) })
+      }
+    }
     if replacingTranscript {
       next.items = fresh
       next.applyInflight(live.inflight, turnStartedAt: live.turnStartedAt, now: now)
@@ -471,6 +498,12 @@ final class ChatModel: Identifiable {
   func handle(_ event: GatewayEvent) {
     lastEventAt = Date()
     var next = state
+    // A turn the Mac starts on its own right after a reply ended is the one for the messages
+    // handed to it while the phone slept.
+    if event.type == "message.start", !next.isStreaming, !queue.onMac.isEmpty {
+      next.beginHandedOverTurn(texts: queue.takeOnMac().map(\.text), now: now)
+      scrollToEnd += 1
+    }
     let effects = next.apply(event: event.type, payload: event.payload, now: now)
     state = next
     for effect in effects {
@@ -506,7 +539,10 @@ final class ChatModel: Identifiable {
   private func streamingChanged() {
     livenessTask?.cancel()
     livenessTask = nil
-    guard state.isStreaming else { return }
+    guard state.isStreaming else {
+      drainQueue()
+      return
+    }
     livenessTask = Task { [weak self] in
       while !Task.isCancelled {
         try? await Task.sleep(for: .seconds(15))
@@ -549,18 +585,34 @@ final class ChatModel: Identifiable {
 
   // MARK: Sending
 
+  /// The composer's send. While a reply runs the message waits in the queue; otherwise it goes now.
   func send() async {
-    guard !isReadOnly, !isSending else { return }
+    guard !isReadOnly else { return }
     if continuesAsNewVersion {
-      if canSend { await continueAsNewVersion(send: true) }
+      if canSend, !isSending { await continueAsNewVersion(send: true) }
       return
     }
+    guard canSend else { return }
     let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
     let picked = attachments.filter(\.isUsable)
-    guard !text.isEmpty || !picked.isEmpty, let client else { return }
-
     draft = ""
     attachments = []
+    if isBusy {
+      queue.enqueue(text: text, attachments: picked, now: now)
+      return
+    }
+    await deliver(text: text, picked: picked, origin: .composer)
+  }
+
+  /// Where a message being delivered came from, which decides where it goes back if it fails.
+  private enum Origin {
+    case composer
+    case queue(PromptQueue<ComposerAttachment>.Entry)
+  }
+
+  /// Starts a turn with this message: shows it as sending, uploads what was picked, submits.
+  private func deliver(text: String, picked: [ComposerAttachment], origin: Origin) async {
+    guard let client else { return }
     var item = TranscriptItem(kind: .user, text: text, timestamp: now)
     item.isPending = true
     item.attachments = picked.map { attachment in
@@ -575,7 +627,10 @@ final class ChatModel: Identifiable {
     defer {
       isSending = false
       uploadStatus = ""
+      drainQueue()
     }
+    let fromQueue: Bool
+    if case .queue = origin { fromQueue = true } else { fromQueue = false }
 
     do {
       var status = ""
@@ -588,7 +643,8 @@ final class ChatModel: Identifiable {
           let full = ([text] + references).filter { !$0.isEmpty }.joined(separator: "\n\n")
           update(itemID) { $0.sentText = full }
           state.beginTurn(now: now)
-          status = try await client.submit(liveID: liveID, profile: profile, text: full)
+          // A queued message must never cut into a reply the Mac is still wrapping up.
+          status = try await client.submit(liveID: liveID, profile: profile, text: full, queued: fromQueue)
           break
         } catch {
           let wrapped = error as? HermesError ?? .transport(error.localizedDescription)
@@ -612,7 +668,7 @@ final class ChatModel: Identifiable {
         $0.timestamp = sentAt
       }
       hasSpoken = true
-      if status == "queued" { app?.show("Queued. It goes out after the current reply.") }
+      if status == "queued", !fromQueue { app?.show("Queued. It goes out after the current reply.") }
       if state.title.isEmpty { state.title = String((text.isEmpty ? picked.first?.name ?? "" : text).prefix(60)) }
       app?.scheduleReload(after: 2.5)
     } catch {
@@ -629,9 +685,17 @@ final class ChatModel: Identifiable {
         $0.isPending = false
         $0.isFailed = true
       }
-      if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { draft = text }
-      attachments = picked + attachments
-      app?.show("Not sent: \(wrapped.localizedDescription)", kind: .failure, seconds: 6)
+      switch origin {
+      case .composer:
+        if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { draft = text }
+        attachments = picked + attachments
+        app?.show("Not sent: \(wrapped.localizedDescription)", kind: .failure, seconds: 6)
+      case .queue(let entry):
+        // Back at the front of the queue, held until sent by hand, so nothing is retried in a loop.
+        queue.restore(entry)
+        queue.pause()
+        app?.show("Not sent: \(wrapped.localizedDescription). It is back in the queue.", kind: .failure, seconds: 6)
+      }
       Task { [weak self] in
         try? await Task.sleep(for: .seconds(6))
         self?.state.items.removeAll { $0.id == itemID && $0.isFailed }
@@ -664,7 +728,13 @@ final class ChatModel: Identifiable {
     return references
   }
 
+  /// Stop the reply. Whatever is queued waits until sent by hand or resumed: stopping means stop.
   func stop() async {
+    queue.pause()
+    await interrupt()
+  }
+
+  private func interrupt() async {
     guard let client else { return }
     do {
       try await ensureLive()
@@ -673,6 +743,114 @@ final class ChatModel: Identifiable {
       state.status = "Stopping"
     } catch {
       app?.show(error.localizedDescription, kind: .failure)
+    }
+  }
+
+  // MARK: Queue
+
+  /// Sends the next queued message once nothing runs.
+  private func drainQueue() {
+    guard !isClosed, !isLoading, !isReadOnly, !continuesAsNewVersion, let entry = queue.next(isBusy: isBusy) else { return }
+    queue.remove(entry.id)
+    Task { await deliver(text: entry.text, picked: entry.attachments, origin: .queue(entry)) }
+  }
+
+  /// "Send now": the running reply takes this message in and answers it. Words go straight into
+  /// the reply (`session.redirect`). Photos need a turn of their own, so the reply stops and this
+  /// message goes first. With nothing running it is simply sent.
+  func sendNow(_ id: UUID) async {
+    guard let entry = queue.entries.first(where: { $0.id == id }), !entry.isDelivering else { return }
+    queue.resume()
+    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    if !isBusy {
+      queue.remove(id)
+      await deliver(text: entry.text, picked: entry.attachments, origin: .queue(entry))
+      return
+    }
+    guard entry.attachments.isEmpty, !entry.text.isEmpty, state.isStreaming else {
+      await goesNext(id)
+      return
+    }
+    queue.setDelivering(id, true)
+    do {
+      try await ensureLive()
+      guard let liveID, let client else { throw HermesError.notConnected }
+      let status = try await client.redirect(liveID: liveID, profile: profile, text: entry.text)
+      switch status {
+      case "redirected":
+        queue.remove(id)
+        var next = state
+        next.insertCorrection(entry.text, now: now)
+        state = next
+        hasSpoken = true
+        scrollToEnd += 1
+      case "queued":
+        // The reply was still starting: the Mac runs this as the very next turn.
+        queue.remove(id)
+        state.items.append(TranscriptItem(kind: .user, text: entry.text, timestamp: now))
+        hasSpoken = true
+        scrollToEnd += 1
+        app?.show("Your Mac takes it right after this reply.")
+      default:
+        queue.setDelivering(id, false)
+        await goesNext(id)
+      }
+    } catch {
+      queue.setDelivering(id, false)
+      let wrapped = error as? HermesError ?? .transport(error.localizedDescription)
+      if wrapped.isConnectionLoss || wrapped == .notConnected {
+        app?.show("Not sent: \(wrapped.localizedDescription)", kind: .failure)
+      } else {
+        // This reply cannot take messages in (an older agent): stop it and send this first.
+        await goesNext(id)
+      }
+    }
+  }
+
+  /// Makes an entry the next to go and ends the reply, so it goes out as soon as the reply stops.
+  private func goesNext(_ id: UUID) async {
+    queue.promote(id)
+    queue.resume()
+    // A reply that already ended without telling us would never hand over to the queue. Finding
+    // that out re-attaches, and the idle chat drains the queue on its own.
+    await confirmStillRunning()
+    guard queue.entries.contains(where: { $0.id == id }) else { return }
+    if state.isStreaming { await interrupt() } else { drainQueue() }
+  }
+
+  /// Takes a queued message back into the composer to change it.
+  func editQueued(_ id: UUID) {
+    guard let entry = queue.remove(id) else { return }
+    let current = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    draft = [entry.text, current].filter { !$0.isEmpty }.joined(separator: "\n\n")
+    attachments = entry.attachments + attachments
+  }
+
+  func deleteQueued(_ id: UUID) {
+    queue.remove(id)
+  }
+
+  func resumeQueue() {
+    queue.resume()
+    drainQueue()
+  }
+
+  /// The app is going to sleep, or this chat is closing, while messages wait for a reply that is
+  /// still running. Hand them to the Mac, which runs them after the reply with this app suspended
+  /// (`prompt.submit` with `queued`). A paused queue stays here: the person stopped the agent.
+  func handOffQueue() async {
+    guard !queue.isEmpty, !queue.isPaused, isBusy, !continuesAsNewVersion, let client, let liveID else { return }
+    for entry in queue.entries {
+      do {
+        let references = try await stage(entry.attachments, liveID: liveID, client: client)
+        let full = ([entry.text] + references).filter { !$0.isEmpty }.joined(separator: "\n\n")
+        _ = try await client.submit(liveID: liveID, profile: profile, text: full, queued: true)
+        // Shown as waiting on the Mac until the Mac starts its turn; not in the transcript yet.
+        queue.moveToMac(entry.id)
+        hasSpoken = true
+      } catch {
+        return
+      }
     }
   }
 
@@ -802,7 +980,44 @@ final class ChatModel: Identifiable {
     livenessTask?.cancel()
     livenessTask = nil
     app?.preferences.setDraft(draft, for: storedID)
+    if !queue.isEmpty {
+      Task {
+        await handOffQueue()
+        keepQueueAsDraft()
+      }
+    }
     if let liveID, hasSpoken { app?.scheduleRelease(liveID: liveID, storedID: storedID) }
+  }
+
+  /// Queued messages that could not go to the Mac (the queue was paused, or the handover failed)
+  /// become the chat's draft, so nothing typed is lost when the chat closes.
+  private func keepQueueAsDraft() {
+    let left = queue.removeAll().map(\.text).filter { !$0.isEmpty }
+    guard !left.isEmpty else { return }
+    draft = ([draft.trimmingCharacters(in: .whitespacesAndNewlines)] + left).filter { !$0.isEmpty }.joined(separator: "\n\n")
+  }
+
+  /// The phone is going to sleep. Messages waiting for the running reply go to the Mac now, or
+  /// they would wait until the app is opened again.
+  func wentToBackground() {
+    guard !queue.isEmpty, !queue.isPaused, isBusy else { return }
+    let task = BackgroundTask()
+    task.id = UIApplication.shared.beginBackgroundTask(withName: "Hand queued messages to the Mac") { task.end() }
+    Task {
+      await handOffQueue()
+      task.end()
+    }
+  }
+}
+
+/// Extra time iOS grants an app that is going to the background, ended once the work is done.
+@MainActor private final class BackgroundTask {
+  var id = UIBackgroundTaskIdentifier.invalid
+
+  func end() {
+    guard id != .invalid else { return }
+    UIApplication.shared.endBackgroundTask(id)
+    id = .invalid
   }
 }
 
@@ -820,7 +1035,8 @@ enum ImagePreparation {
       let full = resized(image, maxSide: 2048)
       guard let jpeg = full.jpegData(compressionQuality: 0.86) else { return nil }
       let base = (name as NSString).deletingPathExtension
-      return Prepared(data: jpeg, name: (base.isEmpty ? "image" : base) + ".jpg", thumbnail: resized(image, maxSide: 160))
+      // The thumbnail is what the message shows until the Mac's copy loads, so it is screen sized.
+      return Prepared(data: jpeg, name: (base.isEmpty ? "image" : base) + ".jpg", thumbnail: resized(image, maxSide: 720))
     }.value
   }
 

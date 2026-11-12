@@ -38,7 +38,7 @@ public struct SessionSummary: Identifiable, Sendable, Hashable {
     id = json["id"].stringValue
     profile = json["profile"].string ?? json["profile_name"].string ?? "default"
     title = json["title"].stringValue
-    preview = json["preview"].stringValue
+    preview = UserContent.preview(json["preview"].stringValue)
     source = json["source"].stringValue.lowercased()
     createdSource = (json["created_source"].string ?? json["source"].stringValue).lowercased()
     model = json["model"].stringValue

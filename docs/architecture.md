@@ -21,6 +21,8 @@ HermesKit (Swift package, no UI)
   ChatState       transcript + live status, advanced by gateway events
   TranscriptLayout  rows the transcript view draws
   FileExtraction  the files a turn wrote, edited or delivered
+  PromptQueue     messages waiting for the running reply
+  UserContent     a user message's words and its `@image:` pictures
   Workspace       cron, kanban and file calls and their models
         │
 MarkdownBlocks    block-level Markdown parser
@@ -185,6 +187,45 @@ now), bots with no chats last.
   On iPad it replaces the inbox in the list column; swapping that column
   makes the split view hide the areas column in portrait, so the shell puts
   all three back.
+
+## Sending while a reply runs
+
+The backend's own answer to a message sent mid-turn is `display.busy_input_mode`,
+`interrupt` by default: the message cuts into the reply. Talaria queues instead,
+on the phone (`PromptQueue`, HermesKit, unit-tested):
+
+- While a reply runs, or a message is on its way, the composer queues. The queue
+  floats above the composer; nothing queued is in the transcript.
+- When the reply ends the oldest entry goes out as the next turn, one per turn,
+  with `prompt.submit {queued: true}`: should the Mac still be wrapping the last
+  reply up, that makes it wait rather than cut in.
+- "Send now" sends a text entry with `session.redirect`. `redirected` means the
+  reply took it in (the model call in flight restarts with it, or it waits for
+  the running step) and the bubble goes where it arrived; the resumed history
+  later stores it as a `steer` row, which is the person's own words. Photos
+  cannot ride a redirect, and an older agent may refuse one: then the entry
+  goes to the front and the reply is stopped, so it goes out next.
+- Stop pauses the queue. Leaving the chat or the app going to the background
+  hands the queue to the Mac (`queued: true`), which runs it after the reply
+  with the phone asleep; what cannot be handed over becomes the chat's draft.
+- The Mac's queue merges text entries into one turn and writes each queued row
+  into the history at once, right after the running turn's message, moving it
+  to the end when its turn starts. So the visible queue stays on the phone, and
+  entries handed over show "On your Mac" in the panel: a resume while the reply
+  still runs leaves their early rows out (`withoutEarlyQueued`), the next turn
+  the Mac starts shows them as its message, and a resume after the reply puts
+  back in the queue (held) whatever the Mac dropped, for a stopped reply clears
+  its queue.
+
+## Pictures
+
+Hermes stores a picture sent with a message as an `@image:<path>` line in the
+message text, plus a `[screenshot]` line where the session store flattened the
+inline picture. `UserContent` lifts the references out (code blocks excepted)
+and drops the placeholder only when a reference was found. Pictures load
+through `/api/fs/download`, decoded straight to screen size and kept in memory
+(`RemoteImageStore`). Picture files a turn produced, delivered (`MEDIA:`) or
+named by path show as pictures under its answer instead of file chips.
 
 ## Files a chat made
 

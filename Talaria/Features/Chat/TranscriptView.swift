@@ -133,7 +133,7 @@ struct TranscriptView: View {
   private func rowView(_ row: TranscriptRow) -> some View {
     switch row {
     case .user(let item):
-      UserBubble(item: item)
+      UserBubble(item: item, profile: chat.profile, storedID: chat.storedID)
     case .answer(let item):
       AnswerView(item: item)
     case .work(let group):
@@ -157,14 +157,22 @@ struct TranscriptView: View {
 
 private struct UserBubble: View {
   let item: TranscriptItem
+  let profile: String
+  let storedID: String
   @Environment(\.palette) private var palette
 
   var body: some View {
     VStack(alignment: .trailing, spacing: 3) {
-      if !item.attachments.isEmpty {
+      if !pictures.isEmpty {
+        PictureGallery(pictures: pictures, profile: profile, storedID: storedID, alignment: .trailing)
+          .opacity(item.isPending ? 0.6 : 1)
+          .padding(.bottom, item.text.isEmpty ? 0 : 3)
+      }
+      let files = item.attachments.filter { $0.kind == .file || $0.thumbnail == nil }
+      if !files.isEmpty {
         HStack(spacing: 6) {
-          ForEach(item.attachments) { attachment in
-            AttachmentThumbnail(name: attachment.name, image: attachment.thumbnail.flatMap(UIImage.init(data:)), isImage: attachment.kind == .image)
+          ForEach(files) { attachment in
+            AttachmentThumbnail(name: attachment.name, image: nil, isImage: attachment.kind == .image)
           }
         }
       }
@@ -196,6 +204,15 @@ private struct UserBubble: View {
     if item.isFailed { return "Not sent" }
     if item.isPending { return "Sending" }
     return Format.clock(item.timestamp)
+  }
+
+  /// Photos picked on this phone show from their local copy until the Mac's copy replaces them.
+  private var pictures: [ChatPicture] {
+    let local = item.attachments.compactMap { attachment -> ChatPicture? in
+      guard attachment.kind == .image, let data = attachment.thumbnail, let image = UIImage(data: data) else { return nil }
+      return .local(id: attachment.id, image: image, name: attachment.name)
+    }
+    return local + item.images.map { .remote(path: $0) }
   }
 }
 

@@ -94,16 +94,31 @@ public struct ChatState: Sendable, Equatable {
   public mutating func applyInflight(_ inflight: JSONValue, turnStartedAt: Double? = nil, now: Double) {
     guard !inflight.isNull else { return }
     let streaming = inflight["streaming"].truthy
+    var anchor: Int?
+    let corrections = (inflight["corrections"].array ?? []).compactMap(\.string).filter { !$0.isEmpty }
+      .map { TranscriptItem.user($0, timestamp: now) }
+    let correctionSignatures = Set(corrections.map(\.signature))
     if let user = inflight["user"].string, !user.isEmpty, inflight["display_kind"].stringValue.isEmpty {
-      let incoming = TranscriptItem(kind: .user, text: user, timestamp: now)
-      let known = items.lastIndex { $0.kind == .user }.map { index in
+      let incoming = TranscriptItem.user(user, timestamp: now)
+      // A message sent into this reply may already sit after the turn's own message.
+      let known = items.lastIndex { $0.kind == .user && !correctionSignatures.contains($0.signature) }.map { index in
         items[index].signature == incoming.signature && isCurrentTurnMessage(at: index, turnStartedAt: turnStartedAt)
       } ?? false
       if !known { items.append(incoming) }
+      anchor = items.lastIndex { $0.kind == .user && $0.signature == incoming.signature }
     }
-    // `assistant` is everything the turn has streamed, the steps already settled included; the
-    // history holds those steps as their own messages, so only what follows them is still open.
-    let turnStart = items.lastIndex { $0.kind == .user }.map { $0 + 1 } ?? 0
+    // Messages sent into this reply while it ran. The history stores them only once the turn ends.
+    let first = anchor ?? items.lastIndex(where: { $0.kind == .user })
+    if let first {
+      for incoming in corrections
+      where !items[first...].contains(where: { $0.kind == .user && $0.signature == incoming.signature }) {
+        items.append(incoming)
+      }
+    }
+    // `assistant` is everything the turn has streamed, the steps already settled included (also
+    // those before a message sent into it); the history holds those steps as their own messages,
+    // so only what follows them is still open.
+    let turnStart = first.map { $0 + 1 } ?? 0
     let settled = items[turnStart...].filter { $0.kind == .assistant }.map(\.text)
     let partial = ChatState.unsettledText(inflight["assistant"].stringValue, settled: settled)
     if !partial.isEmpty || streaming {
@@ -148,6 +163,36 @@ public struct ChatState: Sendable, Equatable {
     preparingTool = nil
     items.append(contentsOf: running)
     return true
+  }
+
+  /// The Mac started the turn for messages handed to its queue: they show as the message that
+  /// started it. Text-only messages queued together run as one turn, joined by blank lines.
+  public mutating func beginHandedOverTurn(texts: [String], now: Double) {
+    let text = texts.filter { !$0.isEmpty }.joined(separator: "\n\n")
+    guard !text.isEmpty else { return }
+    settleStream()
+    items.append(TranscriptItem(kind: .user, text: text, timestamp: now))
+  }
+
+  /// Whether a message with these words is in the transcript, alone or joined with others.
+  public func hasUserMessage(_ text: String) -> Bool {
+    let wanted = ChatState.normalized(text)
+    guard !wanted.isEmpty else { return true }
+    return items.contains { $0.kind == .user && ChatState.normalized($0.text).contains(wanted) }
+  }
+
+  /// Words with runs of whitespace made single spaces, for comparing messages.
+  public static func normalized(_ text: String) -> String {
+    text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+  }
+
+  /// A message the running reply took in mid-turn (`session.redirect` said `redirected`). It goes
+  /// where it arrived: after what has streamed so far, before what the reply does next. The turn
+  /// keeps running.
+  public mutating func insertCorrection(_ text: String, now: Double) {
+    settleStream()
+    preparingTool = nil
+    items.append(TranscriptItem(kind: .user, text: text, timestamp: now))
   }
 
   /// Ends the text being streamed: a step that is done, or nothing if it never got text.

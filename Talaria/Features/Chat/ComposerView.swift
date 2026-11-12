@@ -15,6 +15,10 @@ struct ComposerView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
+      if chat.queue.isShowing {
+        QueuePanel(chat: chat)
+          .transition(.move(edge: .bottom).combined(with: .opacity))
+      }
       if !chat.attachments.isEmpty {
         ScrollView(.horizontal, showsIndicators: false) {
           HStack(spacing: 8) {
@@ -71,6 +75,7 @@ struct ComposerView: View {
     .padding(.horizontal, 12)
     .padding(.top, 6)
     .padding(.bottom, 8)
+    .animation(.snappy(duration: 0.25), value: chat.queue.entries.map(\.id) + chat.queue.onMac.map(\.id))
     .photosPicker(isPresented: $showsPhotos, selection: $photoItems, maxSelectionCount: 6, matching: .images)
     .onChange(of: photoItems) { _, items in
       guard !items.isEmpty else { return }
@@ -93,6 +98,7 @@ struct ComposerView: View {
 
   private var placeholder: String {
     if chat.continuesAsNewVersion { return "Continue in a new version" }
+    if chat.sendQueues { return "Queue a follow-up" }
     return "Ask \(app.title(forProfile: chat.profile))"
   }
 
@@ -122,7 +128,7 @@ struct ComposerView: View {
     }
     .buttonStyle(.plain)
     .disabled(!chat.canSend && !chat.showsStop)
-    .accessibilityLabel(chat.showsStop ? "Stop" : "Send")
+    .accessibilityLabel(chat.showsStop ? "Stop" : chat.sendQueues ? "Queue" : "Send")
   }
 
   private func importFile(_ url: URL) {

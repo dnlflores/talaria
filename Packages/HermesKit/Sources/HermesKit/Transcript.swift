@@ -178,6 +178,8 @@ public struct TranscriptItem: Identifiable, Sendable, Equatable {
   public var isLocal = false
   public var tool: ToolCall?
   public var attachments: [AttachmentChip] = []
+  /// Pictures the message carries, as paths on the Mac (`@image:` lines, lifted out of `text`).
+  public var images: [String] = []
 
   public init(id: UUID = UUID(), kind: Kind, text: String = "", timestamp: Double? = nil) {
     self.id = id
@@ -226,6 +228,18 @@ extension TranscriptItem {
     return parsed["tool_result_metadata"]["inline_diff"].string ?? parsed["inline_diff"].string ?? ""
   }
 
+  /// A user message: what the person wrote, with the pictures it carries lifted out.
+  public static func user(_ raw: String, timestamp: Double?) -> TranscriptItem {
+    let content = UserContent(raw)
+    var item = TranscriptItem(kind: .user, text: content.text, timestamp: timestamp)
+    item.images = content.images
+    return item
+  }
+
+  /// Kinds of user row that hold what the person wrote: a plain message, a skill they invoked, and
+  /// a message they sent into a running reply (`steer`). Other kinds are notices Hermes wrote.
+  static let userKinds: Set<String> = ["", "skill_invocation", "steer"]
+
   /// The display projection `session.resume` returns: user/assistant text plus finished tool rows.
   public static func items(fromHistory messages: [JSONValue]) -> [TranscriptItem] {
     var items: [TranscriptItem] = []
@@ -241,9 +255,14 @@ extension TranscriptItem {
         call.inlineDiff = inlineDiff(message["display_metadata"])
         items.append(.tool(call, timestamp: timestamp))
       case "user":
+        // Hidden rows are scaffolding for the model; the desktop app leaves them out too.
         let displayKind = message["display_kind"].string ?? ""
-        let isSystem = !displayKind.isEmpty && displayKind != "skill_invocation"
-        items.append(TranscriptItem(kind: isSystem ? .system : .user, text: message["text"].stringValue, timestamp: timestamp))
+        if displayKind == "hidden" { continue }
+        if userKinds.contains(displayKind) {
+          items.append(.user(message["text"].stringValue, timestamp: timestamp))
+        } else {
+          items.append(TranscriptItem(kind: .system, text: message["text"].stringValue, timestamp: timestamp))
+        }
       case "assistant":
         var item = TranscriptItem(kind: .assistant, text: message["text"].stringValue, timestamp: timestamp)
         item.reasoning = message["reasoning"].string ?? message["reasoning_content"].string ?? ""
@@ -255,6 +274,36 @@ extension TranscriptItem {
     return items
   }
 
+  /// The Mac writes a message queued behind a running reply into its history at once, right
+  /// after the reply's own message, and moves it to the end when its turn starts. Until then it is
+  /// not part of the conversation: these rows come out, so the running reply stays under the
+  /// message that started it. Only rows with the words of `queued` are touched.
+  public static func withoutEarlyQueued(
+    _ items: [TranscriptItem], queued: [String], runningUser: String?, turnStartedAt: Double?
+  ) -> [TranscriptItem] {
+    let wanted = Set((queued + [queued.joined(separator: "\n\n")]).map(ChatState.normalized).filter { !$0.isEmpty })
+    guard !wanted.isEmpty else { return items }
+    let anchor = runningUser.flatMap { user -> Int? in
+      let signature = TranscriptItem.user(user, timestamp: nil).signature
+      return items.lastIndex { $0.kind == .user && $0.signature == signature && !wanted.contains(ChatState.normalized($0.text)) }
+    }
+    var out: [TranscriptItem] = []
+    for (index, item) in items.enumerated() {
+      let isQueuedWords = item.kind == .user && wanted.contains(ChatState.normalized(item.text))
+      let isAfterTurnStart: Bool
+      if let anchor {
+        isAfterTurnStart = index > anchor
+      } else if let start = turnStartedAt, let stamp = item.timestamp {
+        isAfterTurnStart = stamp > start
+      } else {
+        isAfterTurnStart = false
+      }
+      if isQueuedWords, isAfterTurnStart { continue }
+      out.append(item)
+    }
+    return out
+  }
+
   /// Raw stored rows (`GET /api/sessions/{id}/messages`): assistant rows carry their tool calls,
   /// tool rows carry results. A call with no result row is still running wherever the chat is open.
   public static func items(fromStoredRows rows: [JSONValue]) -> [TranscriptItem] {
@@ -264,9 +313,10 @@ extension TranscriptItem {
       let timestamp = seconds(row["timestamp"])
       switch row["role"].stringValue {
       case "user":
-        let body = text(row["content"])
+        if row["display_kind"].string == "hidden" { continue }
+        let body = UserContent.unwrappingOutOfBand(text(row["content"]))
         if !body.isEmpty, !body.hasPrefix("[System") {
-          items.append(TranscriptItem(kind: .user, text: body, timestamp: timestamp))
+          items.append(.user(body, timestamp: timestamp))
         }
       case "assistant":
         let shown = row["display_content"].string.flatMap { $0.isEmpty ? nil : $0 } ?? text(row["content"])

@@ -234,11 +234,24 @@ public final class HermesClient: Sendable {
   // MARK: Turns
 
   /// Sends a user turn. Returns the backend's status (`queued` when a reply is already running).
+  /// `queued` marks a message that waited for the reply before it: should that reply still be
+  /// settling on the Mac, the backend queues it instead of cutting into the reply.
   @discardableResult
-  public func submit(liveID: String, profile: String, text: String) async throws -> String {
+  public func submit(liveID: String, profile: String, text: String, queued: Bool = false) async throws -> String {
+    var params: [String: JSONValue] = [
+      "session_id": .string(liveID), "profile": .string(profile), "text": .string(text), "surface": "chat",
+    ]
+    if queued { params["queued"] = true }
+    let result = try await rpc.call("prompt.submit", .object(params), timeout: 60)
+    return result["status"].stringValue
+  }
+
+  /// Hands a message to the running reply: the agent takes it in now and answers it (the model
+  /// call in flight restarts with it, or it waits for the step that is running). Answers
+  /// `redirected`, `queued` (the reply was still starting; it goes out next), or `rejected`.
+  public func redirect(liveID: String, profile: String, text: String) async throws -> String {
     let result = try await rpc.call(
-      "prompt.submit",
-      ["session_id": .string(liveID), "profile": .string(profile), "text": .string(text), "surface": "chat"], timeout: 60)
+      "session.redirect", ["session_id": .string(liveID), "profile": .string(profile), "text": .string(text)], timeout: 30)
     return result["status"].stringValue
   }
 

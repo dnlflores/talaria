@@ -5,7 +5,8 @@ import UIKit
 
 // MARK: - In the transcript
 
-/// The files a finished turn wrote, edited or delivered, under its answer. Tapping one opens it.
+/// The files a finished turn wrote, edited or delivered, under its answer. Pictures show as
+/// pictures; other files as chips. Tapping one opens it.
 struct TurnFilesView: View {
   let turn: TurnFiles
   let chat: ChatModel
@@ -14,10 +15,20 @@ struct TurnFilesView: View {
   @State private var showsAll = false
 
   private static let shown = 3
+  private static let picturesShown = 6
 
   var body: some View {
+    let pictures = turn.files.filter { $0.kind == .image }
+    let others = turn.files.filter { $0.kind != .image }
+    let hidden = max(0, pictures.count - Self.picturesShown) + max(0, others.count - Self.shown)
     VStack(alignment: .leading, spacing: 6) {
-      ForEach(turn.files.prefix(Self.shown)) { file in
+      if !pictures.isEmpty {
+        PictureGallery(
+          pictures: pictures.prefix(Self.picturesShown).map { .remote(path: $0.path) },
+          profile: chat.profile, storedID: chat.storedID)
+        .padding(.bottom, others.isEmpty ? 0 : 2)
+      }
+      ForEach(others.prefix(Self.shown)) { file in
         Button {
           opened = file
         } label: {
@@ -26,7 +37,7 @@ struct TurnFilesView: View {
         .buttonStyle(.plain)
         .accessibilityIdentifier("transcript.file")
       }
-      if turn.files.count > Self.shown {
+      if hidden > 0 {
         Button {
           showsAll = true
         } label: {
