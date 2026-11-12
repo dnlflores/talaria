@@ -66,7 +66,7 @@ enum Live {
     let client = HermesClient(endpoint: try #require(Live.base), cookies: InMemoryCookieStore())
     await client.rpc.start()
     try await client.rpc.waitUntilReady(timeout: 30)
-    // No prompt is sent, so no stored conversation is left behind.
+    // The gateway stores a new chat at once, so it is archived at the end.
     let session = try await client.create(profile: Live.profile)
     #expect(!session.liveID.isEmpty)
     #expect(!session.storedID.isEmpty)
@@ -77,6 +77,7 @@ enum Live {
     let catalog = try await client.modelCatalog(liveID: session.liveID, profile: Live.profile)
     #expect(catalog.contains { $0.isAuthenticated && !$0.models.isEmpty })
 
+    try await client.setArchived(storedID: session.storedID, profile: Live.profile, archived: true)
     try await client.detach(liveID: session.liveID, subscriptionID: session.subscriptionID, profile: Live.profile)
     await client.rpc.stop()
   }
