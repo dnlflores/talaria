@@ -1,0 +1,73 @@
+name: Talaria
+
+options:
+  deploymentTarget:
+    iOS: "27.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  defaultConfig: Debug
+
+configFiles:
+  Debug: Config/Base.xcconfig
+  Release: Config/Base.xcconfig
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+packages:
+  HermesKit:
+    path: Packages/HermesKit
+
+targets:
+  Talaria:
+    type: application
+    platform: iOS
+    sources:
+      - path: Talaria
+    dependencies:
+      - package: HermesKit
+        product: HermesKit
+      - package: HermesKit
+        product: MarkdownBlocks
+    settings:
+      base:
+        INFOPLIST_FILE: Talaria/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_USER_SCRIPT_SANDBOXING: YES
+        SWIFT_EMIT_LOC_STRINGS: NO
+
+  TalariaUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: TalariaUITests
+    dependencies:
+      - target: Talaria
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: $(TALARIA_BUNDLE_ID).uitests
+        TEST_TARGET_NAME: Talaria
+        TARGETED_DEVICE_FAMILY: "1"
+
+schemes:
+  Talaria:
+    build:
+      targets:
+        Talaria: all
+        TalariaUITests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - TalariaUITests
+    archive:
+      config: Release

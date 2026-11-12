@@ -1,0 +1,11 @@
+// Copy to Config/Local.xcconfig (untracked) and fill in.
+
+// A bundle id you control.
+TALARIA_BUNDLE_ID = com.example.talaria
+
+// Your Apple Developer team id (Xcode > Settings > Accounts, or developer.apple.com > Membership).
+TALARIA_TEAM_ID = ABCDE12345
+
+// Optional: host[:port] of the hermesdash gate, prefilled on first launch.
+// Leave the scheme out: `//` starts a comment in xcconfig files, and https is assumed.
+TALARIA_DEFAULT_SERVER = your-mac.example.ts.net:8443

@@ -1,0 +1,11 @@
+// Shared build settings. Personal values (signing team, bundle id, your Mac's address)
+// go in Config/Local.xcconfig, which is not tracked. Copy Local.xcconfig.example to start.
+
+TALARIA_BUNDLE_ID = app.talaria.Talaria
+TALARIA_TEAM_ID =
+TALARIA_DEFAULT_SERVER =
+
+#include? "Local.xcconfig"
+
+PRODUCT_BUNDLE_IDENTIFIER = $(TALARIA_BUNDLE_ID)
+DEVELOPMENT_TEAM = $(TALARIA_TEAM_ID)

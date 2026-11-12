@@ -1,0 +1,98 @@
+import SwiftUI
+
+/// The six color families ported from T3 Code's mobile app, each with a light and a dark palette.
+enum ThemeFamily: String, CaseIterable, Identifiable, Sendable {
+  case standard
+  case t3Chat
+  case grove
+  case ocean
+  case ember
+  case iris
+
+  var id: String { rawValue }
+
+  var name: String {
+    switch self {
+    case .standard: return "Default"
+    case .t3Chat: return "Orchid"
+    case .grove: return "Grove"
+    case .ocean: return "Ocean"
+    case .ember: return "Ember"
+    case .iris: return "Iris"
+    }
+  }
+
+  func palette(for scheme: ColorScheme) -> Palette {
+    switch (self, scheme) {
+    case (.standard, .dark): return .standardDark
+    case (.standard, _): return .standardLight
+    case (.t3Chat, .dark): return .t3ChatDark
+    case (.t3Chat, _): return .t3ChatLight
+    case (.grove, .dark): return .groveDark
+    case (.grove, _): return .groveLight
+    case (.ocean, .dark): return .oceanDark
+    case (.ocean, _): return .oceanLight
+    case (.ember, .dark): return .emberDark
+    case (.ember, _): return .emberLight
+    case (.iris, .dark): return .irisDark
+    case (.iris, _): return .irisLight
+    }
+  }
+}
+
+enum AppearanceMode: String, CaseIterable, Identifiable, Sendable {
+  case system
+  case light
+  case dark
+
+  var id: String { rawValue }
+
+  var name: String {
+    switch self {
+    case .system: return "System"
+    case .light: return "Light"
+    case .dark: return "Dark"
+    }
+  }
+
+  var colorScheme: ColorScheme? {
+    switch self {
+    case .system: return nil
+    case .light: return .light
+    case .dark: return .dark
+    }
+  }
+}
+
+extension EnvironmentValues {
+  /// The active palette. Views read colors from here, never from literals.
+  @Entry var palette: Palette = .standardLight
+}
+
+extension Palette {
+  /// Status colors the T3 token set expresses as adaptive ramps; fixed here per scheme.
+  var success: Color { Color(.sRGB, red: 0.06, green: 0.69, blue: 0.45, opacity: 1) }
+  var successSurface: Color { success.opacity(0.14) }
+  var diffAdded: Color { Color(.sRGB, red: 0.06, green: 0.69, blue: 0.45, opacity: 0.16) }
+  var diffRemoved: Color { Color(.sRGB, red: 0.94, green: 0.27, blue: 0.27, opacity: 0.16) }
+}
+
+/// Resolves the palette from the user's family and the effective color scheme, and applies
+/// the app-wide defaults (tint, body font, background).
+struct ThemedRoot<Content: View>: View {
+  let family: ThemeFamily
+  let appearance: AppearanceMode
+  @ViewBuilder var content: Content
+  @Environment(\.colorScheme) private var systemScheme
+
+  var body: some View {
+    let palette = family.palette(for: appearance.colorScheme ?? systemScheme)
+    content
+      .environment(\.palette, palette)
+      .environment(\.font, AppFont.body)
+      .tint(palette.primary)
+      .foregroundStyle(palette.foreground)
+      .background(palette.screen.ignoresSafeArea())
+      .preferredColorScheme(appearance.colorScheme)
+  }
+}

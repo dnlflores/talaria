@@ -1,0 +1,28 @@
+# Xcode
+build/
+DerivedData/
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+*.xcuserstate
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# Personal build settings (signing team, bundle id, server address)
+Config/Local.xcconfig
+
+# Anything that could hold a credential or a private address
+.env
+.env.*
+*.p8
+*.p12
+*.mobileprovision
+password.txt
+.auth.json
+.serve_token
+
+# macOS
+.DS_Store
