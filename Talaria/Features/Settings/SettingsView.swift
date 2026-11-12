@@ -11,7 +11,7 @@ struct SettingsView: View {
     @Bindable var preferences = app.preferences
     ScrollView {
       VStack(alignment: .leading, spacing: 26) {
-        group("Your Mac") {
+        GroupedSection("Your Mac") {
           HStack(spacing: 10) {
             Circle().fill(statusColor).frame(width: 8, height: 8)
             VStack(alignment: .leading, spacing: 2) {
@@ -28,21 +28,21 @@ struct SettingsView: View {
           .padding(.vertical, 13)
           if !app.hermesVersion.isEmpty {
             Hairline().padding(.leading, 16)
-            valueRow("Hermes", app.hermesVersion)
+            ValueRow("Hermes", app.hermesVersion, mono: true)
           }
           Hairline().padding(.leading, 16)
-          valueRow("Bots", "\(app.profiles.count)")
+          ValueRow("Bots", "\(app.profiles.count)")
           Hairline().padding(.leading, 16)
-          actionRow("Sign out", systemImage: "rectangle.portrait.and.arrow.right") {
+          ActionRow("Sign out", systemImage: "rectangle.portrait.and.arrow.right") {
             Task { await app.signOut() }
           }
           Hairline().padding(.leading, 16)
-          actionRow("Use a different Mac", systemImage: "arrow.left.arrow.right", isDestructive: true) {
+          ActionRow("Use a different Mac", systemImage: "arrow.left.arrow.right", isDestructive: true) {
             confirmsForget = true
           }
         }
 
-        group("Appearance") {
+        GroupedSection("Appearance") {
           Picker("Appearance", selection: $preferences.appearance) {
             ForEach(AppearanceMode.allCases) { mode in Text(mode.name).tag(mode) }
           }
@@ -62,8 +62,8 @@ struct SettingsView: View {
           .padding(12)
         }
 
-        group("About") {
-          valueRow("Version", Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
+        GroupedSection("About") {
+          ValueRow("Version", Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
           Hairline().padding(.leading, 16)
           Text("Talaria is a personal client for Hermes Agent by Nous Research. Its colors and layout follow T3 Code's mobile app (MIT). Type is DM Sans (SIL Open Font License).")
             .font(AppFont.label)
@@ -104,45 +104,6 @@ struct SettingsView: View {
     case .closed: return palette.warningForeground
     case .unauthorized: return palette.dangerForeground
     }
-  }
-
-  private func group(_ title: String, @ViewBuilder content: () -> some View) -> some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Text(title.uppercased())
-        .font(AppFont.sans(11, .semibold))
-        .kerning(0.6)
-        .foregroundStyle(palette.foregroundMuted)
-        .padding(.leading, 4)
-      VStack(alignment: .leading, spacing: 0) { content() }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(palette.groupedCard, in: RoundedRectangle(cornerRadius: Metrics.cardRadius, style: .continuous))
-        .clipShape(RoundedRectangle(cornerRadius: Metrics.cardRadius, style: .continuous))
-    }
-  }
-
-  private func valueRow(_ label: String, _ value: String) -> some View {
-    HStack {
-      Text(label).font(AppFont.body).foregroundStyle(palette.foreground)
-      Spacer(minLength: 12)
-      Text(value).font(AppFont.footnote).foregroundStyle(palette.foregroundMuted).lineLimit(1)
-    }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 13)
-  }
-
-  private func actionRow(_ label: String, systemImage: String, isDestructive: Bool = false, action: @escaping () -> Void) -> some View {
-    Button(action: action) {
-      HStack {
-        Text(label).font(AppFont.body)
-        Spacer(minLength: 12)
-        Image(systemName: systemImage).font(.system(size: 14, weight: .medium))
-      }
-      .foregroundStyle(isDestructive ? palette.dangerForeground : palette.primaryText)
-      .padding(.horizontal, 16)
-      .padding(.vertical, 13)
-      .contentShape(Rectangle())
-    }
-    .buttonStyle(RowButtonStyle())
   }
 }
 

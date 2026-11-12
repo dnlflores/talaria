@@ -21,7 +21,12 @@ public struct SessionSummary: Identifiable, Sendable, Hashable {
   public var archived: Bool
   public var parentID: String?
   public var messageCount: Int
+  /// What the agent was doing at `lastActivityAt` during a turn ("executing tool terminal").
+  /// Hermes clears it when the turn ends, so it is empty between turns.
   public var lastActivity: String
+  /// The agent's heartbeat in the shared session store, written by whichever Hermes process runs
+  /// the turn, at least once a minute while it runs.
+  public var lastActivityAt: Double
   public var chatID: String
   public var chatType: String
   public var displayName: String
@@ -49,6 +54,7 @@ public struct SessionSummary: Identifiable, Sendable, Hashable {
     parentID = json["parent_session_id"].string
     messageCount = json["message_count"].int ?? 0
     lastActivity = json["last_activity_description"].stringValue
+    lastActivityAt = json["last_activity_at"].double ?? 0
     chatID = json["chat_id"].stringValue
     chatType = json["chat_type"].stringValue
     displayName = json["display_name"].stringValue
@@ -58,6 +64,18 @@ public struct SessionSummary: Identifiable, Sendable, Hashable {
 
   /// Most recent sign of life, for ordering.
   public var recency: Double { lastActive > 0 ? lastActive : startedAt }
+
+  /// How long a heartbeat counts. Hermes stamps a running turn at least every 60 seconds; a
+  /// process that died mid-turn never clears its label, so an old stamp means nothing is running.
+  public static let heartbeatWindow: Double = 180
+
+  /// A turn is running in this chat in some Hermes process, maybe one this app cannot talk to
+  /// (the desktop app runs its own backend). Read from the shared session store.
+  public func isTurnRunning(now: Double) -> Bool {
+    guard !lastActivity.isEmpty, lastActivityAt > 0 else { return false }
+    let age = now - lastActivityAt
+    return age < SessionSummary.heartbeatWindow && age > -60
+  }
 
   /// Title without the ` #N` suffix the backend gives a branched version.
   public var baseTitle: String { SessionSummary.baseTitle(title) }
@@ -85,6 +103,7 @@ public struct Profile: Identifiable, Sendable, Hashable {
   public var summary: String
   public var isDefault: Bool
   public var hasAvatar: Bool
+  public var skillCount: Int
 
   public init(json: JSONValue) {
     name = json["name"].stringValue
@@ -95,6 +114,7 @@ public struct Profile: Identifiable, Sendable, Hashable {
     summary = json["description"].stringValue
     isDefault = json["is_default"].truthy
     hasAvatar = json["has_avatar"].truthy
+    skillCount = json["skill_count"].int ?? 0
   }
 
   /// The name to show: the bot title, else the display name, else the profile name.

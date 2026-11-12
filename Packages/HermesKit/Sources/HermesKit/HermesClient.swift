@@ -10,6 +10,10 @@ public struct LiveSession: Sendable {
   public let inflight: JSONValue
   public let openRequests: [ServerRequest]
   public let info: JSONValue
+  /// A turn is running in this session right now (thinking, running a tool, or streaming).
+  public let isRunning: Bool
+  /// When that turn started, seconds since 1970.
+  public let turnStartedAt: Double?
 
   init(json: JSONValue, fallbackStoredID: String = "") {
     liveID = json["session_id"].string ?? fallbackStoredID
@@ -17,6 +21,9 @@ public struct LiveSession: Sendable {
     messages = json["messages"].array ?? []
     inflight = json["inflight"]
     info = json["info"]
+    let status = json["status"].stringValue
+    isRunning = json["running"].truthy || ["working", "streaming", "waiting"].contains(status)
+    turnStartedAt = json["turn_started_at"].double
     openRequests = (json["open_requests"].array ?? []).compactMap { item in
       guard let method = item["method"].string, !item["id"].isNull else { return nil }
       return ServerRequest(rawID: item["id"], method: method, params: item["params"])
@@ -72,6 +79,55 @@ public final class HermesClient: Sendable {
       ("recents_limit", String(recents)), ("messaging_limit", String(messaging)), ("cron_limit", String(cron)),
     ])
     return SessionGrouping.rows(fromSidebar: json)
+  }
+
+  /// The few newest chats of every bot: a light look (about 20 KB) at which turns are running,
+  /// including ones another Hermes process runs, which send this app no events.
+  public func recentActivity() async throws -> [SessionSummary] {
+    let json = try await http.json("GET", "/api/profiles/sessions/sidebar", query: [
+      ("recents_limit", "5"), ("messaging_limit", "3"), ("cron_limit", "0"),
+    ], timeout: 15)
+    return SessionGrouping.rows(fromSidebar: json)
+  }
+
+  /// One bot's newest conversations. The inbox load caps rows across all bots, so a quiet bot
+  /// can be missing from it entirely.
+  public func sessions(profile: String, limit: Int) async throws -> [SessionSummary] {
+    let json = try await http.json("GET", "/api/profiles/sessions/sidebar", query: [
+      ("recents_profile", profile), ("recents_limit", String(limit)), ("messaging_limit", "1"), ("cron_limit", "1"),
+    ], timeout: 20)
+    return SessionGrouping.rows(fromSidebar: json)
+  }
+
+  /// How many conversations a bot has on the Mac, counted as the inbox lists them (with at
+  /// least one message, not archived).
+  public func sessionCount(profile: String) async throws -> Int {
+    let json = try await http.json("GET", "/api/sessions", query: [
+      ("profile", profile), ("limit", "0"), ("min_messages", "1"),
+    ], timeout: 15)
+    return json["total"].int ?? 0
+  }
+
+  /// A page of one bot's conversations, newest activity first.
+  public func sessionPage(profile: String, offset: Int, limit: Int = 50) async throws -> (rows: [SessionSummary], total: Int) {
+    let json = try await http.json("GET", "/api/sessions", query: [
+      ("profile", profile), ("limit", String(limit)), ("offset", String(offset)),
+      ("order", "recent"), ("min_messages", "1"),
+    ], timeout: 30)
+    let rows = (json["sessions"].array ?? []).map { row -> SessionSummary in
+      var session = SessionSummary(json: row)
+      if row["profile"].string == nil { session.profile = profile }
+      return session
+    }
+    return (rows, json["total"].int ?? rows.count)
+  }
+
+  /// The newest few stored rows of a conversation, oldest first, without inline images.
+  public func latestMessages(storedID: String, profile: String, limit: Int = 8) async throws -> [JSONValue] {
+    let json = try await http.json("GET", "/api/sessions/\(storedID)/messages", query: [
+      ("profile", profile), ("limit", String(limit)), ("order", "latest"), ("inline_images", "false"),
+    ], timeout: 20)
+    return json["messages"].array ?? []
   }
 
   public func profiles() async throws -> [Profile] {
@@ -149,6 +205,16 @@ public final class HermesClient: Sendable {
     } catch where keepModel {
       return LiveSession(json: try await rpc.call("session.branch_stored", params(withModel: false), timeout: 90))
     }
+  }
+
+  /// One stored conversation's row, with its heartbeat.
+  public func session(storedID: String, profile: String) async throws -> SessionSummary {
+    var json = try await http.json("GET", "/api/sessions/\(storedID)", query: [("profile", profile)], timeout: 15)
+    if json["profile"].string == nil, case .object(var fields) = json {
+      fields["profile"] = .string(profile)
+      json = .object(fields)
+    }
+    return SessionSummary(json: json)
   }
 
   /// The stored transcript, for conversations this client cannot attach to.

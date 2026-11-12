@@ -47,4 +47,6 @@ enum Metrics {
   static let bubbleRadius: CGFloat = 20
   static let controlRadius: CGFloat = 14
   static let hairline: CGFloat = 1 / 3
+  /// Widest a column of reading text gets on iPad; wider lines are hard to follow.
+  static let readableWidth: CGFloat = 760
 }

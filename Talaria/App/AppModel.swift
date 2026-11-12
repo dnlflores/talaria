@@ -5,7 +5,35 @@ import UIKit
 
 enum Route: Hashable {
   case chat(profile: String, storedID: String)
-  case settings
+  /// Every conversation of one bot (iPhone; iPad shows it in the list column).
+  case agent(profile: String)
+}
+
+/// The top-level areas: a tab bar on iPhone, a sidebar on iPad.
+enum AppTab: String, Hashable, CaseIterable, Identifiable {
+  case chats, bots, kanban, cron, settings
+
+  var id: String { rawValue }
+
+  var title: String {
+    switch self {
+    case .chats: return "Chats"
+    case .bots: return "Bots"
+    case .kanban: return "Kanban"
+    case .cron: return "Cron"
+    case .settings: return "Settings"
+    }
+  }
+
+  var symbol: String {
+    switch self {
+    case .chats: return "bubble.left.and.bubble.right"
+    case .bots: return "person.2"
+    case .kanban: return "rectangle.split.3x1"
+    case .cron: return "clock"
+    case .settings: return "gearshape"
+    }
+  }
 }
 
 struct ToastMessage: Identifiable, Equatable {
@@ -42,8 +70,28 @@ final class AppModel {
   private(set) var sessionsError: String?
   private(set) var hermesVersion = ""
   private(set) var macHome = ""
+  /// How many conversations each bot has on the Mac, for "N more sessions".
+  private(set) var agentTotals: [String: Int] = [:]
+  /// The latest reply of each bot's lead conversation, by stored id.
+  private(set) var headPreviews: [String: String] = [:]
+  @ObservationIgnored private var headPreviewStamps: [String: Double] = [:]
+  /// When a chat started working, for chats seen going from idle to working. A chat already
+  /// working when the app first looked has no entry: its start is not known.
+  private(set) var workingSince: [String: Double] = [:]
+  @ObservationIgnored private var workingSnapshot: Set<String>?
 
+  var tab: AppTab = .chats
+  /// The chat stack. On iPhone it sits on top of the inbox; on iPad its last entry is the chat
+  /// shown beside the inbox.
   var path: [Route] = []
+  /// The bot whose conversations the iPad list column shows instead of the inbox.
+  var splitAgent: String?
+  /// The Chats area shows the inbox and a chat side by side (iPad, regular width).
+  var usesSplitLayout = false
+  /// What the Bots, Kanban and Cron areas have open.
+  private(set) var areas = AreaState()
+  /// Live session status by stored id (`working`, `waiting`, `idle`), from the backend's active list.
+  private(set) var liveStatuses: [String: String] = [:]
   private(set) var toast: ToastMessage?
   /// Approval, sudo and secret requests waiting for an answer; the first one is on screen.
   private(set) var prompts: [ServerRequest] = []
@@ -57,6 +105,7 @@ final class AppModel {
   private let cookies = KeychainCookieStore(service: "talaria.gate-session")
   private var pump: Task<Void, Never>?
   private var reloadTask: Task<Void, Never>?
+  @ObservationIgnored private var activityTask: Task<Void, Never>?
   private var toastTask: Task<Void, Never>?
   private var releaseTasks: [String: Task<Void, Never>] = [:]
   private var isLoadingSessions = false
@@ -152,9 +201,20 @@ final class AppModel {
     if let client { Task { await client.rpc.stop() } }
     client = nil
     path = []
+    tab = .chats
+    splitAgent = nil
+    agentTotals = [:]
+    headPreviews = [:]
+    headPreviewStamps = [:]
+    workingSince = [:]
+    workingSnapshot = nil
+    areas = AreaState()
+    activityTask?.cancel()
+    activityTask = nil
     openChat = nil
     chatCache = [:]
     sessions = []
+    liveStatuses = [:]
     families = [:]
     owners = [:]
     profiles = []
@@ -180,6 +240,7 @@ final class AppModel {
     Task { await client.rpc.start() }
     Task { await refreshSessions() }
     Task { await refreshStatus() }
+    startActivityProbe()
   }
 
   /// Foreground: the socket has usually died while the phone slept.
@@ -187,6 +248,63 @@ final class AppModel {
     guard phase == .ready, let client else { return }
     Task { await client.rpc.kick() }
     Task { await refreshSessions(quiet: true) }
+    startActivityProbe()
+  }
+
+  /// Background: no polling while nobody is looking.
+  func wentToBackground() {
+    activityTask?.cancel()
+    activityTask = nil
+    // A turn that starts while the app is away would look as if it started on return.
+    workingSnapshot = nil
+    workingSince = [:]
+  }
+
+  // MARK: Turns other Hermes processes run
+
+  /// The desktop app and terminals run chats in their own Hermes process, which sends this app no
+  /// events. Their heartbeat lands in the shared session store, so look at the newest chats now
+  /// and then while the app is open.
+  private func startActivityProbe() {
+    guard activityTask == nil else { return }
+    activityTask = Task { [weak self] in
+      while !Task.isCancelled {
+        try? await Task.sleep(for: .seconds(10))
+        guard let self, !Task.isCancelled else { return }
+        await self.probeActivity()
+      }
+    }
+  }
+
+  private func probeActivity() async {
+    guard phase == .ready, let client, !isLoadingSessions, let recent = try? await client.recentActivity() else { return }
+    var next = sessions
+    var unknown = false
+    for row in recent {
+      guard let index = next.firstIndex(where: { $0.id == row.id }) else {
+        unknown = true
+        continue
+      }
+      next[index].lastActivity = row.lastActivity
+      next[index].lastActivityAt = row.lastActivityAt
+      next[index].lastActive = max(next[index].lastActive, row.lastActive)
+    }
+    if next != sessions {
+      sessions = next
+      families = SessionGrouping.families(next)
+    }
+    // A chat started elsewhere since the last full load.
+    if unknown { scheduleReload() }
+    if let chat = openChat, let row = next.first(where: { $0.id == chat.storedID }) { chat.rowChanged(row) }
+    trackWorking()
+  }
+
+  /// A turn is running in this chat in a Hermes process this app's backend does not know about.
+  /// `fresh` is a just-fetched row; the inbox copy is at most a few seconds old.
+  func isRunningElsewhere(_ storedID: String, row fresh: SessionSummary? = nil) -> Bool {
+    guard let row = fresh ?? row(storedID), row.isTurnRunning(now: Date().timeIntervalSince1970) else { return false }
+    let here = liveStatuses[storedID]
+    return here != "working" && here != "waiting"
   }
 
   // MARK: Incoming
@@ -296,9 +414,15 @@ final class AppModel {
     isLoadingSessions = true
     defer { isLoadingSessions = false }
     async let ownersJob = try? client.owners()
+    async let activeJob = try? client.activeSessions()
+    async let totalsJob = sessionTotals(client)
     do {
-      let rows = try await client.sessions()
+      var rows = try await client.sessions()
+      let totals = await totalsJob
+      if !totals.isEmpty, totals != agentTotals { agentTotals = totals }
+      rows += await topUpRows(client, loaded: rows)
       let currentOwners = await ownersJob ?? owners
+      if let active = await activeJob { setLiveStatuses(active) }
       if rows != sessions {
         sessions = rows
         families = SessionGrouping.families(rows)
@@ -307,6 +431,7 @@ final class AppModel {
       sessionsError = nil
       hasLoadedSessions = true
       if let chat = openChat, let row = rows.first(where: { $0.id == chat.storedID }) { chat.rowChanged(row) }
+      trackWorking()
     } catch HermesError.loginRequired {
       connection = .unauthorized
       if phase == .ready {
@@ -315,10 +440,158 @@ final class AppModel {
       }
     } catch {
       _ = await ownersJob
+      _ = await activeJob
+      _ = await totalsJob
       sessionsError = error.localizedDescription
       hasLoadedSessions = true
       if !quiet { show("Could not load chats: \(error.localizedDescription)", kind: .failure) }
     }
+  }
+
+  func setLiveStatuses(_ active: [JSONValue]) {
+    var fresh: [String: String] = [:]
+    for entry in active {
+      let key = entry["session_key"].stringValue
+      let status = entry["status"].stringValue.lowercased()
+      guard !key.isEmpty, !status.isEmpty else { continue }
+      // Several live copies of one chat: a working one wins over an idle one.
+      if fresh[key] == nil || status == "working" || status == "waiting" { fresh[key] = status }
+    }
+    if fresh != liveStatuses { liveStatuses = fresh }
+    // A running reply may not announce its end to this socket (another client started it):
+    // look again shortly while anything is working, so "Working" does not linger.
+    if fresh.values.contains(where: { $0 == "working" || $0 == "waiting" }) { scheduleReload(after: 4) }
+    trackWorking()
+  }
+
+  // MARK: Bots in the inbox
+
+  /// Every bot's conversation count, read in parallel. A bot whose count fails is left out.
+  private func sessionTotals(_ client: HermesClient) async -> [String: Int] {
+    let names = profiles.map(\.name)
+    return await withTaskGroup(of: (String, Int?).self) { group in
+      for name in names { group.addTask { (name, try? await client.sessionCount(profile: name)) } }
+      var out: [String: Int] = [:]
+      for await (name, count) in group { if let count { out[name] = count } }
+      return out
+    }
+  }
+
+  /// The inbox load caps rows across all bots, so a quiet bot can be missing from it. Fetch the
+  /// newest few of each bot that has fewer than a lead and its recent chats.
+  private func topUpRows(_ client: HermesClient, loaded: [SessionSummary]) async -> [SessionSummary] {
+    let wanted = AgentGrouping.maxRecent + 1
+    let counts = Dictionary(grouping: loaded, by: \.profile).mapValues(\.count)
+    let short = profiles.map(\.name).filter { name in
+      let have = counts[name] ?? 0
+      return have < wanted && have < (agentTotals[name] ?? wanted)
+    }
+    guard !short.isEmpty else { return [] }
+    let known = Set(loaded.map(\.id))
+    let fetched = await withTaskGroup(of: [SessionSummary].self) { group in
+      for name in short { group.addTask { (try? await client.sessions(profile: name, limit: wanted)) ?? [] } }
+      var out: [SessionSummary] = []
+      for await rows in group { out += rows }
+      return out
+    }
+    var seen = known
+    return fetched.filter { seen.insert($0.id).inserted }
+  }
+
+  /// The inbox grouped by bot.
+  func agentGroups(query: String) -> [AgentGroup] {
+    var titles: [String: String] = [:]
+    for profile in profiles { titles[profile.name] = profile.title }
+    titles["default"] = titles["default"] ?? title(forProfile: "default")
+    var live = workingIDs()
+    live.formUnion(waitingOnYou)
+    live.formUnion(liveStatuses.filter { $0.value == "waiting" }.map(\.key))
+    return AgentGrouping.groups(
+      sessions: sessions, profiles: orderedProfileNames, families: families, totals: agentTotals,
+      titles: titles, query: query, isLive: { live.contains($0) }, now: Date().timeIntervalSince1970)
+  }
+
+  /// Every chat with a reply running now: the same rule as `isWorking`, for all rows at once.
+  private func workingIDs() -> Set<String> {
+    let now = Date().timeIntervalSince1970
+    var ids = Set(liveStatuses.filter { $0.value == "working" }.map(\.key))
+    for session in sessions where session.isTurnRunning(now: now) { ids.insert(session.id) }
+    if let chat = openChat, chat.activity != nil { ids.insert(chat.storedID) }
+    return ids
+  }
+
+  /// Ties in the inbox break with the default bot first, then by name.
+  private var orderedProfileNames: [String] {
+    profiles.sorted { a, b in
+      if a.isDefault != b.isDefault { return a.isDefault }
+      return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
+    }.map(\.name)
+  }
+
+  /// A question or approval from this chat is waiting for an answer.
+  func needsYou(_ storedID: String) -> Bool {
+    waitingOnYou.contains(storedID) || liveStatuses[storedID] == "waiting"
+  }
+
+  /// Shows every conversation of a bot.
+  func showAgent(_ profile: String) {
+    if usesSplitLayout {
+      splitAgent = profile
+    } else {
+      path.append(.agent(profile: profile))
+    }
+  }
+
+  /// Loads the latest reply of each lead conversation that changed since it was last read.
+  func loadHeadPreviews(_ heads: [SessionSummary]) async {
+    guard let client else { return }
+    let stale = heads.filter { headPreviewStamps[$0.id] != $0.recency }
+    guard !stale.isEmpty else { return }
+    for head in stale { headPreviewStamps[head.id] = head.recency }
+    let found = await withTaskGroup(of: (String, String?).self) { group in
+      for head in stale {
+        group.addTask {
+          // A busy turn's newest rows are often all tool calls; 16 usually reaches a reply, and
+          // one wider read covers a long run of calls.
+          var text: String?
+          for limit in [16, 48] where text == nil {
+            guard let rows = try? await client.latestMessages(storedID: head.id, profile: head.profile, limit: limit) else { break }
+            text = PreviewText.lastReply(fromStoredRows: rows)
+            if rows.count < limit { break }
+          }
+          return (head.id, text)
+        }
+      }
+      var out: [String: String] = [:]
+      for await (id, text) in group { if let text { out[id] = text } }
+      return out
+    }
+    for (id, text) in found where headPreviews[id] != text { headPreviews[id] = text }
+  }
+
+  /// When the running turn in this chat began, if known.
+  func workingStart(_ storedID: String) -> Double? {
+    if let chat = openChat, chat.storedID == storedID, let start = chat.turnStartedAt { return start }
+    return workingSince[storedID]
+  }
+
+  /// Notes chats that went from idle to working since the last look, for "Working 3m".
+  private func trackWorking() {
+    let now = Date().timeIntervalSince1970
+    let current = workingIDs()
+    if let previous = workingSnapshot {
+      for id in current.subtracting(previous) where workingSince[id] == nil { workingSince[id] = now }
+    }
+    for id in workingSince.keys where !current.contains(id) { workingSince[id] = nil }
+    workingSnapshot = current
+  }
+
+  /// A reply is running in this chat right now, as the backend or the open chat reports it.
+  func isWorking(_ storedID: String) -> Bool {
+    if let chat = openChat, chat.storedID == storedID, chat.activity != nil { return true }
+    if liveStatuses[storedID] == "working" { return true }
+    // Running in another Hermes process (the desktop app, a terminal): its heartbeat says so.
+    return row(storedID)?.isTurnRunning(now: Date().timeIntervalSince1970) == true
   }
 
   @discardableResult
@@ -344,9 +617,16 @@ final class AppModel {
     }
   }
 
+  func refreshProfilesNow() async {
+    await refreshProfiles()
+  }
+
   private func refreshProfiles() async {
     guard let client, let list = try? await client.profiles() else { return }
+    let added = Set(list.map(\.name)) != Set(profiles.map(\.name))
     profiles = list
+    // Counts and the per-bot top-up are read per bot, so a changed bot list needs a reload.
+    if added { scheduleReload(after: 0.3) }
     for profile in list where profile.hasAvatar && avatars[profile.name] == nil {
       Task {
         if let data = try? await client.avatar(profile: profile.name), let image = UIImage(data: data) {
@@ -440,7 +720,29 @@ final class AppModel {
   }
 
   func open(_ session: SessionSummary) {
-    path.append(.chat(profile: session.profile, storedID: session.id))
+    // A row from a bot's full list may be older than the inbox load; the chat needs its
+    // source to know whether it can reply.
+    if row(session.id) == nil {
+      sessions.append(session)
+      families = SessionGrouping.families(sessions)
+    }
+    show(.chat(profile: session.profile, storedID: session.id))
+  }
+
+  /// Opens a chat from any area (a bot's page, a cron run, a kanban card) in the Chats area.
+  func openChat(profile: String, storedID: String) {
+    tab = .chats
+    path = [.chat(profile: profile, storedID: storedID)]
+  }
+
+  /// The stored id of the chat on screen, for marking it in the inbox on iPad.
+  var selectedStoredID: String? {
+    guard case .chat(_, let storedID)? = path.last else { return nil }
+    return storedID
+  }
+
+  private func show(_ route: Route) {
+    if usesSplitLayout { path = [route] } else { path.append(route) }
   }
 
   /// Starts an empty conversation with a bot and opens it. Nothing is stored until the first message.
@@ -453,7 +755,8 @@ final class AppModel {
       let live = try await client.create(profile: profile, options: options)
       preferences.lastProfile = profile
       chatCache[live.storedID] = ChatModel(app: self, profile: profile, storedID: live.storedID, row: nil, live: live)
-      path.append(.chat(profile: profile, storedID: live.storedID))
+      tab = .chats
+      show(.chat(profile: profile, storedID: live.storedID))
     } catch {
       show("Could not start a chat: \(error.localizedDescription)", kind: .failure)
     }
@@ -467,11 +770,17 @@ final class AppModel {
 
   func showVersion(profile: String, storedID: String) {
     let route = Route.chat(profile: profile, storedID: storedID)
-    if let last = path.indices.last, case .chat = path[last] {
+    if let last = path.indices.last {
       path[last] = route
     } else {
       path.append(route)
     }
+  }
+
+  /// Makes a model for a chat that was created elsewhere (a bot's standing chat) and opens it.
+  func openPrepared(_ live: LiveSession, profile: String) {
+    chatCache[live.storedID] = ChatModel(app: self, profile: profile, storedID: live.storedID, row: nil, live: live)
+    openChat(profile: profile, storedID: live.storedID)
   }
 
   func chatAppeared(_ chat: ChatModel) {

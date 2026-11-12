@@ -7,13 +7,43 @@ import Foundation
 /// implementation this app was ported from.
 public struct ChatState: Sendable, Equatable {
   public var items: [TranscriptItem] = []
-  public var isStreaming = false
+  /// A turn is running on the Mac: the model is thinking, a tool is running, or the answer is streaming.
+  public var isStreaming = false {
+    didSet { if !isStreaming { turnStartedAt = nil } }
+  }
   /// The short "what it is doing" line the backend sends between tokens.
   public var status = ""
   public var info = SessionInfo()
   public var title = ""
+  /// When the running turn started (seconds since 1970), for the elapsed time on screen.
+  public var turnStartedAt: Double?
 
   public init() {}
+
+  /// What the running turn is doing right now, or `nil` when no turn runs.
+  public var activity: TurnActivity? {
+    guard isStreaming else { return nil }
+    if items.contains(where: { $0.tool?.pendingRequest != nil }) { return .waiting }
+    guard let last = items.last else { return .thinking }
+    if let tool = last.tool, !tool.isDone { return .running(tool) }
+    if last.kind == .assistant, last.isStreaming, !last.text.isEmpty { return .writing }
+    return .thinking
+  }
+
+  /// Marks a turn as running from `now`, keeping an earlier start when one is known.
+  public mutating func beginTurn(now: Double) {
+    isStreaming = true
+    if turnStartedAt == nil { turnStartedAt = now }
+  }
+
+  /// Applies what `session.resume` says about a turn that is already running. The inflight
+  /// snapshot only covers streamed text, so a turn that is running a tool can arrive with no
+  /// inflight at all; `running` is the authority.
+  public mutating func applyLiveStatus(isRunning: Bool, startedAt: Double?, now: Double) {
+    guard isRunning else { return }
+    beginTurn(now: now)
+    if let startedAt, startedAt > 0, startedAt <= now + 5 { turnStartedAt = startedAt }
+  }
 
   /// Things the caller should do in response to an event.
   public enum Effect: Sendable, Equatable {
@@ -46,15 +76,21 @@ public struct ChatState: Sendable, Equatable {
 
   /// Adds the turn that was already running when the session was resumed.
   ///
-  /// `skippingKnownUser` is for reconciling: the in-flight user message may already be on
-  /// screen, so it is added only when the last user message differs.
-  public mutating func applyInflight(_ inflight: JSONValue, now: Double, skippingKnownUser: Bool = false) {
+  /// The backend stores the user's message when the turn starts, so it is usually in the
+  /// transcript already: it is added only when the last user message differs or was
+  /// already answered (the same words sent again).
+  /// - Parameter turnStartedAt: when the running turn began, from `session.resume`. It tells the
+  ///   turn's own message, which the backend stores as the turn starts, from an earlier message
+  ///   with the same words.
+  public mutating func applyInflight(_ inflight: JSONValue, turnStartedAt: Double? = nil, now: Double) {
     guard !inflight.isNull else { return }
     let streaming = inflight["streaming"].truthy
     if let user = inflight["user"].string, !user.isEmpty, inflight["display_kind"].stringValue.isEmpty {
       let incoming = TranscriptItem(kind: .user, text: user, timestamp: now)
-      let lastUser = items.last { $0.kind == .user }
-      if !skippingKnownUser || lastUser?.signature != incoming.signature { items.append(incoming) }
+      let known = items.lastIndex { $0.kind == .user }.map { index in
+        items[index].signature == incoming.signature && isCurrentTurnMessage(at: index, turnStartedAt: turnStartedAt)
+      } ?? false
+      if !known { items.append(incoming) }
     }
     let partial = inflight["assistant"].stringValue
     if !partial.isEmpty || streaming {
@@ -62,7 +98,19 @@ public struct ChatState: Sendable, Equatable {
       item.isStreaming = streaming
       items.append(item)
     }
-    isStreaming = streaming
+    if streaming { beginTurn(now: now) } else { isStreaming = false }
+  }
+
+  /// Whether the user message at `index` is the one the running turn answers.
+  private func isCurrentTurnMessage(at index: Int, turnStartedAt: Double?) -> Bool {
+    if let start = turnStartedAt, let sent = items[index].timestamp { return sent >= start - 5 }
+    // No start time: a plain finished reply after it means that message was answered and the
+    // turn is a new one. Commentary between tool calls is followed by tool rows, so a turn
+    // that has used tools is still the same turn.
+    let after = items[(index + 1)...]
+    guard let last = after.last else { return true }
+    let answered = last.kind == .assistant && !last.text.isEmpty && !last.isStreaming
+    return !answered || after.contains { $0.kind == .tool }
   }
 
   // MARK: Events
@@ -72,21 +120,27 @@ public struct ChatState: Sendable, Equatable {
     switch type {
     case "message.start":
       _ = ensureStream(now: now)
-      isStreaming = true
+      beginTurn(now: now)
       status = ""
 
     case "message.delta":
       let index = ensureStream(now: now)
       items[index].text += payload["text"].stringValue
-      isStreaming = true
+      beginTurn(now: now)
       status = ""
 
     case "reasoning.delta":
       let index = ensureStream(now: now)
       items[index].reasoning += payload["text"].stringValue
+      beginTurn(now: now)
 
     case "thinking.delta":
       status = payload["text"].stringValue
+      if !status.isEmpty { beginTurn(now: now) }
+
+    case "tool.generating", "tool.progress":
+      // The model is drafting a tool call, or a running tool reported progress: work is under way.
+      beginTurn(now: now)
 
     case "message.interim":
       let text = payload["text"].stringValue
@@ -96,6 +150,7 @@ public struct ChatState: Sendable, Equatable {
       } else if !text.isEmpty {
         items.append(TranscriptItem(kind: .assistant, text: text, timestamp: now))
       }
+      beginTurn(now: now)
 
     case "tool.start":
       if let index = streamIndex {
@@ -110,6 +165,7 @@ public struct ChatState: Sendable, Equatable {
         context: payload["context"].stringValue, args: payload["args"])
       items.append(.tool(call, timestamp: now))
       status = ""
+      beginTurn(now: now)
 
     case "tool.complete":
       let callID = payload["tool_id"].scalarText ?? ""
@@ -213,7 +269,7 @@ public struct ChatState: Sendable, Equatable {
   /// When the fresh copy only extends what we have, the new tail is appended and existing
   /// items keep their identity (so the view does not re-render). A real divergence (undo,
   /// compression, edits from another device) replaces the settled items once.
-  public mutating func reconcile(fresh: [TranscriptItem], inflight: JSONValue, now: Double) {
+  public mutating func reconcile(fresh: [TranscriptItem], inflight: JSONValue, turnStartedAt: Double? = nil, now: Double) {
     if let index = streamIndex { items.remove(at: index) }
     let settled = items.filter { !$0.isPending && !$0.isLocal }
     var common = 0
@@ -239,7 +295,7 @@ public struct ChatState: Sendable, Equatable {
       items = fresh + pending.filter { !$0.hasLanded }
     }
     syncTools(with: fresh)
-    applyInflight(inflight, now: now, skippingKnownUser: true)
+    applyInflight(inflight, turnStartedAt: turnStartedAt, now: now)
     if inflight.isNull { isStreaming = false }
   }
 
@@ -307,5 +363,30 @@ public struct ChatState: Sendable, Equatable {
     tool.answers = recorded
     items[index].tool = tool
     return (request, ["answers": .object(answers)])
+  }
+}
+
+/// What a running turn is doing, in the words the transcript shows.
+public enum TurnActivity: Sendable, Equatable {
+  /// The model is working out what to do next.
+  case thinking
+  /// A tool call has started and not finished.
+  case running(ToolCall)
+  /// The answer is streaming in.
+  case writing
+  /// The agent asked a question and is waiting for the answer.
+  case waiting
+
+  /// What a turn is doing, read from its stored transcript. For a chat another Hermes process is
+  /// running, where no events reach this app: a tool call without a result is still running.
+  public static func inferred(from items: [TranscriptItem]) -> TurnActivity {
+    guard let last = items.last else { return .thinking }
+    if let tool = last.tool, !tool.isDone { return tool.isClarify ? .waiting : .running(tool) }
+    return .thinking
+  }
+
+  /// When the running turn began: the time of the last thing the user sent.
+  public static func turnStart(in items: [TranscriptItem]) -> Double? {
+    items.last { $0.kind == .user }?.timestamp
   }
 }

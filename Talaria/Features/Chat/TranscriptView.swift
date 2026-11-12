@@ -50,15 +50,18 @@ struct TranscriptView: View {
           ForEach(rows.suffix(visibleLimit)) { row in
             rowView(row).id(row.id)
           }
-          if showsLiveStatus {
-            LiveStatus(text: chat.status.isEmpty ? "Thinking" : chat.status)
+          if let activity = chat.activity {
+            WorkingRow(activity: activity, startedAt: chat.turnStartedAt)
+              .transition(.opacity)
           }
         }
       }
+      .animation(.easeInOut(duration: 0.2), value: chat.isStreaming)
       .padding(.horizontal, Metrics.screenPadding)
       .padding(.top, 12)
       .padding(.bottom, 16)
-      .frame(maxWidth: .infinity, alignment: .leading)
+      .frame(maxWidth: Metrics.readableWidth, alignment: .leading)
+      .frame(maxWidth: .infinity)
     }
     .defaultScrollAnchor(.bottom, for: .initialOffset)
     .scrollPosition($position)
@@ -126,16 +129,6 @@ struct TranscriptView: View {
     }
   }
 
-  private var showsLiveStatus: Bool {
-    // A line of status under the transcript while a turn runs and nothing else on screen says so.
-    guard chat.isStreaming else { return false }
-    switch chat.rows.last {
-    case .work(let group): return !group.isLive || !chat.status.isEmpty
-    case .answer(let item): return !item.isStreaming
-    default: return true
-    }
-  }
-
   @ViewBuilder
   private func rowView(_ row: TranscriptRow) -> some View {
     switch row {
@@ -154,6 +147,8 @@ struct TranscriptView: View {
       }
     case .system(let item):
       SystemNote(text: item.text)
+    case .files(let turn):
+      TurnFilesView(turn: turn, chat: chat)
     }
   }
 }
@@ -183,6 +178,7 @@ private struct UserBubble: View {
           .padding(.vertical, 10)
           .background(palette.userBubble, in: RoundedRectangle(cornerRadius: Metrics.bubbleRadius, style: .continuous))
           .opacity(item.isPending ? 0.6 : 1)
+          .accessibilityIdentifier("transcript.user")
       }
       HStack(spacing: 0) {
         Text(meta)
@@ -241,7 +237,8 @@ private struct AnswerView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 4) {
-      MarkdownView(text: item.text)
+      // MEDIA: lines become file chips under the turn, so the answer does not repeat them as text.
+      MarkdownView(text: item.isStreaming ? item.text : FileExtraction.hidingMediaLines(item.text))
         .textSelection(.enabled)
         .accessibilityIdentifier("transcript.answer")
       if !item.isStreaming {
@@ -290,13 +287,10 @@ private struct WorkLogView: View {
     VStack(alignment: .leading, spacing: 10) {
       Button(action: toggle) {
         HStack(spacing: 5) {
-          if group.isLive {
-            ShimmerText(text: group.label)
-          } else {
-            Text(group.label)
-              .font(AppFont.label)
-              .foregroundStyle(group.hasError ? palette.dangerForeground : palette.foregroundMuted)
-          }
+          // A running turn's progress is told by the working row at the foot of the transcript.
+          Text(group.label)
+            .font(AppFont.label)
+            .foregroundStyle(group.hasError ? palette.dangerForeground : palette.foregroundMuted)
           Image(systemName: "chevron.right")
             .font(.system(size: 10, weight: .semibold))
             .foregroundStyle(palette.chevron)
@@ -522,14 +516,15 @@ private struct ToolDetailSheet: View {
 /// Muted text with a highlight sweeping across it, for work in progress.
 struct ShimmerText: View {
   let text: String
+  var font: Font = AppFont.label
   @Environment(\.palette) private var palette
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var phase: CGFloat = -1
 
   var body: some View {
     Text(text)
-      .font(AppFont.label)
-      .foregroundStyle(palette.foregroundMuted)
+      .font(font)
+      .foregroundStyle(palette.foregroundSecondary)
       .overlay {
         if !reduceMotion {
           GeometryReader { proxy in
@@ -537,7 +532,7 @@ struct ShimmerText: View {
               .frame(width: proxy.size.width * 0.6)
               .offset(x: phase * proxy.size.width)
           }
-          .mask(Text(text).font(AppFont.label))
+          .mask(Text(text).font(font))
           .allowsHitTesting(false)
         }
       }
@@ -545,17 +540,6 @@ struct ShimmerText: View {
         guard !reduceMotion else { return }
         withAnimation(.linear(duration: 1.4).repeatForever(autoreverses: false)) { phase = 1.2 }
       }
-  }
-}
-
-private struct LiveStatus: View {
-  let text: String
-
-  var body: some View {
-    ShimmerText(text: text.replacingOccurrences(of: "\n", with: " "))
-      .lineLimit(1)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .accessibilityLabel("Working: \(text)")
   }
 }
 

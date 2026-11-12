@@ -1,17 +1,18 @@
 import HermesKit
 import SwiftUI
 
-/// The inbox: every conversation on the Mac, newest first, in T3 Code's three-line rows.
+/// The inbox, grouped by bot as the Hermes mobile app lists agents: each bot with the latest
+/// reply of its lead chat, the chats worth a look now hanging under it, and the rest one tap away.
 struct HomeView: View {
   @Environment(AppModel.self) private var app
   @Environment(\.palette) private var palette
   @State private var query = ""
-  @State private var expanded: Set<SessionSection> = []
   @State private var showsBotPicker = false
   @State private var isStartingChat = false
 
   var body: some View {
-    let chats = app.rows(in: .chats, query: query)
+    let groups = app.agentGroups(query: query)
+    let heads = groups.compactMap(\.head)
     List {
       if let problem = connectionProblem {
         ConnectionBanner(text: problem)
@@ -21,53 +22,48 @@ struct HomeView: View {
       }
 
       if !app.hasLoadedSessions {
-        ForEach(0..<7, id: \.self) { _ in
-          SessionRowPlaceholder()
-            .listRowInsets(EdgeInsets())
-            .listRowBackground(Color.clear)
-            .listRowSeparatorTint(palette.border)
+        ForEach(0..<5, id: \.self) { _ in
+          AgentRowPlaceholder().treeRow()
         }
-      } else if chats.isEmpty && shelves.isEmpty {
+      } else if groups.isEmpty {
         EmptyInbox(isSearching: !query.isEmpty) { beginNewChat() }
           .listRowSeparator(.hidden)
           .listRowBackground(Color.clear)
       } else {
-        ForEach(chats) { session in row(session) }
-        ForEach(shelves, id: \.section) { shelf in
-          ShelfHeader(title: shelf.section.label, count: shelf.rows.count, isExpanded: isExpanded(shelf.section)) {
-            toggle(shelf.section)
-          }
-          .listRowInsets(EdgeInsets())
-          .listRowSeparator(.hidden)
-          .listRowBackground(Color.clear)
-          if isExpanded(shelf.section) {
-            ForEach(shelf.rows) { session in row(session) }
-          }
+        GroupHeading(text: "Agents")
+          .padding(.horizontal, Metrics.screenPadding)
+          .padding(.top, 4)
+          .treeRow()
+        ForEach(groups) { group in
+          agentRows(group)
         }
       }
     }
     .listStyle(.plain)
     .scrollContentBackground(.hidden)
     .background(palette.screen.ignoresSafeArea())
-    .environment(\.defaultMinListRowHeight, 10)
+    .environment(\.defaultMinListRowHeight, 1)
     .refreshable { await app.refreshSessions() }
-    .searchable(text: $query, prompt: "Search")
+    .onAppear { Task { await app.refreshSessions(quiet: true) } }
+    .task(id: heads.map { "\($0.id)@\($0.recency)" }) { await app.loadHeadPreviews(heads) }
+    .searchable(text: $query, prompt: "Search agents and sessions")
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
       ToolbarItem(placement: .topBarLeading) {
         HStack(spacing: 8) {
-          Wordmark()
-          if let tag = connectionTag { TagLabel(text: tag.text, tint: tag.tint) }
+          // On iPad the sidebar carries the wordmark; the inbox column is just "Chats".
+          if app.usesSplitLayout {
+            Text("Chats").font(AppFont.sans(17, .semibold)).foregroundStyle(palette.foreground)
+          } else {
+            Wordmark()
+          }
+          if let tag = ConnectionTag.current(app.connection) { TagLabel(text: tag.text, tint: tag.tint(palette)) }
         }
         .fixedSize()
       }
       .sharedBackgroundVisibility(.hidden)
 
-      ToolbarItem(placement: .topBarTrailing) { menu }
-
-      DefaultToolbarItem(kind: .search, placement: .bottomBar)
-      ToolbarSpacer(.fixed, placement: .bottomBar)
-      ToolbarItem(placement: .bottomBar) {
+      ToolbarItem(placement: .topBarTrailing) {
         Button(action: beginNewChat) {
           if isStartingChat {
             ProgressView()
@@ -87,99 +83,96 @@ struct HomeView: View {
 
   // MARK: Rows
 
-  private struct Shelf {
-    let section: SessionSection
-    let rows: [SessionSummary]
-  }
-
-  /// Everything that is not a chat you started: messaging threads, API calls, runs.
-  private var shelves: [Shelf] {
-    app.extraSections.compactMap { section in
-      let rows = app.rows(in: section, query: query)
-      return rows.isEmpty ? nil : Shelf(section: section, rows: rows)
+  /// A bot's block: its head row, the chats under it, and "N more sessions".
+  @ViewBuilder
+  private func agentRows(_ group: AgentGroup) -> some View {
+    headRow(group)
+    ForEach(Array(group.recent.enumerated()), id: \.element.id) { index, session in
+      childRow(session, isLast: index == group.recent.count - 1 && group.moreCount == 0)
+    }
+    if group.moreCount > 0 {
+      Button {
+        app.showAgent(group.profile)
+      } label: {
+        AgentMoreRow(count: group.moreCount)
+      }
+      .buttonStyle(RowButtonStyle())
+      .treeRow()
+      .accessibilityLabel("\(group.moreCount) more \(app.title(forProfile: group.profile)) sessions")
+      .accessibilityIdentifier("agent.more")
     }
   }
 
-  private func isExpanded(_ section: SessionSection) -> Bool {
-    !query.isEmpty || expanded.contains(section)
-  }
-
-  private func toggle(_ section: SessionSection) {
-    withAnimation(.snappy(duration: 0.25)) {
-      if expanded.contains(section) { expanded.remove(section) } else { expanded.insert(section) }
-    }
-  }
-
-  private func row(_ session: SessionSummary) -> some View {
-    Button {
-      app.open(session)
+  private func headRow(_ group: AgentGroup) -> some View {
+    let isSelected = app.usesSplitLayout && group.head != nil && app.selectedStoredID == group.head?.id
+    let botTitle = app.title(forProfile: group.profile)
+    return Button {
+      if let head = group.head { app.open(head) } else { start(group.profile) }
     } label: {
-      SessionRow(session: session)
+      AgentHeadRow(group: group, preview: preview(for: group))
     }
     .buttonStyle(RowButtonStyle())
-    .listRowInsets(EdgeInsets())
-    .listRowBackground(Color.clear)
-    .listRowSeparator(.hidden, edges: .top)
-    .listRowSeparatorTint(palette.border)
-    .alignmentGuide(.listRowSeparatorLeading) { _ in Metrics.screenPadding }
+    .treeRow(selected: isSelected)
+    .modifier(OptionalSwipeActions(session: group.head))
+    .contextMenu {
+      Button {
+        start(group.profile)
+      } label: {
+        Label("New chat with \(botTitle)", systemImage: "square.and.pencil")
+      }
+      if group.head != nil {
+        Button {
+          app.showAgent(group.profile)
+        } label: {
+          Label("All sessions", systemImage: "list.bullet")
+        }
+      }
+      Button {
+        app.areas.bot = group.profile
+        app.tab = .bots
+      } label: {
+        Label("Bot page", systemImage: "person.crop.circle")
+      }
+    }
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(headLabel(group))
+    .accessibilityAddTraits(.isButton)
     .accessibilityIdentifier("session.row")
-    .swipeActions(edge: .leading, allowsFullSwipe: true) {
-      Button {
-        app.setPinned(session, !session.pinned)
-      } label: {
-        Label(session.pinned ? "Unpin" : "Pin", systemImage: session.pinned ? "pin.slash" : "pin")
-      }
-      .tint(palette.primary)
-      Button {
-        app.setUnread(session, !session.unread)
-      } label: {
-        Label(session.unread ? "Read" : "Unread", systemImage: session.unread ? "envelope.open" : "envelope.badge")
-      }
-      .tint(palette.foregroundMuted)
+  }
+
+  private func childRow(_ session: SessionSummary, isLast: Bool) -> some View {
+    let isSelected = app.usesSplitLayout && app.selectedStoredID == session.id
+    return Button {
+      app.open(session)
+    } label: {
+      AgentChildRow(session: session, isLast: isLast)
     }
-    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-      Button {
-        withAnimation { app.archive(session) }
-      } label: {
-        Label("Archive", systemImage: "archivebox")
-      }
-      .tint(palette.warningForeground)
-    }
+    .buttonStyle(RowButtonStyle())
+    .treeRow(selected: isSelected)
+    .modifier(SessionSwipeActions(session: session))
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("\(SessionRow.title(of: session)), \(SessionStatusLabel.words(session, app: app))")
+    .accessibilityAddTraits(.isButton)
+    .accessibilityIdentifier("session.row")
+  }
+
+  /// The lead chat's latest reply; its title until that has loaded.
+  private func preview(for group: AgentGroup) -> String {
+    guard let head = group.head else { return "No chats yet. Tap to start one." }
+    if let reply = app.headPreviews[head.id], !reply.isEmpty { return reply }
+    return SessionRow.title(of: head)
+  }
+
+  private func headLabel(_ group: AgentGroup) -> String {
+    let bot = app.title(forProfile: group.profile)
+    guard let head = group.head else { return "\(bot), no chats yet" }
+    var parts = [bot, SessionRow.title(of: head), SessionStatusLabel.words(head, app: app)]
+    if let reply = app.headPreviews[head.id], !reply.isEmpty { parts.append(reply) }
+    if group.isPinned { parts.insert("Pinned", at: 1) }
+    return parts.joined(separator: ", ")
   }
 
   // MARK: Chrome
-
-  private var menu: some View {
-    @Bindable var preferences = app.preferences
-    return Menu {
-      if app.profiles.count > 1 {
-        Picker("Show", selection: $preferences.profileFilter) {
-          Text("All bots").tag("")
-          ForEach(app.profiles) { profile in
-            Text(profile.title).tag(profile.name)
-          }
-        }
-        .pickerStyle(.menu)
-      }
-      Button {
-        app.path.append(.settings)
-      } label: {
-        Label("Settings", systemImage: "gearshape")
-      }
-    } label: {
-      Image(systemName: app.preferences.profileFilter.isEmpty ? "ellipsis" : "line.3.horizontal.decrease")
-    }
-    .accessibilityLabel("More")
-  }
-
-  private var connectionTag: (text: String, tint: Color?)? {
-    switch app.connection {
-    case .open: return nil
-    case .connecting, .idle: return ("Connecting", nil)
-    case .closed: return ("Offline", palette.warningForeground)
-    case .unauthorized: return ("Signed out", palette.dangerForeground)
-    }
-  }
 
   private var connectionProblem: String? {
     if case .closed(let reason) = app.connection, app.hasLoadedSessions {
@@ -208,30 +201,70 @@ struct HomeView: View {
   }
 }
 
+private struct OptionalSwipeActions: ViewModifier {
+  let session: SessionSummary?
+
+  func body(content: Content) -> some View {
+    if let session { content.modifier(SessionSwipeActions(session: session)) } else { content }
+  }
+}
+
+extension View {
+  /// A row of the bot tree: edge to edge, no separators, so the tree line runs unbroken.
+  func treeRow(selected: Bool = false) -> some View {
+    modifier(TreeRowStyle(selected: selected))
+  }
+}
+
+private struct TreeRowStyle: ViewModifier {
+  let selected: Bool
+  @Environment(\.palette) private var palette
+
+  func body(content: Content) -> some View {
+    content
+      .listRowInsets(EdgeInsets())
+      .listRowSeparator(.hidden)
+      .listRowBackground(selected ? palette.threadSelected : Color.clear)
+  }
+}
+
 // MARK: - Row
 
 struct SessionRow: View {
   let session: SessionSummary
+  var isSelected = false
+  /// Off in a bot's own list, where every row is the same bot: the top line names the source.
+  var showsBot = true
   @Environment(AppModel.self) private var app
   @Environment(\.palette) private var palette
 
   var body: some View {
     VStack(alignment: .leading, spacing: 4) {
       HStack(spacing: 6) {
-        AvatarView(profile: session.profile, size: 16)
-        Text(app.title(forProfile: session.profile))
-          .font(AppFont.label)
-          .foregroundStyle(palette.foregroundSecondary)
-          .lineLimit(1)
+        if showsBot {
+          AvatarView(profile: session.profile, size: 16)
+          Text(app.title(forProfile: session.profile))
+            .font(AppFont.label)
+            .foregroundStyle(palette.foregroundSecondary)
+            .lineLimit(1)
+        } else {
+          Image(systemName: sourceSymbol)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(palette.iconMuted)
+          Text(sourceName)
+            .font(AppFont.label)
+            .foregroundStyle(palette.foregroundSecondary)
+            .lineLimit(1)
+        }
         if session.pinned {
           Image(systemName: "pin.fill")
             .font(.system(size: 9, weight: .semibold))
             .foregroundStyle(palette.iconMuted)
         }
         Spacer(minLength: 8)
-        status
+        SessionStatusLabel(session: session)
       }
-      Text(title)
+      Text(SessionRow.title(of: session))
         .font(session.unread ? AppFont.bodySemibold : AppFont.body)
         .foregroundStyle(palette.foreground)
         .lineLimit(1)
@@ -245,9 +278,11 @@ struct SessionRow: View {
         if app.preferences.hasDraft(for: session.id) {
           Text("Draft").font(AppFont.caption).foregroundStyle(palette.foregroundMuted)
         }
-        Image(systemName: sourceSymbol)
-          .font(.system(size: 11, weight: .medium))
-          .foregroundStyle(palette.iconMuted)
+        if showsBot {
+          Image(systemName: sourceSymbol)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(palette.iconMuted)
+        }
       }
     }
     .padding(.horizontal, Metrics.screenPadding)
@@ -257,7 +292,8 @@ struct SessionRow: View {
     .accessibilityElement(children: .combine)
   }
 
-  private var title: String {
+  /// A chat's name: its title, else its first message.
+  static func title(of session: SessionSummary) -> String {
     let base = session.baseTitle
     if !base.isEmpty { return base }
     return session.preview.isEmpty ? "New chat" : session.preview
@@ -272,23 +308,15 @@ struct SessionRow: View {
     return parts.isEmpty ? SessionSection.sourceLabel(session.source) : parts.joined(separator: " · ")
   }
 
-  @ViewBuilder
-  private var status: some View {
-    if app.waitingOnYou.contains(session.id) {
-      Text("Needs you").font(AppFont.labelMedium).foregroundStyle(palette.warningForeground)
-    } else if session.isActive {
-      // The backend's flag means "touched in the last five minutes", not "a reply is running",
-      // so the label must not claim work is in progress.
-      Text("Active").font(AppFont.label).foregroundStyle(palette.primaryText)
-    } else if let owner = app.owners[session.id] {
-      Text(owner.surface == "desktop" ? "Open on Mac" : "Open elsewhere")
-        .font(AppFont.label)
-        .foregroundStyle(palette.foregroundMuted)
-    } else {
-      HStack(spacing: 5) {
-        if session.unread { Circle().fill(palette.primary).frame(width: 7, height: 7) }
-        Text(Format.ago(session.recency)).font(AppFont.label).foregroundStyle(palette.foregroundMuted)
+  private var sourceName: String {
+    switch session.section {
+    case .chats:
+      switch session.createdSource {
+      case "desktop": return "Hermes app"
+      case "cli", "tui": return "Terminal"
+      default: return "Chat"
       }
+    default: return SessionSection.sourceLabel(session.source)
     }
   }
 
@@ -319,52 +347,6 @@ struct RowButtonStyle: ButtonStyle {
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
       .background(configuration.isPressed ? palette.rowHover : Color.clear)
-  }
-}
-
-private struct SessionRowPlaceholder: View {
-  @Environment(\.palette) private var palette
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      RoundedRectangle(cornerRadius: 4).fill(palette.groupedCard).frame(width: 90, height: 11)
-      RoundedRectangle(cornerRadius: 4).fill(palette.groupedCard).frame(maxWidth: 240).frame(height: 14)
-      RoundedRectangle(cornerRadius: 4).fill(palette.groupedCard).frame(width: 150, height: 10)
-    }
-    .padding(.horizontal, Metrics.screenPadding)
-    .padding(.vertical, 13)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .accessibilityHidden(true)
-  }
-}
-
-/// "Runs (34) ─────── ⌄": a collapsed group at the foot of the list, as T3 Code shelves snoozed threads.
-private struct ShelfHeader: View {
-  let title: String
-  let count: Int
-  let isExpanded: Bool
-  let action: () -> Void
-  @Environment(\.palette) private var palette
-
-  var body: some View {
-    Button(action: action) {
-      HStack(spacing: 10) {
-        Text("\(title) (\(count))")
-          .font(AppFont.label)
-          .foregroundStyle(palette.foregroundMuted)
-        Rectangle().fill(palette.border).frame(height: 1)
-        Image(systemName: "chevron.down")
-          .font(.system(size: 11, weight: .semibold))
-          .foregroundStyle(palette.chevron)
-          .rotationEffect(.degrees(isExpanded ? 180 : 0))
-      }
-      .padding(.horizontal, Metrics.screenPadding)
-      .padding(.vertical, 14)
-      .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
-    .accessibilityLabel("\(title), \(count)")
-    .accessibilityValue(isExpanded ? "expanded" : "collapsed")
   }
 }
 

@@ -9,43 +9,59 @@ yet.
 ## Done: connection, inbox, chat
 
 - Sign-in through the gate, Keychain session, reconnect.
-- Inbox across profiles with sections, versions, search, pin, unread, archive.
+- Inbox grouped by bot (lead chat with its latest reply, up to three recent
+  chats under it, "N more sessions" to the bot's full list), versions folded,
+  search, pin, unread, archive, and "Working 3m" on chats whose reply is
+  running.
 - Chat: streaming, Markdown, work log, tool detail, inline questions,
   approvals, sudo and secret prompts, model and effort, photo and file
   attachments, rename, read-along for chats held elsewhere, continue as a new
   version.
+- A working row at the foot of a running turn and "Working" in the title bar.
+  `session.resume`'s `running` and `turn_started_at` restore it after a
+  reconnect; tool events alone start it; a quiet turn is re-checked against
+  `session.active_list`. Chats the desktop app runs in its own backend are
+  read from the session heartbeat (`last_activity_*`) and watched read-only.
+- Files a chat made: from `write_file` and `patch` calls, produced-file keys
+  in tool results, `MEDIA:` lines and paths in answers. Previews through
+  `GET /api/fs/read-text`, downloads through `GET /api/fs/download`
+  (`path`, `profile`, `session_id`).
+- iPad: a three-column split (areas, list, detail).
 
-## Next: Bots, Kanban, Cron
+## Done, read side: Bots, Kanban, Cron
 
-**Bots.** A bot is a profile with a title, an avatar and a soul. The desktop
-app's Bots tab also keeps one canonical "Bot Chat" per bot.
+- Bots: list, page with model, soul (`GET /api/profiles/{name}/soul`) and
+  recent chats, Bot Chat (`session.list {title: "Bot Chat"}`, else
+  `session.create`), new chat.
+- Kanban: boards, the board one column at a time, card detail with brief,
+  latest summary, runs (open the run's chat), comments and linked cards.
+  Polled every 10 seconds while on screen.
+- Cron: jobs with schedule, next and last run, delivery, prompt or script,
+  recent runs (open agent runs as chats); pause, resume, run now (asks
+  first). Polled every 20 seconds while on screen.
 
-- `profiles.list`, `profiles.describe`, `profiles.get_asset`,
-  `profiles.set_asset`, `profiles.configure`, `profiles.create`
-- `GET/PUT /api/profiles/{name}/soul`
-- Bot Chat: `session.list {profile, title: "Bot Chat", include_hidden: true}`,
-  `session.create {profile, title: "Bot Chat"}`
-- Group chats between bots (`groups.*`) come after single-bot pages.
+## Next: Bots, Kanban, Cron writes
 
-**Kanban.** Served by a backend plugin under `/api/plugins/kanban/`. To map:
-boards, cards, card events, and how a card's runs relate to the sessions the
-inbox already groups by task id.
-
-**Cron.**
-
-- `cron.manage {action: list | add | remove | pause | resume}`
-- Run history is already in the inbox under Runs (source `cron`).
+- Bots: `profiles.configure` (model, description, title), `PUT
+  /api/profiles/{name}/soul`, `profiles.set_asset`, `profiles.create`. A
+  costly model answers `confirm_required`; ask before confirming.
+- Kanban: `POST /tasks`, `PATCH /tasks/{id}` (move, assign), comments,
+  reclaim, the `/events` stream instead of polling.
+- Cron: `POST /api/cron/jobs` (create paused), `PUT /jobs/{id}`, `DELETE`,
+  run history detail, delivery targets.
+- Group chats between bots (`groups.*`) after single-bot pages.
 
 ## Then: workspace panes
 
-- Files changed and diffs: derived from `write_file` and `patch` tool calls
-  (the inline diff arrives with `tool.complete`), plus `rollback.list`,
-  `rollback.diff`, `rollback.restore`.
+- Diff review: the inline diff that arrives with `tool.complete` for the
+  files the chat already lists, plus `rollback.list`, `rollback.diff`,
+  `rollback.restore`.
 - Working folder and project picker: `session.cwd.set`, `complete.path`,
   `projects.*`.
 - Terminal: `shell.exec`, `terminal.resize`, `process.list`, `process.kill`.
   To map: the interactive terminal stream.
-- Artifacts and previews: to map.
+- Artifacts across chats (the desktop app's Artifacts page) on top of the
+  per-chat file list.
 
 ## Then: capabilities
 

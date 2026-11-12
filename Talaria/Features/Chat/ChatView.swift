@@ -30,6 +30,7 @@ struct ChatView: View {
   @Environment(\.dismiss) private var dismiss
   @State private var showsModels = false
   @State private var showsRename = false
+  @State private var showsFiles = false
   @State private var newTitle = ""
 
   var body: some View {
@@ -53,12 +54,12 @@ struct ChatView: View {
               .font(AppFont.sans(15, .semibold))
               .foregroundStyle(palette.foreground)
               .lineLimit(1)
-            Text(subtitle)
+            subtitleText
               .font(AppFont.micro)
               .foregroundStyle(palette.foregroundMuted)
               .lineLimit(1)
           }
-          .frame(maxWidth: 220)
+          .frame(maxWidth: 260)
           .accessibilityElement(children: .combine)
         }
         ToolbarItemGroup(placement: .topBarTrailing) {
@@ -71,6 +72,9 @@ struct ChatView: View {
           .accessibilityLabel("Model and effort")
           moreMenu
         }
+      }
+      .sheet(isPresented: $showsFiles) {
+        ChatFilesSheet(files: files, chat: chat)
       }
       .sheet(isPresented: $showsModels) {
         ModelPickerSheet(chat: chat)
@@ -90,6 +94,16 @@ struct ChatView: View {
       }
       .onDisappear { app.chatDisappeared(chat) }
   }
+
+  /// "Working" leads the subtitle while a reply runs, so the state shows even when the transcript is scrolled away.
+  private var subtitleText: Text {
+    if chat.activity != nil {
+      return Text("\(Text("Working").foregroundStyle(palette.primaryText)) · \(subtitle)")
+    }
+    return Text(subtitle)
+  }
+
+  private var files: [FileReference] { chat.files }
 
   private var subtitle: String {
     var parts = [app.title(forProfile: chat.profile)]
@@ -121,6 +135,12 @@ struct ChatView: View {
       } label: {
         Label("Rename", systemImage: "pencil")
       }
+      Button {
+        showsFiles = true
+      } label: {
+        let count = files.count
+        Label(count == 0 ? "Files" : "Files (\(count))", systemImage: "doc.on.doc")
+      }
       if let row {
         Button {
           app.setPinned(row, !row.pinned)
@@ -129,7 +149,7 @@ struct ChatView: View {
         }
         Button(role: .destructive) {
           app.archive(row)
-          dismiss()
+          if app.usesSplitLayout { app.path = [] } else { dismiss() }
         } label: {
           Label("Archive", systemImage: "archivebox")
         }

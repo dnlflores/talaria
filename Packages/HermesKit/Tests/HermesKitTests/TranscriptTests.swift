@@ -78,6 +78,7 @@ import Testing
       case .work(let group): return "work(\(group.items.count))"
       case .question: return "question"
       case .system: return "system"
+      case .files(let turn): return "files(\(turn.files.count))"
       }
     }
   }
@@ -99,7 +100,7 @@ import Testing
     #expect(shape(running) == ["user", "work(2)"])
     guard case .work(let group) = running[1] else { Issue.record("expected a work group"); return }
     #expect(group.isLive)
-    #expect(group.label == "Working")
+    #expect(group.label == "1 tool so far")
 
     var streaming = note("The answer is")
     streaming.isStreaming = true

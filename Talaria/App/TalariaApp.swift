@@ -14,6 +14,7 @@ struct TalariaApp: App {
       .task { await app.launch() }
       .onChange(of: scenePhase) { _, phase in
         if phase == .active { app.becameActive() }
+        if phase == .background { app.wentToBackground() }
       }
     }
   }
@@ -34,19 +35,8 @@ struct RootView: View {
         ConnectView()
           .transition(.opacity)
       case .ready:
-        NavigationStack(path: $app.path) {
-          HomeView()
-            .navigationDestination(for: Route.self) { route in
-              switch route {
-              case .chat(let profile, let storedID):
-                ChatRouteView(profile: profile, storedID: storedID)
-                  .id(storedID)
-              case .settings:
-                SettingsView()
-              }
-            }
-        }
-        .transition(.opacity)
+        MainShell()
+          .transition(.opacity)
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)

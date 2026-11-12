@@ -38,15 +38,24 @@ final class ChatModel: Identifiable {
   let section: SessionSection
 
   private(set) var state = ChatState() {
-    didSet { rows = TranscriptLayout.rows(for: state.items, isStreaming: state.isStreaming) }
+    didSet {
+      layOut()
+      if state.isStreaming != oldValue.isStreaming { streamingChanged() }
+    }
   }
   private(set) var rows: [TranscriptRow] = []
+  @ObservationIgnored private var fileCache: [String: [FileReference]] = [:]
   private(set) var isLoading = true
   private(set) var loadError: String?
   /// The transcript could be read but the session could not be attached.
   private(set) var isReadOnly = false
   /// Another Hermes process that has this chat open right now.
   private(set) var owner: ChatOwner?
+  /// That other process is running a turn here right now (its heartbeat says so). No events
+  /// reach this app for it, so the transcript is polled and the activity read from it.
+  private(set) var isRunningElsewhere = false {
+    didSet { if isRunningElsewhere != oldValue { layOut() } }
+  }
   private(set) var isSending = false
   private(set) var isBranching = false
   private(set) var uploadStatus = ""
@@ -71,6 +80,9 @@ final class ChatModel: Identifiable {
   private var preferredModel = ""
   private var preferredProvider = ""
   private var preferredEffort = ""
+  /// Last time the gateway said anything about this chat's turn.
+  @ObservationIgnored private var lastEventAt = Date()
+  @ObservationIgnored private var livenessTask: Task<Void, Never>?
 
   init(app: AppModel, profile: String, storedID: String, row: SessionSummary?, live: LiveSession?) {
     self.app = app
@@ -88,6 +100,12 @@ final class ChatModel: Identifiable {
   }
 
   private var client: HermesClient? { app?.client }
+
+  /// A turn run elsewhere is laid out as live too: its work log counts tools so far, and its
+  /// files wait for the answer.
+  private func layOut() {
+    rows = TranscriptLayout.rows(for: state.items, isStreaming: state.isStreaming || isRunningElsewhere, fileCache: &fileCache)
+  }
   private var now: Double { Date().timeIntervalSince1970 }
 
   // MARK: Derived
@@ -101,6 +119,27 @@ final class ChatModel: Identifiable {
   }
   var isStreaming: Bool { state.isStreaming }
   var status: String { state.status }
+  /// What the running turn is doing, in words for the transcript and the title bar.
+  var activity: TurnActivity? {
+    guard let activity = state.activity else {
+      return isRunningElsewhere ? TurnActivity.inferred(from: state.items) : nil
+    }
+    if let liveID, app?.prompts.contains(where: { $0.sessionID == liveID }) == true { return .waiting }
+    return activity
+  }
+  var turnStartedAt: Double? {
+    state.turnStartedAt ?? (isRunningElsewhere ? TurnActivity.turnStart(in: state.items) : nil)
+  }
+  /// Every file the finished turns wrote, edited or delivered, once each.
+  var files: [FileReference] {
+    var seen = Set<String>()
+    var out: [FileReference] = []
+    for row in rows {
+      guard case .files(let turn) = row else { continue }
+      for file in turn.files where seen.insert(file.path).inserted { out.append(file) }
+    }
+    return out
+  }
   var info: SessionInfo { state.info }
   var canSend: Bool {
     guard !isReadOnly, !isSending, !isBranching else { return false }
@@ -128,8 +167,19 @@ final class ChatModel: Identifiable {
     }
 
     // Ask who has it open right before deciding how to open it.
+    async let freshRow = try? client.session(storedID: storedID, profile: profile)
+    async let freshActive = try? client.activeSessions()
     if let owners = await app?.refreshOwners() { owner = owners[storedID] }
+    let row = await freshRow
+    // Our own backend running it is not "elsewhere": decide on a fresh live list, not the inbox's.
+    if let active = await freshActive { app?.setLiveStatuses(active) }
     if isClosed { return }
+    // The desktop app runs chats in its own backend, which holds no lease this app can see:
+    // a turn running there is only visible as a heartbeat. Watch it like an owned chat.
+    if owner == nil, !isChannel, let other = elsewhereOwner(row: row) {
+      owner = other
+      isRunningElsewhere = true
+    }
     if continuesAsNewVersion {
       await openWatching()
       return
@@ -166,11 +216,13 @@ final class ChatModel: Identifiable {
     let fresh = TranscriptItem.items(fromHistory: live.messages)
     if replacingTranscript {
       next.items = fresh
-      next.applyInflight(live.inflight, now: now)
+      next.applyInflight(live.inflight, turnStartedAt: live.turnStartedAt, now: now)
     } else {
-      next.reconcile(fresh: fresh, inflight: live.inflight, now: now)
+      next.reconcile(fresh: fresh, inflight: live.inflight, turnStartedAt: live.turnStartedAt, now: now)
     }
+    next.applyLiveStatus(isRunning: live.isRunning, startedAt: live.turnStartedAt, now: now)
     state = next
+    lastEventAt = Date()
     for request in live.openRequests { app?.deliver(request) }
   }
 
@@ -227,7 +279,18 @@ final class ChatModel: Identifiable {
         if Task.isCancelled || self.isClosed { return }
         if self.isBranching { continue }
         let owners = await self.app?.refreshOwners() ?? [:]
-        let current = owners[self.storedID]
+        var current = owners[self.storedID]
+        if current == nil, !self.isChannel {
+          if let row = try? await self.client?.session(storedID: self.storedID, profile: self.profile) {
+            current = self.elsewhereOwner(row: row)
+            self.isRunningElsewhere = current != nil
+          } else if self.isRunningElsewhere {
+            current = self.owner
+          }
+        } else {
+          self.isRunningElsewhere = false
+        }
+        if Task.isCancelled || self.isClosed { return }
         if self.owner != nil, current == nil, !self.isChannel, Date() > self.ownerHoldUntil {
           await self.goLive()
           return
@@ -238,10 +301,17 @@ final class ChatModel: Identifiable {
     }
   }
 
+  /// A stand-in owner for a turn another Hermes process is running here, or nil.
+  private func elsewhereOwner(row: SessionSummary?) -> ChatOwner? {
+    guard let app, app.isRunningElsewhere(storedID, row: row) else { return nil }
+    return ChatOwner(sessionID: storedID, surface: (row ?? app.row(storedID))?.createdSource ?? "")
+  }
+
   /// The other process let go: drop any stale copy our backend still holds, then resume for real.
   private func goLive() async {
     watchTask = nil
     owner = nil
+    isRunningElsewhere = false
     isWatching = false
     isReadOnly = false
     await dropLive()
@@ -388,6 +458,7 @@ final class ChatModel: Identifiable {
   // MARK: Events
 
   func handle(_ event: GatewayEvent) {
+    lastEventAt = Date()
     var next = state
     let effects = next.apply(event: event.type, payload: event.payload, now: now)
     state = next
@@ -406,6 +477,44 @@ final class ChatModel: Identifiable {
   func rowChanged(_ row: SessionSummary) {
     // The stored title is the authority (a new version arrives untitled).
     if !row.title.isEmpty, row.title != state.title { state.title = row.title }
+    // Another Hermes process started a turn here while this copy sat idle. Our own turns are
+    // excluded: they stream events here, and the label is cleared within moments of the end.
+    if !isClosed, !isLoading, !isWatching, !isChannel, !state.isStreaming, !isSending, !isBranching,
+      Date().timeIntervalSince(lastEventAt) > 10, let other = elsewhereOwner(row: row)
+    {
+      isRunningElsewhere = true
+      markOwned(by: other)
+    }
+  }
+
+  // MARK: Staying truthful about a running turn
+
+  /// While a turn runs, check now and then that it really is still running. A reply that
+  /// finished while the socket was away never sends its end to us, and the screen would say
+  /// "Working" forever.
+  private func streamingChanged() {
+    livenessTask?.cancel()
+    livenessTask = nil
+    guard state.isStreaming else { return }
+    livenessTask = Task { [weak self] in
+      while !Task.isCancelled {
+        try? await Task.sleep(for: .seconds(15))
+        guard let self, !Task.isCancelled, !self.isClosed, self.state.isStreaming else { return }
+        guard Date().timeIntervalSince(self.lastEventAt) > 20 else { continue }
+        await self.confirmStillRunning()
+      }
+    }
+  }
+
+  private func confirmStillRunning() async {
+    guard let client, let liveID, !isWatching else { return }
+    guard let active = try? await client.activeSessions() else { return }
+    let entry = active.first { $0["id"].string == liveID }
+    let status = entry?["status"].stringValue.lowercased() ?? ""
+    if let entry, entry["status"].isNull || ["working", "waiting", "starting"].contains(status) { return }
+    // Gone or idle: re-attach, which folds in the finished reply and takes `running` from the backend.
+    lastEventAt = Date()
+    try? await reattach()
   }
 
   // MARK: Questions
@@ -467,7 +576,7 @@ final class ChatModel: Identifiable {
           let references = try await stage(picked, liveID: liveID, client: client)
           let full = ([text] + references).filter { !$0.isEmpty }.joined(separator: "\n\n")
           update(itemID) { $0.sentText = full }
-          state.isStreaming = true
+          state.beginTurn(now: now)
           status = try await client.submit(liveID: liveID, profile: profile, text: full)
           break
         } catch {
@@ -667,6 +776,8 @@ final class ChatModel: Identifiable {
     isClosed = true
     watchTask?.cancel()
     watchTask = nil
+    livenessTask?.cancel()
+    livenessTask = nil
     app?.preferences.setDraft(draft, for: storedID)
     if let liveID, hasSpoken { app?.scheduleRelease(liveID: liveID, storedID: storedID) }
   }

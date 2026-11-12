@@ -94,6 +94,56 @@ public final class HermesHTTP: Sendable {
     }
   }
 
+  /// Downloads a body to a file of its own and returns where it landed, named the way the server
+  /// named it (`Content-Disposition`), so the share sheet and Quick Look see a real file name.
+  public func download(
+    _ path: String, query: [(String, String)] = [], suggestedName: String, timeout: TimeInterval = 300
+  ) async throws -> URL {
+    let request = request("GET", path: path, query: query, timeout: timeout)
+    let (temporary, response): (URL, URLResponse)
+    do {
+      (temporary, response) = try await session.download(for: request)
+    } catch {
+      throw HermesError.wrap(error)
+    }
+    guard let http = response as? HTTPURLResponse else { throw HermesError.invalidResponse("not an HTTP response") }
+    guard (200..<300).contains(http.statusCode) else {
+      let data = (try? Data(contentsOf: temporary)) ?? Data()
+      try? FileManager.default.removeItem(at: temporary)
+      if http.statusCode == 401, http.value(forHTTPHeaderField: "X-Hermesdash-Login") != nil { throw HermesError.loginRequired }
+      let parsed = (try? JSONValue.parse(data)) ?? .string(String(decoding: data, as: UTF8.self))
+      throw HermesError.http(status: http.statusCode, message: Self.message(from: parsed, status: http.statusCode))
+    }
+    let name = Self.filename(from: http.value(forHTTPHeaderField: "Content-Disposition")) ?? suggestedName
+    let folder = FileManager.default.temporaryDirectory
+      .appendingPathComponent("downloads", isDirectory: true)
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let destination = folder.appendingPathComponent(Self.safeFilename(name), isDirectory: false)
+    try FileManager.default.moveItem(at: temporary, to: destination)
+    return destination
+  }
+
+  static func filename(from disposition: String?) -> String? {
+    guard let disposition else { return nil }
+    if let match = disposition.firstMatch(of: /(?i)filename\*=UTF-8''([^;]+)/),
+      let decoded = String(match.1).removingPercentEncoding, !decoded.isEmpty
+    {
+      return decoded
+    }
+    if let match = disposition.firstMatch(of: /(?i)filename="([^"]+)"/) { return String(match.1) }
+    if let match = disposition.firstMatch(of: /(?i)filename=([^;]+)/) {
+      return String(match.1).trimmingCharacters(in: .whitespaces)
+    }
+    return nil
+  }
+
+  static func safeFilename(_ name: String) -> String {
+    let cleaned = name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    return cleaned.isEmpty || cleaned.hasPrefix(".") && cleaned.count < 2 ? "download" : cleaned
+  }
+
   static func message(from body: JSONValue, status: Int) -> String {
     for key in ["detail", "error", "message"] {
       let value = body[key]

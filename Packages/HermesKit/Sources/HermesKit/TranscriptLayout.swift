@@ -13,16 +13,17 @@ public struct WorkLog: Identifiable, Sendable, Equatable {
   public var toolCount: Int { items.count { $0.kind == .tool } }
   public var hasError: Bool { items.contains { $0.tool?.isError == true } }
 
-  /// "Worked for 2m", "Thought for 8s", "3 tools", or "Working" while the turn runs.
+  /// "Worked for 2m", "Thought for 8s", "3 tools", or the count so far while the turn runs
+  /// (the transcript's working row says what is happening now).
   public var label: String {
-    if isLive { return "Working" }
     let tools = toolCount
+    if isLive { return tools == 0 ? "Reasoning" : tools == 1 ? "1 tool so far" : "\(tools) tools so far" }
     if let seconds, seconds >= 1 { return "\(tools > 0 ? "Worked" : "Thought") for \(WorkLog.duration(seconds))" }
     if tools > 0 { return tools == 1 ? "1 tool" : "\(tools) tools" }
     return "Thought"
   }
 
-  static func duration(_ seconds: Double) -> String {
+  public static func duration(_ seconds: Double) -> String {
     let total = Int(seconds.rounded())
     if total < 60 { return "\(total)s" }
     if total < 3600 {
@@ -34,6 +35,12 @@ public struct WorkLog: Identifiable, Sendable, Equatable {
   }
 }
 
+/// The files one finished turn wrote, edited or delivered, shown under its answer.
+public struct TurnFiles: Identifiable, Sendable, Equatable {
+  public let id: UUID
+  public var files: [FileReference]
+}
+
 /// What the transcript view draws, top to bottom.
 public enum TranscriptRow: Identifiable, Sendable, Equatable {
   case user(TranscriptItem)
@@ -43,11 +50,13 @@ public enum TranscriptRow: Identifiable, Sendable, Equatable {
   /// A question the agent asked (clarify), always visible so it can be answered in place.
   case question(TranscriptItem)
   case system(TranscriptItem)
+  case files(TurnFiles)
 
   public var id: UUID {
     switch self {
     case .user(let item), .answer(let item), .question(let item), .system(let item): return item.id
     case .work(let group): return group.id
+    case .files(let files): return files.id
     }
   }
 }
@@ -58,7 +67,17 @@ public enum TranscriptLayout {
   /// Within a turn, the last assistant text is the answer; everything before it (tool calls,
   /// interim notes) folds into a work group. Questions split a group so they stay visible.
   public static func rows(for items: [TranscriptItem], isStreaming: Bool) -> [TranscriptRow] {
+    var cache: [String: [FileReference]] = [:]
+    return rows(for: items, isStreaming: isStreaming, fileCache: &cache)
+  }
+
+  /// Same, reusing the files found in finished turns last time. The layout runs on every streamed
+  /// token, and a finished turn's files do not change, so they are looked up once.
+  public static func rows(
+    for items: [TranscriptItem], isStreaming: Bool, fileCache cache: inout [String: [FileReference]]
+  ) -> [TranscriptRow] {
     var rows: [TranscriptRow] = []
+    var usedKeys = Set<String>()
     var turn: [TranscriptItem] = []
     var turnStart: Double?
 
@@ -110,6 +129,15 @@ public enum TranscriptLayout {
         emitted[lastWork] = .work(work)
       }
       rows.append(contentsOf: emitted)
+
+      // A finished turn lists what it made, so the files are one tap from the answer that mentions them.
+      if !live, let anchor = turn.last {
+        let key = "\(turn[0].id)|\(anchor.id)|\(turn.count)|\(turn.count { $0.tool?.isDone == true })"
+        let files = cache[key] ?? FileExtraction.files(in: turn)
+        cache[key] = files
+        usedKeys.insert(key)
+        if !files.isEmpty { rows.append(.files(TurnFiles(id: anchor.id.derived(salt: 0x46), files: files))) }
+      }
     }
 
     for item in items {
@@ -122,11 +150,22 @@ public enum TranscriptLayout {
       }
     }
     flush(isLastTurn: true)
+    if cache.count > usedKeys.count { cache = cache.filter { usedKeys.contains($0.key) } }
     return rows
   }
 
   private static func toolSeconds(_ items: [TranscriptItem]) -> Double? {
     let durations = items.compactMap { $0.tool?.duration }
     return durations.isEmpty ? nil : durations.reduce(0, +)
+  }
+}
+
+extension UUID {
+  /// A second identity that stays fixed for a given UUID, for rows that hang off an item.
+  func derived(salt: UInt8) -> UUID {
+    var bytes = uuid
+    bytes.0 ^= salt
+    bytes.15 ^= salt
+    return UUID(uuid: bytes)
   }
 }
