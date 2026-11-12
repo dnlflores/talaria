@@ -1,11 +1,12 @@
 import XCTest
 
-/// A chat another Hermes process is running (the desktop app runs its own backend) shows as
-/// working in the inbox and in the chat, though no events for it reach the app. Read-only: the
-/// chat opens in watch mode and nothing is sent.
+/// A chat another Hermes process is running (a terminal running its own agent, outside the
+/// gateway) shows as working in the inbox and in the chat, though no events for it reach the
+/// app. Read-only: the chat opens in watch mode and nothing is sent. Chats the desktop app runs
+/// are not elsewhere: they run in the gateway this app talks to.
 ///
 ///   TEST_RUNNER_TALARIA_UITEST_SERVER=http://127.0.0.1:4300 \
-///   TEST_RUNNER_TALARIA_UITEST_ELSEWHERE="<title of a chat running in the desktop app>" \
+///   TEST_RUNNER_TALARIA_UITEST_ELSEWHERE="<title of a chat a terminal is running>" \
 ///   xcodebuild test-without-building ... -only-testing:TalariaUITests/ElsewhereTests
 @MainActor
 final class ElsewhereTests: XCTestCase {

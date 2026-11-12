@@ -55,14 +55,14 @@ import Testing
     let endpoint = try #require(ServerEndpoint(userInput: "  my-mac.example.ts.net:8443/ "))
     #expect(endpoint.baseURL.absoluteString == "https://my-mac.example.ts.net:8443")
     #expect(endpoint.origin == "https://my-mac.example.ts.net:8443")
-    #expect(endpoint.webSocketURL.absoluteString == "wss://my-mac.example.ts.net:8443/api/ws")
+    #expect(endpoint.webSocketURL.absoluteString == "wss://my-mac.example.ts.net:8443/hd/gateway/ws")
     #expect(endpoint.displayName == "my-mac.example.ts.net:8443")
   }
 
   @Test func loopbackGetsHTTP() throws {
     let endpoint = try #require(ServerEndpoint(userInput: "127.0.0.1:4300"))
     #expect(endpoint.baseURL.absoluteString == "http://127.0.0.1:4300")
-    #expect(endpoint.webSocketURL.absoluteString == "ws://127.0.0.1:4300/api/ws")
+    #expect(endpoint.webSocketURL.absoluteString == "ws://127.0.0.1:4300/hd/gateway/ws")
     #expect(!endpoint.isSecure)
   }
 

@@ -33,8 +33,9 @@ which keeps the protocol logic checkable without a simulator.
 
 ## The gate
 
-The Mac runs `hermes serve` bound to loopback. In front of it sits hermesdash,
-a small Python server with two listeners:
+Chats run in the Hermes gateway on the Mac, the same process the desktop app
+runs them in. In front of it sits hermesdash, a small Python server with two
+listeners (it also runs `hermes serve` for REST reads):
 
 | Listener | Auth | Used by |
 |---|---|---|
@@ -49,10 +50,13 @@ What Talaria relies on:
 - `GET /hd/health`: 200 with backend state when the caller is allowed in, 401
   with `X-Hermesdash-Login: 1` when it must sign in, 503 when no password is
   set on the Mac.
-- `GET /hd/owners`: conversations another Hermes process on the Mac holds.
-- Everything under `/api/` is proxied to `hermes serve`, including the
-  WebSocket at `/api/ws`. Writes and WebSocket upgrades must carry an `Origin`
-  that matches the host.
+- `GET /hd/owners`: conversations another Hermes process on the Mac holds
+  (the gateway's own chats are shared, not held, so they are left out).
+- `/hd/gateway/ws`: a WebSocket into the gateway. hermesdash mints the
+  gateway's one-use ticket on its control socket (`~/.hermes/gateway.sock`,
+  same OS user only), as the desktop app does, and pumps bytes.
+- Everything else under `/api/` is proxied to `hermes serve` (REST only).
+  Writes and WebSocket upgrades must carry an `Origin` that matches the host.
 
 The app keeps the cookie value in the Keychain and attaches it by hand to REST
 calls and to the WebSocket handshake. Shared cookie storage is not used, and
@@ -60,24 +64,47 @@ the password is never written anywhere.
 
 ## The gateway protocol
 
-`hermes serve` speaks JSON-RPC 2.0 over one WebSocket. The method list and the
-payload shapes are in the contract that ships with Hermes
-(`apps/shared/src/gateway-contract.openrpc.json`, 262 methods in 0.23.1).
-Talaria's calls were checked against a running 0.23.1 backend.
+The gateway speaks JSON-RPC 2.0 over one WebSocket with the subprotocol
+`hermes-gateway-v1`, the protocol of the desktop app
+(`apps/desktop/src/api/canonical-protocol.ts` in Hermes is the reference
+client). Talaria's calls were checked against the gateway that ships with the
+November 2026 desktop app.
+
+Why the gateway and not `hermes serve`: serve is a second agent runtime over
+the same session store. A turn sent through it ran there, so the desktop app
+never saw its thinking, questions or tool results ("Result unavailable"), and
+while serve held a chat the desktop could not attach to it at all
+(`runtime_coordination_required`). On the gateway the phone and the desktop
+are two viewers of one live chat: each gets every event of every turn,
+whoever started it, and either can answer a question.
 
 Things that are easy to get wrong:
 
 - One WebSocket message can carry several JSON lines.
 - After the `gateway.ready` event the client must call
-  `client.capabilities {server_requests: true}`. Without it the backend fails
-  every approval and clarify request at once instead of sending it.
-- Events address the **live** session id that `session.create` or
-  `session.resume` returns. The sidebar lists the **stored** id. A chat has
-  both.
-- A socket that stays away for about 20 seconds has its live sessions reaped.
-  `session.resume` with the stored id re-attaches. A chat that never had a turn
-  has no stored row: resume it with `lazy: true`, and create a fresh session if
-  that answers 4007.
+  `client.capabilities {server_requests: true}`.
+- A socket reaches only the chats it opened (`session.create`,
+  `session.resume`). After a reconnect every chat answers `permission_denied`
+  until it is resumed again, which the app treats like a lost session.
+- Session ids are the stored ids; there is no separate live id.
+- `session.create` with a `title` finds the chat with that title or creates
+  it (used for Bot Chat). New chats are created untitled.
+- Questions reach every viewer as `clarify.request` / `approval.request`
+  events and are answered with `clarify.respond` / `approval.respond`, naming
+  the `prompt_id` and the turn's `execution_generation`. `*.settled` says one
+  was answered (anywhere) or given up on. `sudo` and `secret` are still
+  JSON-RPC requests to this socket.
+- Changes are fenced. `session.mutate` (model, reasoning, rename, archive,
+  branch) carries `expected_revision` (and `expected_generation` for
+  settings); `session.interrupt` and `session.redirect` carry the running
+  turn's `execution_generation`. `RPCConnection` keeps the newest fences it
+  saw per chat; a `stale_generation` or `revision_conflict` refusal is retried
+  once with fresh ones.
+- `prompt.submit` needs a `submission_id`; pictures staged with
+  `image.attach_bytes` go in `attachments: [{path, mime}]`.
+- A snapshot leaves out a running turn's streamed text. `session.events.since`
+  from sequence 0 replays the turn, and the app rebuilds the text so far from
+  it.
 - Session metadata writes over REST (`PATCH /api/sessions/{id}`) are fenced:
   each needs a fresh `request_id` and the `expected_revision` it was based on.
 
@@ -94,8 +121,8 @@ A turn looks like this on the wire:
 ← session.title {title}                  after the first turn
 ```
 
-Questions from the agent arrive as JSON-RPC requests (they carry an `id` and
-wait for a result): `approval`, `clarify`, `sudo`, `secret`.
+Clarify and approval questions arrive as events every viewer of the chat
+sees (above); `sudo` and `secret` as JSON-RPC requests that wait for a result.
 
 ## Knowing a reply is running
 
@@ -105,9 +132,7 @@ true across reconnects:
 - Any turn activity starts the running state: `message.start`, deltas,
   `thinking.delta` with text, `tool.start`, `tool.generating`,
   `tool.progress`. Only `message.complete`, an error or `turn.end` ends it.
-- `session.resume` returns `running`, `status` (`working`, `waiting`,
-  `idle`) and `turn_started_at` at the top level. `inflight` describes only
-  streamed text and is null while a tool runs, so `running` decides.
+- `session.resume` returns `running` at the top level, which decides.
 - A turn that has been quiet for 20 seconds is checked against
   `session.active_list`; if the session is idle or gone, the chat re-attaches
   and takes the finished transcript.
@@ -138,10 +163,10 @@ the note only as `message.interim`. So:
 
 ### Turns another Hermes process runs
 
-The desktop app starts its own backend, separate from the one this app talks
-to; both share the session store. A chat the desktop app runs is in neither
-`session.active_list` nor `/hd/owners` (it takes no lease in
-`runtime/active_sessions.json`), and none of its events reach this app.
+Turns the desktop app runs are not elsewhere: they run in the gateway this
+app talks to, show in `session.active_list`, and stream here live. A process
+outside the gateway (a terminal running its own agent) still shares only the
+session store, and none of its events reach this app.
 
 What does reach it is the agent's heartbeat. Whichever process runs a turn
 stamps `last_activity_at` and `last_activity_description` on the session row
@@ -240,8 +265,9 @@ stored `session_id` so relative paths resolve against its working folder.
 
 ## One owner per conversation
 
-Hermes lets one process hold a conversation at a time. The desktop app takes a
-lease on a chat when it runs a turn in it, and the backend refuses turns from
+Hermes lets one process hold a conversation at a time. The gateway is one
+process, so chats it runs are shared by the desktop app and this one. A chat
+another process holds (a terminal running its own agent) refuses turns from
 anyone else. Talaria treats that as a normal state, not an error:
 
 1. Before opening a chat it asks `/hd/owners`.
@@ -252,9 +278,10 @@ anyone else. Talaria treats that as a normal state, not an error:
    attachments move to it and the message is sent there. Lists show the two as
    one conversation with versions.
 4. When the other process lets go, the chat goes live in place.
-5. Talaria lets go too: 45 seconds after you leave a chat you spoke in, it
-   closes its live session if no reply is running, so the Mac can pick the chat
-   back up.
+
+Leaving a chat detaches this socket from it (`session.detach`) unless a reply
+there is still running, so a question that reply asks still reaches the phone.
+Nothing is locked by following a chat.
 
 Messaging threads (Slack and others) are answered by the gateway process, so
 they follow the same watch and continue-as-new-version path.
@@ -276,5 +303,5 @@ twice.
 - Diff review and the working-folder picker.
 - Push notifications. iOS suspends the socket in the background, so a reply
   that finishes while the app is closed is seen on the next open.
-- A direct connection to `hermes serve` (OAuth or basic auth) without the
+- A direct connection to the gateway (OAuth or basic auth) without the
   gate.

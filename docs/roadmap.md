@@ -20,8 +20,11 @@ yet.
 - A working row at the foot of a running turn and "Working" in the title bar.
   `session.resume`'s `running` and `turn_started_at` restore it after a
   reconnect; tool events alone start it; a quiet turn is re-checked against
-  `session.active_list`. Chats the desktop app runs in its own backend are
-  read from the session heartbeat (`last_activity_*`) and watched read-only.
+  `session.active_list`. Chats a terminal runs in its own agent are read from
+  the session heartbeat (`last_activity_*`) and watched read-only.
+- One live chat with the desktop app: the app drives chats through the Hermes
+  gateway (`/hd/gateway/ws`), so turns, thinking, tool results and questions
+  from either side reach the other.
 - Files a chat made: from `write_file` and `patch` calls, produced-file keys
   in tool results, `MEDIA:` lines and paths in answers. Previews through
   `GET /api/fs/read-text`, downloads through `GET /api/fs/download`

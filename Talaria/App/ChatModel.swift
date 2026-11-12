@@ -24,17 +24,20 @@ struct ComposerAttachment: Identifiable {
 
 /// One open conversation: its transcript, its live session on the Mac, and the composer.
 ///
-/// The behavior follows the hermesdash web client. Two rules shape most of it:
-/// - The backend allows one live owner per conversation. A chat that the desktop app or a
-///   terminal has open is shown read-only and kept fresh by polling; sending continues it
-///   as a new version (a branch) that this app owns.
-/// - A dropped socket loses the live session. On return the chat re-attaches and folds the
-///   fresh transcript into what is on screen without rebuilding it.
+/// Chats run in the Hermes gateway on the Mac, the process the desktop app runs them in, so a
+/// chat open in both is one live chat: each app sees the other's turns, thinking and questions as
+/// they happen, and either can answer a question. Two rules shape the rest:
+/// - A chat another Hermes process holds (a terminal running its own agent) is shown read-only
+///   and kept fresh by polling; sending continues it as a new version (a branch).
+/// - A dropped socket loses its attachment to every chat. On return the chat re-attaches and folds
+///   the fresh transcript into what is on screen without rebuilding it.
 @MainActor @Observable
 final class ChatModel: Identifiable {
   let profile: String
   private(set) var storedID: String
   private(set) var liveID: String?
+  /// This app's attachment to the chat on the gateway, let go when the chat closes.
+  @ObservationIgnored private var subscriptionID = ""
   let section: SessionSection
 
   private(set) var state = ChatState() {
@@ -191,7 +194,7 @@ final class ChatModel: Identifiable {
 
     // Ask who has it open right before deciding how to open it.
     async let freshRow = try? client.session(storedID: storedID, profile: profile)
-    async let freshActive = try? client.activeSessions()
+    async let freshActive = try? client.activeSessions(profiles: (app?.profileNames ?? []) + [profile])
     if let owners = await app?.refreshOwners() { owner = owners[storedID] }
     let row = await freshRow
     // Our own backend running it is not "elsewhere": decide on a fresh live list, not the inbox's.
@@ -256,11 +259,15 @@ final class ChatModel: Identifiable {
 
   private func adopt(_ live: LiveSession, history: History) {
     liveID = live.liveID
+    subscriptionID = live.subscriptionID
     app?.noteLive(live.liveID, storedID: storedID)
     var next = state
     next.info.merge(live.info)
     if next.title.isEmpty { next.title = next.info.title }
     var fresh = history.items
+    // The gateway does not say when a running turn started; for the timer, its message (stored when it
+    // was sent) does.
+    let turnStartedAt = live.turnStartedAt ?? (live.isRunning ? TurnActivity.turnStart(in: fresh) : nil)
     if !queue.onMac.isEmpty {
       let texts = queue.onMac.map(\.text)
       let running = ChatState.normalized(live.inflight["user"].stringValue)
@@ -288,7 +295,7 @@ final class ChatModel: Identifiable {
     case .newest(let page, _, let pageWindow):
       fold(newest: page, items: fresh, pageWindow: pageWindow, into: &next, inflight: live.inflight, turnStartedAt: live.turnStartedAt)
     }
-    next.applyLiveStatus(isRunning: live.isRunning, startedAt: live.turnStartedAt, now: now)
+    next.applyLiveStatus(isRunning: live.isRunning, startedAt: turnStartedAt, now: now)
     state = next
     lastEventAt = Date()
     for request in live.openRequests { app?.deliver(request) }
@@ -471,17 +478,9 @@ final class ChatModel: Identifiable {
     }
   }
 
+  /// Forgets the attachment; the next send or reattach resumes the chat afresh.
   private func dropLive() async {
-    var ids = Set<String>()
-    if let liveID { ids.insert(liveID) }
     liveID = nil
-    guard let client else { return }
-    if let active = try? await client.activeSessions() {
-      for entry in active where entry["session_key"].string == storedID {
-        if let id = entry["id"].string { ids.insert(id) }
-      }
-    }
-    for id in ids { try? await client.close(liveID: id) }
   }
 
   private func markOwned(by other: ChatOwner, holdSeconds: Double = 0) {
@@ -669,7 +668,7 @@ final class ChatModel: Identifiable {
 
   private func confirmStillRunning() async {
     guard let client, let liveID, !isWatching else { return }
-    guard let active = try? await client.activeSessions() else { return }
+    guard let active = try? await client.activeSessions(profiles: [profile]) else { return }
     let entry = active.first { $0["id"].string == liveID }
     let status = entry?["status"].stringValue.lowercased() ?? ""
     if let entry, entry["status"].isNull || ["working", "waiting", "starting"].contains(status) { return }
@@ -694,7 +693,8 @@ final class ChatModel: Identifiable {
     guard let outcome = next.answer(clarifyRequestID: requestID, values: values) else { return }
     state = next
     app?.clearWaiting(storedID: storedID)
-    Task { await client?.answer(outcome.request, result: outcome.result) }
+    let profile = profile
+    Task { await client?.answer(outcome.request, result: outcome.result, profile: profile) }
   }
 
   // MARK: Sending
@@ -753,12 +753,13 @@ final class ChatModel: Identifiable {
         do {
           try await ensureLive()
           guard let liveID else { throw HermesError.notConnected }
-          let references = try await stage(picked, liveID: liveID, client: client)
-          let full = ([text] + references).filter { !$0.isEmpty }.joined(separator: "\n\n")
+          let staged = try await stage(picked, liveID: liveID, client: client)
+          let full = ([text] + staged.references).filter { !$0.isEmpty }.joined(separator: "\n\n")
           update(itemID) { $0.sentText = full }
           state.beginTurn(now: now)
           // A queued message must never cut into a reply the Mac is still wrapping up.
-          status = try await client.submit(liveID: liveID, profile: profile, text: full, queued: fromQueue)
+          status = try await client.submit(
+            liveID: liveID, profile: profile, text: full, queued: fromQueue, images: staged.images)
           break
         } catch {
           let wrapped = error as? HermesError ?? .transport(error.localizedDescription)
@@ -824,22 +825,26 @@ final class ChatModel: Identifiable {
     state.items[index] = item
   }
 
-  /// Uploads what was picked. Images are queued on the session; files come back as `@file:` references.
-  private func stage(_ picked: [ComposerAttachment], liveID: String, client: HermesClient) async throws -> [String] {
+  /// Uploads what was picked. Images are staged on the Mac and go with the turn; files come back as
+  /// `@file:` references.
+  private func stage(
+    _ picked: [ComposerAttachment], liveID: String, client: HermesClient
+  ) async throws -> (references: [String], images: [StagedImage]) {
     var references: [String] = []
+    var images: [StagedImage] = []
     for (offset, attachment) in picked.enumerated() {
       guard let data = attachment.data else { continue }
       uploadStatus = picked.count > 1 ? "Uploading \(offset + 1) of \(picked.count)" : "Uploading \(attachment.name)"
       switch attachment.kind {
       case .image:
-        try await client.attachImage(liveID: liveID, profile: profile, data: data, filename: attachment.name)
+        images.append(try await client.attachImage(liveID: liveID, profile: profile, data: data, filename: attachment.name))
       case .file:
         references.append(try await client.attachFile(
           liveID: liveID, profile: profile, data: data, name: attachment.name, mimeType: attachment.mimeType))
       }
     }
     uploadStatus = ""
-    return references
+    return (references, images)
   }
 
   /// Stop the reply. Whatever is queued waits until sent by hand or resumed: stopping means stop.
@@ -956,9 +961,9 @@ final class ChatModel: Identifiable {
     guard !queue.isEmpty, !queue.isPaused, isBusy, !continuesAsNewVersion, let client, let liveID else { return }
     for entry in queue.entries {
       do {
-        let references = try await stage(entry.attachments, liveID: liveID, client: client)
-        let full = ([entry.text] + references).filter { !$0.isEmpty }.joined(separator: "\n\n")
-        _ = try await client.submit(liveID: liveID, profile: profile, text: full, queued: true)
+        let staged = try await stage(entry.attachments, liveID: liveID, client: client)
+        let full = ([entry.text] + staged.references).filter { !$0.isEmpty }.joined(separator: "\n\n")
+        _ = try await client.submit(liveID: liveID, profile: profile, text: full, queued: true, images: staged.images)
         // Shown as waiting on the Mac until the Mac starts its turn; not in the transcript yet.
         queue.moveToMac(entry.id)
         hasSpoken = true
@@ -1100,7 +1105,14 @@ final class ChatModel: Identifiable {
         keepQueueAsDraft()
       }
     }
-    if let liveID, hasSpoken { app?.scheduleRelease(liveID: liveID, storedID: storedID) }
+    // Stop following the chat once nothing here waits on it. A running reply stays followed, so a
+    // question it asks still reaches this app.
+    if let liveID, let client, !state.isStreaming, !isSending, queue.isEmpty {
+      let subscription = subscriptionID
+      let profile = profile
+      subscriptionID = ""
+      Task { try? await client.detach(liveID: liveID, subscriptionID: subscription, profile: profile) }
+    }
   }
 
   /// Queued messages that could not go to the Mac (the queue was paused, or the handover failed)

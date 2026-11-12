@@ -122,8 +122,10 @@ final class QueueFlowTests: XCTestCase {
     shoot("q5-paused")
     app.descendants(matching: .any).matching(identifier: "queue.resume").firstMatch.tap()
     // Sent as its own turn. (The answer itself can fold into the next steps at once: the command
-    // the first "Send now" moved to the background reports back with a turn of its own.)
-    XCTAssertTrue(userMessage(containing: "KIWI").firstMatch.waitForExistence(timeout: 30), "resuming did not send the queued message")
+    // the first "Send now" moved to the background reports back with a turn of its own. On the
+    // gateway that report is queued behind the stopped reply and runs right after it, so the
+    // resumed message waits for it to end first.)
+    XCTAssertTrue(userMessage(containing: "KIWI").firstMatch.waitForExistence(timeout: 150), "resuming did not send the queued message")
     XCTAssertTrue(queueRows.firstMatch.waitForNonExistence(timeout: 5), "the queue did not empty")
     shoot("q6-resumed")
 

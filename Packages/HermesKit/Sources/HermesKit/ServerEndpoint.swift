@@ -62,8 +62,12 @@ public struct ServerEndpoint: Sendable, Hashable, Codable {
     return components.url ?? baseURL
   }
 
+  /// The socket into the Hermes gateway itself: the process the desktop app runs its chats in.
+  /// The gate adds the gateway's one-use ticket. Chats driven through it are the same live chats
+  /// the desktop app shows; `/api/ws` (hermesdash's separate `hermes serve`) ran a second copy of
+  /// each chat that the desktop never saw and that locked the desktop out of it.
   public var webSocketURL: URL {
-    var components = URLComponents(url: url(path: "/api/ws"), resolvingAgainstBaseURL: false) ?? URLComponents()
+    var components = URLComponents(url: url(path: "/hd/gateway/ws"), resolvingAgainstBaseURL: false) ?? URLComponents()
     components.scheme = isSecure ? "wss" : "ws"
     return components.url ?? baseURL
   }

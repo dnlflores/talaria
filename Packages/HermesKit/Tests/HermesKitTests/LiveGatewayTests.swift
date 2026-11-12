@@ -10,7 +10,7 @@ import Testing
 /// - `TALARIA_LIVE_PROFILE` (default `default`): profile used for the session and turn tests.
 /// - `TALARIA_LIVE_TURN=1`: also run one real turn (costs a model call, leaves one archived chat).
 /// - `TALARIA_GATE_BASE` + `TALARIA_GATE_PASSWORD`: a password-protected listener to sign in to.
-private enum Live {
+enum Live {
   static let environment = ProcessInfo.processInfo.environment
   static var base: ServerEndpoint? { environment["TALARIA_LIVE_BASE"].flatMap(ServerEndpoint.init(userInput:)) }
   static var profile: String { environment["TALARIA_LIVE_PROFILE"] ?? "default" }
@@ -77,7 +77,7 @@ private enum Live {
     let catalog = try await client.modelCatalog(liveID: session.liveID, profile: Live.profile)
     #expect(catalog.contains { $0.isAuthenticated && !$0.models.isEmpty })
 
-    try await client.close(liveID: session.liveID)
+    try await client.detach(liveID: session.liveID, subscriptionID: session.subscriptionID, profile: Live.profile)
     await client.rpc.stop()
   }
 
@@ -86,7 +86,7 @@ private enum Live {
     let client = HermesClient(endpoint: try #require(Live.base), cookies: InMemoryCookieStore())
     await client.rpc.start()
     try await client.rpc.waitUntilReady(timeout: 30)
-    let session = try await client.create(profile: Live.profile, options: NewSessionOptions(title: "Talaria live test"))
+    let session = try await client.create(profile: Live.profile, options: NewSessionOptions(title: "Talaria live test \(UUID().uuidString.prefix(8))"))
 
     var state = ChatState()
     state.items.append(TranscriptItem(kind: .user, text: "ping", timestamp: Date().timeIntervalSince1970))
@@ -126,7 +126,7 @@ private enum Live {
     #expect(history.filter { $0.kind == .user }.count == 1)
     #expect(history.last?.kind == .assistant)
 
-    try? await client.close(liveID: resumed.liveID)
+    try? await client.detach(liveID: resumed.liveID, subscriptionID: resumed.subscriptionID, profile: Live.profile)
     try await client.setArchived(storedID: session.storedID, profile: Live.profile, archived: true)
     await client.rpc.stop()
   }

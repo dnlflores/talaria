@@ -312,6 +312,20 @@ public struct ChatState: Sendable, Equatable {
       }
       return [.requestCancelled(requestID)]
 
+    case "prompt.settled":
+      // A question every viewer saw was answered (here, or on the desktop) or given up on. Its
+      // answer arrives with the call's result, so the row only stops waiting here.
+      guard let requestID = payload["id"].scalarText else { break }
+      if let index = items.firstIndex(where: { $0.tool?.pendingRequest?.id == requestID }) {
+        items[index].tool?.pendingRequest = nil
+      }
+      return [.requestCancelled(requestID)]
+
+    case "session.updated":
+      // Another viewer changed the chat (the desktop renamed it, switched its model, ...).
+      if payload["operation"].string == "rename", let value = payload["title"].string, !value.isEmpty { title = value }
+      if payload["operation"].string == "model", let model = payload["model"].string, !model.isEmpty { info.model = model }
+
     default:
       return applyOther(type, payload: payload)
     }

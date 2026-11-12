@@ -131,7 +131,6 @@ final class AppModel {
   private var reloadTask: Task<Void, Never>?
   @ObservationIgnored private var activityTask: Task<Void, Never>?
   private var toastTask: Task<Void, Never>?
-  private var releaseTasks: [String: Task<Void, Never>] = [:]
   private var isLoadingSessions = false
 
   // MARK: Launch and sign-in
@@ -220,8 +219,6 @@ final class AppModel {
     pump = nil
     reloadTask?.cancel()
     reloadTask = nil
-    for task in releaseTasks.values { task.cancel() }
-    releaseTasks = [:]
     if let client { Task { await client.rpc.stop() } }
     client = nil
     path = []
@@ -364,6 +361,13 @@ final class AppModel {
       }
 
     case .event(let event):
+      if event.type == "prompt.settled", let id = event.payload["id"].scalarText {
+        // A question answered or given up on anywhere (the desktop included) leaves every screen.
+        requestWithdrawn(id)
+        if let stored = liveToStored[event.sessionID], !prompts.contains(where: { $0.sessionID == event.sessionID }) {
+          waitingOnYou.remove(stored)
+        }
+      }
       if event.sessionID.isEmpty {
         switch event.type {
         case "sessions.changed": scheduleReload()
@@ -411,13 +415,30 @@ final class AppModel {
     prompts.removeAll { $0.id == request.id }
     if let stored = liveToStored[request.sessionID] { waitingOnYou.remove(stored) }
     guard let client else { return }
+    let profile = profile(forLive: request.sessionID)
     Task {
       if let result {
-        await client.answer(request, result: result)
+        await client.answer(request, result: result, profile: profile)
       } else {
-        await client.decline(request)
+        await client.decline(request, profile: profile)
       }
     }
+  }
+
+  /// The bot a live chat belongs to: the gateway routes a chat's calls by it.
+  func profile(forLive liveID: String) -> String {
+    if let chat = openChat, chat.liveID == liveID { return chat.profile }
+    if let stored = liveToStored[liveID], let row = row(stored) { return row.profile }
+    return chatCache.values.first { $0.liveID == liveID }?.profile ?? "default"
+  }
+
+  /// Every bot, by name: each is its own profile on the gateway, asked one by one. Bots seen in
+  /// the inbox count too, for before the bot list has loaded.
+  var profileNames: [String] {
+    var names = Set(profiles.map(\.name))
+    names.formUnion(sessions.map(\.profile))
+    names.insert("default")
+    return names.filter { !$0.isEmpty }.sorted()
   }
 
   func requestWithdrawn(_ id: String) {
@@ -447,7 +468,7 @@ final class AppModel {
     isLoadingSessions = true
     defer { isLoadingSessions = false }
     async let ownersJob = try? client.owners()
-    async let activeJob = try? client.activeSessions()
+    async let activeJob = try? client.activeSessions(profiles: profileNames)
     async let totalsJob = sessionTotals(client)
     do {
       var rows = try await client.sessions()
@@ -725,7 +746,7 @@ final class AppModel {
   func archive(_ session: SessionSummary) {
     sessions.removeAll { $0.id == session.id }
     mutate(session, failure: "Could not archive the chat") { client in
-      try await client.setArchived(storedID: session.id, profile: session.profile, archived: true)
+      try await client.update(session, archived: true)
     }
   }
 
@@ -833,7 +854,6 @@ final class AppModel {
   }
 
   func chatAppeared(_ chat: ChatModel) {
-    releaseTasks.removeValue(forKey: chat.storedID)?.cancel()
     openChat = chat
   }
 
@@ -841,25 +861,6 @@ final class AppModel {
     chat.leave()
     if openChat === chat { openChat = nil }
     for (key, cached) in chatCache where cached === chat { chatCache[key] = nil }
-  }
-
-  /// A chat we talked in holds the backend's lease until its runtime closes, which locks it out of
-  /// the desktop app. Let go shortly after leaving, unless a reply is still running.
-  func scheduleRelease(liveID: String, storedID: String) {
-    guard let client else { return }
-    releaseTasks[storedID]?.cancel()
-    releaseTasks[storedID] = Task { [weak self] in
-      try? await Task.sleep(for: .seconds(45))
-      guard let self, !Task.isCancelled else { return }
-      self.releaseTasks[storedID] = nil
-      if self.openChat?.storedID == storedID { return }
-      guard let active = try? await client.activeSessions(),
-        let entry = active.first(where: { $0["id"].string == liveID })
-      else { return }
-      let status = entry["status"].stringValue.lowercased()
-      if !status.isEmpty, !["idle", "ready", "waiting"].contains(where: status.contains) { return }
-      try? await client.close(liveID: liveID)
-    }
   }
 
   // MARK: Toasts

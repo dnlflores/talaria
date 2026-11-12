@@ -33,16 +33,65 @@ public struct ServerRequest: Sendable, Equatable, Identifiable {
     self.method = method
     self.params = params
   }
+
+  static let promptPrefix = "prompt:"
+
+  /// A question the gateway put to every viewer of a chat (`clarify.request`, `approval.request`),
+  /// in the shape the app's question cards take. Whoever answers first settles it for all of them,
+  /// the desktop app included; it is answered with `clarify.respond` / `approval.respond`, not with a
+  /// JSON-RPC result.
+  public static func prompt(kind: String, sessionID: String, payload: JSONValue) -> ServerRequest? {
+    guard kind == "clarify" || kind == "approval", let promptID = payload["prompt_id"].scalarText, !promptID.isEmpty else {
+      return nil
+    }
+    var params: [String: JSONValue] = [
+      "session_id": .string(sessionID), "prompt_id": .string(promptID),
+      "execution_generation": payload["execution_generation"],
+    ]
+    let choices = payload["choices"].isNull ? JSONValue.array([]) : payload["choices"]
+    if kind == "clarify" {
+      params["questions"] = .array([
+        [
+          "qid": .string(promptID), "question": payload["question"], "choices": choices,
+          "multi_select": .bool(payload["multi_select"].truthy),
+        ]
+      ])
+    } else {
+      params["command"] = payload["command"]
+      params["description"] = payload["description"]
+      params["choices"] = choices
+      params["allow_permanent"] = .bool((choices.array ?? []).contains(.string("always")))
+      params["edit"] = payload["edit"]
+    }
+    return ServerRequest(rawID: .string("\(promptPrefix)\(kind):\(promptID)"), method: kind, params: .object(params))
+  }
+
+  /// The id `prompt(kind:sessionID:payload:)` gives the question with this prompt id.
+  public static func promptRequestID(kind: String, promptID: String) -> String { "\(promptPrefix)\(kind):\(promptID)" }
+
+  /// Asked by the gateway of every viewer, rather than of this socket alone.
+  public var isPrompt: Bool { rawID.string?.hasPrefix(Self.promptPrefix) == true }
 }
 
-/// JSON-RPC over the gateway WebSocket (`/api/ws`), with reconnect.
+/// What the gateway fences a chat's changes with. A change names the revision and the turn
+/// generation it was based on, and is refused (`revision_conflict`, `stale_generation`) when the
+/// chat moved on meanwhile.
+public struct SessionFences: Sendable, Equatable {
+  public var revision: Int?
+  public var generation: Int?
+}
+
+/// JSON-RPC over the Hermes gateway's WebSocket (`/hd/gateway/ws` on the gate), with reconnect.
 ///
-/// Wire notes, verified against hermes 0.23.1:
+/// Wire notes, verified against the gateway that ships with the Nov 2026 desktop app:
+/// - The socket speaks `hermes-gateway-v1`; the gate adds the one-use ticket.
 /// - One WebSocket message can carry several JSON lines.
-/// - After `gateway.ready` the client must call `client.capabilities {server_requests: true}`,
-///   otherwise every approval/clarify request is failed on the server at once.
-/// - A socket that stays away for more than about 20 seconds has its live sessions reaped;
-///   the owner of a chat re-attaches with `session.resume`.
+/// - After `gateway.ready` the client calls `client.capabilities {server_requests: true}`, or the
+///   gateway fails its sudo and secret requests at once.
+/// - A socket only reaches chats it opened (`session.create` / `session.resume`): after a
+///   reconnect every chat answers `permission_denied` until it is resumed again.
+/// - Every viewer of a chat gets every event of its turns, whoever started them, and its
+///   questions arrive as `clarify.request` / `approval.request` events (`ServerRequest.prompt`).
 public actor RPCConnection {
   public enum Incoming: Sendable {
     case state(ConnectionState)
@@ -61,6 +110,7 @@ public actor RPCConnection {
   private struct Pending {
     let continuation: CheckedContinuation<JSONValue, any Error>
     let timeout: Task<Void, Never>
+    let sessionID: String
   }
 
   public private(set) var state: ConnectionState = .idle
@@ -73,10 +123,13 @@ public actor RPCConnection {
   private var readyWaiters: [UUID: CheckedContinuation<Void, any Error>] = [:]
   private var backoff: Double = RPCConnection.initialBackoff
   private var sleeper: Task<Void, Never>?
+  /// Per chat, the newest revision and turn generation the gateway has named.
+  private var fences: [String: SessionFences] = [:]
 
   private static let initialBackoff = 0.8
   private static let maxBackoff = 8.0
   private static let maxMessageBytes = 64 << 20
+  static let protocolName = "hermes-gateway-v1"
 
   public init(endpoint: ServerEndpoint, cookies: any SessionCookieStore) {
     self.endpoint = endpoint
@@ -170,6 +223,7 @@ public actor RPCConnection {
     var request = URLRequest(url: endpoint.webSocketURL, timeoutInterval: 30)
     request.httpShouldHandleCookies = false
     request.setValue(endpoint.origin, forHTTPHeaderField: "Origin")
+    request.setValue(Self.protocolName, forHTTPHeaderField: "Sec-WebSocket-Protocol")
     if let cookie = cookies.cookie(for: endpoint) {
       request.setValue("\(HermesHTTP.cookieName)=\(cookie)", forHTTPHeaderField: "Cookie")
     }
@@ -258,8 +312,12 @@ public actor RPCConnection {
         waiting.timeout.cancel()
         let error = frame["error"]
         if error.isNull {
-          waiting.continuation.resume(returning: frame["result"])
+          let result = frame["result"]
+          noteFences(result["session_id"].string ?? waiting.sessionID, from: result)
+          waiting.continuation.resume(returning: result)
         } else {
+          // A fence refusal names the chat's current revision and generation: the retry uses them.
+          noteFences(waiting.sessionID, from: error["data"])
           waiting.continuation.resume(throwing: HermesError.rpc(
             code: error["code"].int ?? 0,
             message: error["message"].string ?? "The Mac refused the request.",
@@ -271,8 +329,29 @@ public actor RPCConnection {
       if method == "event" {
         let params = frame["params"]
         let type = params["type"].stringValue
+        let sessionID = params["session_id"].stringValue
+        let payload = params["payload"]
         if type == "gateway.ready" { gatewayReady() }
-        continuation.yield(.event(GatewayEvent(type: type, sessionID: params["session_id"].stringValue, payload: params["payload"])))
+        if !sessionID.isEmpty {
+          noteFences(sessionID, generation: params["execution_generation"].int ?? payload["execution_generation"].int)
+          if type == "session.info" || type == "session.updated" { noteFences(sessionID, revision: payload["revision"].int) }
+        }
+        switch type {
+        case "clarify.request", "approval.request":
+          if let request = ServerRequest.prompt(kind: String(type.prefix { $0 != "." }), sessionID: sessionID, payload: payload) {
+            continuation.yield(.request(request))
+          }
+          continue
+        case "clarify.settled", "approval.settled":
+          // Answered here, on the desktop, or given up on: every copy of the question goes.
+          guard let promptID = payload["prompt_id"].scalarText else { continue }
+          let requestID = ServerRequest.promptRequestID(kind: String(type.prefix { $0 != "." }), promptID: promptID)
+          continuation.yield(.event(GatewayEvent(type: "prompt.settled", sessionID: sessionID, payload: ["id": .string(requestID)])))
+          continue
+        default:
+          break
+        }
+        continuation.yield(.event(GatewayEvent(type: type, sessionID: sessionID, payload: payload)))
         continue
       }
 
@@ -281,6 +360,34 @@ public actor RPCConnection {
       }
     }
   }
+
+  // MARK: Fences
+
+  /// The newest revision and turn generation the gateway named for a chat.
+  public func fences(for sessionID: String) -> SessionFences {
+    fences[sessionID] ?? SessionFences()
+  }
+
+  /// Records fences from a snapshot, a receipt or a refusal. They only move forward: an older
+  /// answer that arrives late never takes the chat back.
+  public func noteFences(_ sessionID: String, from json: JSONValue) {
+    noteFences(sessionID, revision: json["revision"].int, generation: json["execution_generation"].int)
+  }
+
+  func noteFences(_ sessionID: String, revision: Int? = nil, generation: Int? = nil) {
+    guard !sessionID.isEmpty, revision != nil || generation != nil else { return }
+    var current = fences[sessionID] ?? SessionFences()
+    if let revision { current.revision = max(current.revision ?? revision, revision) }
+    if let generation { current.generation = max(current.generation ?? generation, generation) }
+    fences[sessionID] = current
+  }
+
+  /// One-time tokens the gateway gave with a "this model costs more" question, by chat and model.
+  private var confirmations: [String: String] = [:]
+
+  func rememberConfirmation(_ key: String, token: String) { confirmations[key] = token }
+
+  func takeConfirmation(_ key: String) -> String? { confirmations.removeValue(forKey: key) }
 
   private func gatewayReady() {
     isReady = true
@@ -305,13 +412,14 @@ public actor RPCConnection {
     let id = String(nextID)
     let frame: JSONValue = ["jsonrpc": "2.0", "id": .string(id), "method": .string(method), "params": params]
     let text = frame.text()
+    let sessionID = params["session_id"].stringValue
     return try await withCheckedThrowingContinuation { continuation in
       let expiry = Task { [weak self] in
         try? await Task.sleep(for: .seconds(timeout))
         guard !Task.isCancelled else { return }
         await self?.settle(id, with: .failure(HermesError.timedOut(method)))
       }
-      pending[id] = Pending(continuation: continuation, timeout: expiry)
+      pending[id] = Pending(continuation: continuation, timeout: expiry, sessionID: sessionID)
       socket.send(.string(text)) { [weak self] error in
         guard error != nil else { return }
         Task { await self?.settle(id, with: .failure(HermesError.notConnected)) }

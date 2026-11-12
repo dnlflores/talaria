@@ -30,8 +30,7 @@ T3 Tools.
 - **A working state you can see:** while a reply runs, the foot of the chat
   says what the agent is doing ("Running a command", "Writing the answer")
   with the elapsed time, the title bar says "Working", and the inbox marks the
-  chat. It holds across leaving the chat and the phone sleeping, and also
-  covers chats the desktop app is running in its own backend.
+  chat. It holds across leaving the chat and the phone sleeping.
 - **Sending while it works:** a message written while a reply runs waits in a
   queue above the composer instead of cutting in, and goes out as the next turn
   when the reply ends. "Send now" puts a queued message into the running reply,
@@ -48,10 +47,13 @@ T3 Tools.
   the transcript; command approvals and sudo or secret prompts arrive as sheets.
 - **Model and thinking effort** per conversation, from the Mac's own catalog.
 - **Attachments:** photos (resized on the phone) and files.
-- **Chats open elsewhere:** Hermes allows one live owner per conversation. A
-  chat that the desktop app or a terminal has open is shown read-only and kept
-  fresh; sending from the phone continues it as a new version, with the full
-  history, and the original stays untouched on the Mac.
+- **One chat on the phone and the desktop app:** chats run in the Hermes
+  gateway on the Mac, the process the desktop app runs them in. A chat open in
+  both is the same live chat: either side sees the other's turns, thinking,
+  tool results and questions as they happen, and either can answer.
+- **Chats a terminal holds:** a chat another Hermes process (a terminal running
+  its own agent) has open is shown read-only and kept fresh; sending from the
+  phone continues it as a new version, with the full history.
 - **Reconnects:** the socket dies whenever the phone sleeps. On return the
   chat re-attaches and folds in what it missed without rebuilding the screen.
 - **Themes:** six palette families, each light and dark.
@@ -96,13 +98,15 @@ iPhone (Talaria)
 hermesdash gate on the Mac        password, rate limit, origin check
    │  loopback, session token
    ▼
-hermes serve                      JSON-RPC gateway, one process, all profiles
+Hermes gateway                    the desktop app's runtime, all profiles
 ```
 
-Talaria does not talk to `hermes serve` directly. It goes through the public
-entrance of a small gate (called hermesdash here) that sits in front of it and
-is published with Tailscale Funnel. The gate adds two endpoints the app uses:
-`/hd/health` and `/hd/owners` (which chats another Hermes process holds).
+Talaria does not talk to the gateway directly. It goes through the public
+entrance of a small gate (called hermesdash here) that is published with
+Tailscale Funnel. The gate opens the WebSocket into the gateway at
+`/hd/gateway/ws` (it mints the gateway's one-use ticket, as the desktop app
+does), proxies REST reads to `hermes serve`, and adds `/hd/health` and
+`/hd/owners` (which chats another Hermes process holds).
 [docs/architecture.md](docs/architecture.md) describes the contract.
 
 ## Build
@@ -160,8 +164,11 @@ The live tests cost a few model calls and archive the chats they create.
 `TourTests` walks every area read-only and saves screenshots
 (`TEST_RUNNER_TALARIA_UITEST_TOUR=1`); `CronFlowTests` pauses and resumes a
 throwaway job you name in `TEST_RUNNER_TALARIA_UITEST_CRON_JOB`;
-`ElsewhereTests` checks a chat the desktop app is running right now
+`ElsewhereTests` checks a chat a terminal is running right now
 (`TEST_RUNNER_TALARIA_UITEST_ELSEWHERE=<its title>`) reads as working.
+`swift test --filter SharedChat` (with `TALARIA_LIVE_TURN=1`) checks that a
+turn from either the phone or the desktop app reaches the other, questions
+included.
 
 ## Layout
 
