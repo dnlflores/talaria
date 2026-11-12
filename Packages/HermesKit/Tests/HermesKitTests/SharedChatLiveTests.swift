@@ -29,7 +29,7 @@ import Testing
   }
 
   private func connect() async throws -> (HermesClient, Inbox, Task<Void, Never>) {
-    let client = HermesClient(endpoint: try #require(Live.base), cookies: InMemoryCookieStore())
+    let client = try Live.client()
     let inbox = Inbox()
     let pump = Task { for await incoming in client.rpc.incoming { await inbox.add(incoming) } }
     await client.rpc.start()

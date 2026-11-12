@@ -2,7 +2,8 @@ import XCTest
 
 /// End-to-end checks against a real Hermes backend. They are skipped unless a gate is named:
 ///
-///   TEST_RUNNER_TALARIA_UITEST_SERVER=http://127.0.0.1:4300 \
+///   TEST_RUNNER_TALARIA_UITEST_SERVER=http://127.0.0.1:9120 \
+///   TEST_RUNNER_TALARIA_UITEST_SIGNIN=<tokens file from scripts/sign-in.py> \
 ///   TEST_RUNNER_TALARIA_UITEST_BOT=Scout \
 ///   xcodebuild test -project Talaria.xcodeproj -scheme Talaria -destination 'platform=iOS Simulator,name=iPhone 17 Pro'
 ///
@@ -26,6 +27,7 @@ final class LiveFlowTests: XCTestCase {
     continueAfterFailure = false
     app = XCUIApplication()
     app.launchEnvironment["TALARIA_SERVER"] = server
+    app.launchEnvironment["TALARIA_SIGNIN_FILE"] = environment["TALARIA_UITEST_SIGNIN"] ?? ""
     app.launch()
   }
 

@@ -3,7 +3,8 @@ import XCTest
 /// Pauses and resumes a cron job from the app, against a real backend. It needs a throwaway job
 /// that is safe to resume (a far-off schedule), created before and deleted after the run:
 ///
-///   TEST_RUNNER_TALARIA_UITEST_SERVER=http://127.0.0.1:4300 \
+///   TEST_RUNNER_TALARIA_UITEST_SERVER=http://127.0.0.1:9120 \
+///   TEST_RUNNER_TALARIA_UITEST_SIGNIN=<tokens file from scripts/sign-in.py> \
 ///   TEST_RUNNER_TALARIA_UITEST_CRON_JOB="Talaria test job" \
 ///   xcodebuild test-without-building ... -only-testing:TalariaUITests/CronFlowTests
 ///
@@ -26,6 +27,7 @@ final class CronFlowTests: XCTestCase {
     continueAfterFailure = false
     app = XCUIApplication()
     app.launchEnvironment["TALARIA_SERVER"] = server
+    app.launchEnvironment["TALARIA_SIGNIN_FILE"] = environment["TALARIA_UITEST_SIGNIN"] ?? ""
     app.launch()
   }
 

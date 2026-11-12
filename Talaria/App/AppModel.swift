@@ -74,7 +74,8 @@ final class AppModel {
     case launching
     /// No address yet (first launch), or the saved one stopped working.
     case needsServer
-    case needsPassword
+    /// Hermes on the Mac wants a sign-in (none held, or it ended).
+    case needsSignIn
     case ready
   }
 
@@ -126,7 +127,18 @@ final class AppModel {
   @ObservationIgnored private var chatCache: [String: ChatModel] = [:]
   @ObservationIgnored private var liveToStored: [String: String] = [:]
 
-  private let cookies = KeychainCookieStore(service: "talaria.gate-session")
+  private let signIns: any SignInStore = AppModel.makeSignInStore()
+  @ObservationIgnored private var signInSheet: SignInSheet?
+
+  private static func makeSignInStore() -> any SignInStore {
+    #if DEBUG
+      // UI tests and simulator screenshots: the tokens `scripts/sign-in.py` saved on the Mac.
+      if let path = ProcessInfo.processInfo.environment["TALARIA_SIGNIN_FILE"], !path.isEmpty {
+        return FileSignInStore(path: path)
+      }
+    #endif
+    return KeychainSignInStore(service: "talaria.hermes-sign-in")
+  }
   private var pump: Task<Void, Never>?
   private var reloadTask: Task<Void, Never>?
   @ObservationIgnored private var activityTask: Task<Void, Never>?
@@ -177,26 +189,30 @@ final class AppModel {
       macHome = health.home
       enterReady()
     case .loginRequired:
-      phase = .needsPassword
-    case .noPasswordConfigured:
-      throw HermesError.noPasswordConfigured
+      phase = .needsSignIn
+    case .noSignInConfigured:
+      throw HermesError.noSignInConfigured
     }
   }
 
-  func signIn(password: String) async throws {
-    guard let client else { return }
-    try await client.http.login(password: password)
+  /// Opens Hermes' sign-in sheet and, once it comes back, the chats.
+  func signIn() async throws {
+    guard let client, signInSheet == nil else { return }
+    let sheet = SignInSheet()
+    signInSheet = sheet
+    defer { signInSheet = nil }
+    try await sheet.run(http: client.http)
     enterReady()
   }
 
-  /// Forgets the session and returns to the password screen. The address is kept for next time.
+  /// Forgets the sign-in and returns to the sign-in screen. The address is kept for next time.
   func signOut() async {
     let old = client
     teardown()
     await old?.http.logout()
     // The old client's event stream ended with its pump, so the next sign-in gets a fresh one.
-    client = endpoint.map { HermesClient(endpoint: $0, cookies: cookies) }
-    phase = endpoint == nil ? .needsServer : .needsPassword
+    client = endpoint.map { HermesClient(endpoint: $0, signIns: signIns) }
+    phase = endpoint == nil ? .needsServer : .needsSignIn
   }
 
   func forgetServer() async {
@@ -211,7 +227,7 @@ final class AppModel {
     if endpoint == self.endpoint, client != nil { return }
     teardown()
     self.endpoint = endpoint
-    client = HermesClient(endpoint: endpoint, cookies: cookies)
+    client = HermesClient(endpoint: endpoint, signIns: signIns)
   }
 
   private func teardown() {
@@ -351,9 +367,9 @@ final class AppModel {
         if let chat = openChat { Task { await chat.connectionReady() } }
       case .unauthorized:
         if phase == .ready {
-          cookies.setCookie(nil, for: source.endpoint)
+          signIns.setSignIn(nil, for: source.endpoint)
           path = []
-          phase = .needsPassword
+          phase = .needsSignIn
           show("Your session on the Mac ended. Sign in again.", kind: .info)
         }
       default:
@@ -490,7 +506,7 @@ final class AppModel {
       connection = .unauthorized
       if phase == .ready {
         path = []
-        phase = .needsPassword
+        phase = .needsSignIn
       }
     } catch {
       _ = await ownersJob

@@ -21,6 +21,7 @@ final class LongChatTests: XCTestCase {
     continueAfterFailure = false
     app = XCUIApplication()
     app.launchEnvironment["TALARIA_SERVER"] = server
+    app.launchEnvironment["TALARIA_SIGNIN_FILE"] = environment["TALARIA_UITEST_SIGNIN"] ?? ""
     app.launchEnvironment["TALARIA_OPEN_CHAT"] = chat
   }
 

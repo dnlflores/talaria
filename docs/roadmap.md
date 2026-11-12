@@ -8,7 +8,7 @@ yet.
 
 ## Done: connection, inbox, chat
 
-- Sign-in through the gate, Keychain session, reconnect.
+- Hermes' own sign-in (Nous account, native-app flow), tokens in the Keychain, reconnect.
 - Inbox grouped by bot (lead chat with its latest reply, up to three recent
   chats under it, "N more sessions" to the bot's full list), versions folded,
   search, pin, unread, archive, and "Working 3m" on chats whose reply is
@@ -23,7 +23,7 @@ yet.
   `session.active_list`. Chats a terminal runs in its own agent are read from
   the session heartbeat (`last_activity_*`) and watched read-only.
 - One live chat with the desktop app: the app drives chats through the Hermes
-  gateway (`/hd/gateway/ws`), so turns, thinking, tool results and questions
+  gateway directly (its `/api/ws`), so turns, thinking, tool results and questions
   from either side reach the other.
 - Files a chat made: from `write_file` and `patch` calls, produced-file keys
   in tool results, `MEDIA:` lines and paths in answers. Previews through
@@ -90,7 +90,7 @@ yet.
 
 - Push notifications with actions (approve, answer, reply). This needs a
   sender on the Mac that watches the event stream and holds an APNs key, plus
-  device tokens in place of the browser-style cookie.
+  a device token registered with it.
 - Share extension: send a photo, file, link or text to a bot from any app.
 - App Intents and widgets: ask a bot from Siri or Shortcuts, see running turns.
 - A Live Activity while a long turn runs.

@@ -3,7 +3,8 @@ import XCTest
 /// Messages sent while the agent works wait in a queue above the composer; "Send now" puts one
 /// into the running reply. Runs against a real backend, like `LiveFlowTests`:
 ///
-///   TEST_RUNNER_TALARIA_UITEST_SERVER=http://127.0.0.1:4300 \
+///   TEST_RUNNER_TALARIA_UITEST_SERVER=http://127.0.0.1:9120 \
+///   TEST_RUNNER_TALARIA_UITEST_SIGNIN=<tokens file from scripts/sign-in.py> \
 ///   TEST_RUNNER_TALARIA_UITEST_BOT=<bot title> \
 ///   xcodebuild test-without-building ... -only-testing:TalariaUITests/QueueFlowTests
 ///
@@ -27,6 +28,7 @@ final class QueueFlowTests: XCTestCase {
     continueAfterFailure = false
     app = XCUIApplication()
     app.launchEnvironment["TALARIA_SERVER"] = server
+    app.launchEnvironment["TALARIA_SIGNIN_FILE"] = environment["TALARIA_UITEST_SIGNIN"] ?? ""
     app.launch()
   }
 

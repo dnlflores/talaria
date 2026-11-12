@@ -1,13 +1,14 @@
 import Foundation
 
 public enum HermesError: Error, Sendable, Equatable {
-  /// The gate wants the password (no cookie, or the cookie expired).
+  /// Hermes on the Mac wants a sign-in (none held, or it ran out and could not be renewed).
   case loginRequired
-  case wrongPassword
-  case tooManyAttempts
-  /// The Mac has no dashboard password set yet (`hermesdash password`).
-  case noPasswordConfigured
-  /// The address answered, but not like a Hermes gate.
+  /// The person closed the sign-in sheet.
+  case signInCancelled
+  case signInFailed(String)
+  /// The Mac asks for a sign-in but offers no provider to sign in with.
+  case noSignInConfigured
+  /// The address answered, but not like Hermes.
   case notAHermesGate(String)
   case http(status: Int, message: String)
   case rpc(code: Int, message: String, reason: String?)
@@ -20,11 +21,12 @@ public enum HermesError: Error, Sendable, Equatable {
 extension HermesError: LocalizedError {
   public var errorDescription: String? {
     switch self {
-    case .loginRequired: return "Sign in to your Mac to continue."
-    case .wrongPassword: return "Wrong password."
-    case .tooManyAttempts: return "Too many attempts. Try again in a few minutes."
-    case .noPasswordConfigured: return "No password is set on the Mac yet. Run `hermesdash password` there first."
-    case .notAHermesGate(let detail): return "That address did not answer like a Hermes gate (\(detail))."
+    case .loginRequired: return "Sign in to Hermes on your Mac to continue."
+    case .signInCancelled: return "Sign-in was cancelled."
+    case .signInFailed(let detail): return "Sign-in did not finish: \(detail)"
+    case .noSignInConfigured:
+      return "Hermes on the Mac has no sign-in set up for other devices. Turn on Web Access in the desktop app first."
+    case .notAHermesGate(let detail): return "That address did not answer like Hermes (\(detail))."
     case .http(let status, let message): return message.isEmpty ? "The Mac answered with HTTP \(status)." : message
     case .rpc(_, let message, let reason): return HermesError.readable(message: message, reason: reason)
     case .notConnected: return "Not connected to the Mac."

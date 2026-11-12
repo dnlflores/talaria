@@ -16,7 +16,9 @@ final class Preferences {
   private var drafts: [String: String]
 
   private enum Key {
-    static let server = "server.address"
+    /// Hermes' own listener. Its own key: an address saved for the hermesdash gate (the old
+    /// `server.address`) must not carry over, or the app would keep going through hermesdash.
+    static let server = "hermes.address"
     static let theme = "theme.family"
     static let appearance = "theme.appearance"
     static let lastProfile = "chat.lastProfile"

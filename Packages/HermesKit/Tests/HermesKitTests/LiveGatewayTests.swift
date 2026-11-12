@@ -3,31 +3,38 @@ import Testing
 
 @testable import HermesKit
 
-/// Tests against a real gate. They are skipped unless the environment names one:
+/// Tests against Hermes' own listener on the Mac. They are skipped unless the environment names it:
 ///
-///   TALARIA_LIVE_BASE=http://127.0.0.1:4300 swift test --filter Live
+///   TALARIA_LIVE_BASE=https://<mac>.ts.net:10000 TALARIA_LIVE_SIGNIN=<file> swift test --filter Live
 ///
+/// - `TALARIA_LIVE_SIGNIN`: a JSON file holding a sign-in (`access_token`, `refresh_token`,
+///   `expires_at`, `provider`), as `scripts/sign-in.py` writes it. Renewed tokens are written back.
+///   Leave it out for a listener that needs no sign-in.
 /// - `TALARIA_LIVE_PROFILE` (default `default`): profile used for the session and turn tests.
-/// - `TALARIA_LIVE_TURN=1`: also run one real turn (costs a model call, leaves one archived chat).
-/// - `TALARIA_GATE_BASE` + `TALARIA_GATE_PASSWORD`: a password-protected listener to sign in to.
+/// - `TALARIA_LIVE_TURN=1`: also run real turns (costs model calls; the chats are archived).
 enum Live {
   static let environment = ProcessInfo.processInfo.environment
   static var base: ServerEndpoint? { environment["TALARIA_LIVE_BASE"].flatMap(ServerEndpoint.init(userInput:)) }
   static var profile: String { environment["TALARIA_LIVE_PROFILE"] ?? "default" }
   static var turnEnabled: Bool { base != nil && environment["TALARIA_LIVE_TURN"] == "1" }
-  static var gate: ServerEndpoint? { environment["TALARIA_GATE_BASE"].flatMap(ServerEndpoint.init(userInput:)) }
-  static var gatePassword: String? { environment["TALARIA_GATE_PASSWORD"] }
+  static var signInFile: String? { environment["TALARIA_LIVE_SIGNIN"].flatMap { $0.isEmpty ? nil : $0 } }
+
+  static func client() throws -> HermesClient {
+    guard let endpoint = base else { throw HermesError.notConnected }
+    let store: any SignInStore = signInFile.map { FileSignInStore(path: $0) } ?? InMemorySignInStore()
+    return HermesClient(endpoint: endpoint, signIns: store)
+  }
 }
 
 @Suite(.serialized) struct LiveGatewayTests {
   @Test(.enabled(if: Live.base != nil))
   func gateAnswersAndListsConversations() async throws {
-    let client = HermesClient(endpoint: try #require(Live.base), cookies: InMemoryCookieStore())
+    let client = try Live.client()
     guard case .open(let health) = try await client.http.probe() else {
       Issue.record("expected an open gate")
       return
     }
-    #expect(health.backendIsRunning)
+    #expect(health.gatewayRunning)
     #expect(!health.home.isEmpty)
     let sessions = try await client.sessions(recents: 5, messaging: 3, cron: 3)
     for session in sessions {
@@ -39,7 +46,7 @@ enum Live {
 
   @Test(.enabled(if: Live.base != nil))
   func socketReachesReadyAndAnswersCalls() async throws {
-    let client = HermesClient(endpoint: try #require(Live.base), cookies: InMemoryCookieStore())
+    let client = try Live.client()
     await client.rpc.start()
     try await client.rpc.waitUntilReady(timeout: 30)
     #expect(await client.rpc.state == .open)
@@ -63,7 +70,7 @@ enum Live {
 
   @Test(.enabled(if: Live.base != nil))
   func aNewSessionReportsItsModelAndCatalog() async throws {
-    let client = HermesClient(endpoint: try #require(Live.base), cookies: InMemoryCookieStore())
+    let client = try Live.client()
     await client.rpc.start()
     try await client.rpc.waitUntilReady(timeout: 30)
     // The gateway stores a new chat at once, so it is archived at the end.
@@ -84,7 +91,7 @@ enum Live {
 
   @Test(.enabled(if: Live.turnEnabled), .timeLimit(.minutes(3)))
   func aRealTurnStreamsIntoTheTranscript() async throws {
-    let client = HermesClient(endpoint: try #require(Live.base), cookies: InMemoryCookieStore())
+    let client = try Live.client()
     await client.rpc.start()
     try await client.rpc.waitUntilReady(timeout: 30)
     let session = try await client.create(profile: Live.profile, options: NewSessionOptions(title: "Talaria live test \(UUID().uuidString.prefix(8))"))
@@ -132,38 +139,41 @@ enum Live {
     await client.rpc.stop()
   }
 
-  @Test(.enabled(if: Live.gate != nil && Live.gatePassword != nil))
-  func passwordGateSignsInAndCarriesTheSocket() async throws {
-    let endpoint = try #require(Live.gate)
-    let password = try #require(Live.gatePassword)
-    let cookies = InMemoryCookieStore()
-    let client = HermesClient(endpoint: endpoint, cookies: cookies)
-
+  @Test(.enabled(if: Live.base != nil && Live.signInFile != nil))
+  func withoutASignInEverythingIsRefused() async throws {
+    let client = HermesClient(endpoint: try #require(Live.base), signIns: InMemorySignInStore())
     #expect(try await client.http.probe() == .loginRequired)
     await #expect(throws: HermesError.loginRequired) { try await client.sessions(recents: 1, messaging: 1, cron: 1) }
-
-    // Without a session the socket is refused and the connection stops retrying.
+    // Without a sign-in the socket is refused and the connection stops retrying.
     await client.rpc.start()
     await #expect(throws: HermesError.loginRequired) { try await client.rpc.waitUntilReady(timeout: 20) }
     #expect(await client.rpc.state == .unauthorized)
+  }
 
-    await #expect(throws: HermesError.wrongPassword) { try await client.http.login(password: password + "-wrong") }
-    #expect(cookies.cookie(for: endpoint) == nil)
-
-    try await client.http.login(password: password)
-    #expect(cookies.cookie(for: endpoint) != nil)
+  @Test(.enabled(if: Live.base != nil && Live.signInFile != nil))
+  func aSignInOpensRESTAndTheSocketAndRenews() async throws {
+    let client = try Live.client()
     guard case .open = try await client.http.probe() else {
-      Issue.record("expected the gate to open after signing in")
+      Issue.record("expected the sign-in to open Hermes")
       return
     }
-    _ = try await client.sessions(recents: 1, messaging: 1, cron: 1)
+    // A token that ran out is renewed with the refresh token, and the request goes through.
+    let endpoint = try #require(Live.base)
+    let file = try #require(Live.signInFile)
+    let held = try #require(FileSignInStore(path: file).signIn(for: endpoint))
+    let stale = InMemorySignInStore(
+      SignIn(accessToken: "expired-\(UUID().uuidString)", refreshToken: held.refreshToken, expiresAt: nil, provider: held.provider),
+      for: endpoint)
+    let renewing = HermesClient(endpoint: endpoint, signIns: stale)
+    _ = try await renewing.sessions(recents: 1, messaging: 1, cron: 1)
+    let renewed = try #require(stale.signIn(for: endpoint))
+    #expect(!renewed.accessToken.hasPrefix("expired-"))
+    FileSignInStore(path: file).setSignIn(renewed, for: endpoint)
 
-    await client.rpc.start()
-    try await client.rpc.waitUntilReady(timeout: 30)
-    #expect(!(try await client.profiles()).isEmpty)
-    await client.rpc.stop()
-
-    await client.http.logout()
-    #expect(try await client.http.probe() == .loginRequired)
+    let fresh = try Live.client()
+    await fresh.rpc.start()
+    try await fresh.rpc.waitUntilReady(timeout: 30)
+    #expect(!(try await fresh.profiles()).isEmpty)
+    await fresh.rpc.stop()
   }
 }

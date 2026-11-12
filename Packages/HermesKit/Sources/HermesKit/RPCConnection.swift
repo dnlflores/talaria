@@ -81,10 +81,11 @@ public struct SessionFences: Sendable, Equatable {
   public var generation: Int?
 }
 
-/// JSON-RPC over the Hermes gateway's WebSocket (`/hd/gateway/ws` on the gate), with reconnect.
+/// JSON-RPC over the Hermes gateway's WebSocket (`/api/ws` on its own listener), with reconnect.
 ///
 /// Wire notes, verified against the gateway that ships with the Nov 2026 desktop app:
-/// - The socket speaks `hermes-gateway-v1`; the gate adds the one-use ticket.
+/// - The socket speaks `hermes-gateway-v1` and is admitted by a one-use ticket the sign-in mints
+///   (`/api/auth/ws-ticket`), offered as the subprotocol `hermes-gateway-ticket.<ticket>`.
 /// - One WebSocket message can carry several JSON lines.
 /// - After `gateway.ready` the client calls `client.capabilities {server_requests: true}`, or the
 ///   gateway fails its sudo and secret requests at once.
@@ -104,7 +105,8 @@ public actor RPCConnection {
   private let continuation: AsyncStream<Incoming>.Continuation
 
   private let endpoint: ServerEndpoint
-  private let cookies: any SessionCookieStore
+  /// Mints the one-use ticket each socket is admitted with.
+  private let http: HermesHTTP
   private let session: URLSession
 
   private struct Pending {
@@ -131,9 +133,9 @@ public actor RPCConnection {
   private static let maxMessageBytes = 64 << 20
   static let protocolName = "hermes-gateway-v1"
 
-  public init(endpoint: ServerEndpoint, cookies: any SessionCookieStore) {
+  public init(endpoint: ServerEndpoint, http: HermesHTTP) {
     self.endpoint = endpoint
-    self.cookies = cookies
+    self.http = http
     let configuration = URLSessionConfiguration.ephemeral
     configuration.httpCookieStorage = nil
     configuration.httpShouldSetCookies = false
@@ -219,21 +221,38 @@ public actor RPCConnection {
 
   // MARK: Connection loop
 
-  private func makeRequest() -> URLRequest {
+  /// The upgrade request. The ticket rides as a second subprotocol, as the desktop app sends it;
+  /// the gateway admits the socket with it and answers with `hermes-gateway-v1` alone.
+  static func upgradeRequest(endpoint: ServerEndpoint, ticket: String?) -> URLRequest {
     var request = URLRequest(url: endpoint.webSocketURL, timeoutInterval: 30)
     request.httpShouldHandleCookies = false
-    request.setValue(endpoint.origin, forHTTPHeaderField: "Origin")
-    request.setValue(Self.protocolName, forHTTPHeaderField: "Sec-WebSocket-Protocol")
-    if let cookie = cookies.cookie(for: endpoint) {
-      request.setValue("\(HermesHTTP.cookieName)=\(cookie)", forHTTPHeaderField: "Cookie")
-    }
+    let protocols = [protocolName] + (ticket.map { ["\(ticketProtocolPrefix)\($0)"] } ?? [])
+    request.setValue(protocols.joined(separator: ", "), forHTTPHeaderField: "Sec-WebSocket-Protocol")
     return request
   }
+
+  static let ticketProtocolPrefix = "hermes-gateway-ticket."
 
   private func run(generation current: Int) async {
     while !Task.isCancelled, current == generation {
       setState(.connecting)
-      let task = session.webSocketTask(with: makeRequest())
+      let ticket: String?
+      do {
+        ticket = try await http.socketTicket()
+      } catch HermesError.loginRequired {
+        guard current == generation else { return }
+        loop = nil
+        setState(.unauthorized)
+        resumeWaiters(.failure(HermesError.loginRequired))
+        return
+      } catch {
+        guard current == generation, !Task.isCancelled else { return }
+        setState(.closed(error.localizedDescription))
+        await sleepBackoff()
+        continue
+      }
+      guard current == generation, !Task.isCancelled else { return }
+      let task = session.webSocketTask(with: Self.upgradeRequest(endpoint: endpoint, ticket: ticket))
       task.maximumMessageSize = Self.maxMessageBytes
       socket = task
       task.resume()

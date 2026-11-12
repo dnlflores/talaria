@@ -3,6 +3,12 @@
 Written 2026-11-11 for the next agent picking this project up. Read this
 first, then `README.md`, `docs/architecture.md` and `docs/roadmap.md`.
 
+> **Since then (2026-11-12):** the app no longer goes through hermesdash or
+> `hermes serve`. It talks to the Hermes gateway directly through Hermes' Web
+> Access listener and signs in with Hermes' native-app sign-in (Nous account).
+> Where this note and `docs/architecture.md` disagree about the connection,
+> the architecture doc is current.
+
 ## What this is
 
 Talaria is a native iPhone app that is a client for the owner's Hermes Agent
@@ -363,10 +369,11 @@ xcodebuild -project Talaria.xcodeproj -scheme Talaria \
   -destination "platform=iOS Simulator,id=$SIM" \
   -derivedDataPath build -quiet build-for-testing
 
-# Look at it. The loopback listener needs no password.
+# Look at it, signed in with tokens from scripts/sign-in.py.
 xcrun simctl boot "$SIM"; xcrun simctl install "$SIM" \
   build/Build/Products/Debug-iphonesimulator/Talaria.app
-SIMCTL_CHILD_TALARIA_SERVER=http://127.0.0.1:4300 \
+SIMCTL_CHILD_TALARIA_SERVER=http://127.0.0.1:9120 \
+SIMCTL_CHILD_TALARIA_SIGNIN_FILE=<tokens file> \
   xcrun simctl launch "$SIM" <bundle id>
 xcrun simctl io "$SIM" screenshot /tmp/talaria.png
 
@@ -423,8 +430,8 @@ Keychain items survive an app update. That has not been observed yet.
 - **One owner per chat.** A chat the desktop app or a terminal holds is
   read-only here, and sending continues it with `session.branch_stored`. Do
   not try to take a chat over.
-- **REST writes** through the gate need an `Origin` matching the host.
-  `HermesHTTP` sets it; go through it.
+- **REST calls** carry the sign-in's bearer token and renew it on a 401.
+  `HermesHTTP` does both; go through it.
 - **xcconfig** treats `//` as a comment, so the default server setting holds
   `host:port` with no scheme.
 - **XCUITest under Swift 6**: mark the test class `@MainActor` and use
@@ -441,13 +448,11 @@ Keychain items survive an app update. That has not been observed yet.
   identifier, home path, credential, the names of the owner's bots, or a
   screenshot of his inbox. Search the staged diff for these before every
   push.
-- **Never read, type or ask for the gate password.** Test sign-in against a
-  scratch copy of the gate: `python3 scripts/scratch-gate.py <dir>`, then run
-  the copied `hermesdash.py` from that folder. It listens on 4320 and 4321
-  with a throwaway password in `<dir>/password.txt`. Stop it when done. On
-  the owner's Mac both need `/opt/homebrew/bin/python3`.
-- **Do not modify `~/hermesdash` or restart `hermes serve`.** If the app
-  needs something the gate does not offer, raise it with the owner.
+- **Never read, type or ask for the owner's Nous password or tokens.** He
+  signs in himself, in the browser `scripts/sign-in.py` opens or on the
+  phone. Keep the tokens file it writes out of the repo.
+- **The app does not use hermesdash or workdash.** Do not route it through
+  them.
 - **Live tests cost model calls** on the owner's account and create chats in
   his history. Run them when they prove something, and archive what they
   create.

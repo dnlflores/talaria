@@ -76,10 +76,10 @@ public final class HermesClient: Sendable {
   public let http: HermesHTTP
   public let rpc: RPCConnection
 
-  public init(endpoint: ServerEndpoint, cookies: any SessionCookieStore) {
+  public init(endpoint: ServerEndpoint, signIns: any SignInStore) {
     self.endpoint = endpoint
-    http = HermesHTTP(endpoint: endpoint, cookies: cookies)
-    rpc = RPCConnection(endpoint: endpoint, cookies: cookies)
+    http = HermesHTTP(endpoint: endpoint, signIns: signIns)
+    rpc = RPCConnection(endpoint: endpoint, http: http)
   }
 
   // MARK: Lists
@@ -183,15 +183,12 @@ public final class HermesClient: Sendable {
     return Data(base64Encoded: String(dataURL[dataURL.index(after: comma)...]))
   }
 
-  /// Chats another Hermes process on the Mac holds right now, keyed by stored session id.
+  /// Chats another Hermes process on the Mac holds right now, keyed by stored session id. Hermes'
+  /// own listener has no such list: chats the gateway runs (the desktop app's included) are shared
+  /// live, and a turn a separate process runs shows through the row heartbeat
+  /// (`SessionSummary.isTurnRunning`) instead.
   public func owners() async throws -> [String: ChatOwner] {
-    let json = try await http.json("GET", "/hd/owners", timeout: 10)
-    var out: [String: ChatOwner] = [:]
-    for item in json["owners"].array ?? [] {
-      let owner = ChatOwner(json: item)
-      if !owner.sessionID.isEmpty { out[owner.sessionID] = owner }
-    }
-    return out
+    [:]
   }
 
   public func status() async throws -> JSONValue {

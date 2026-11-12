@@ -16,8 +16,9 @@ T3 Tools.
 
 ## What works today
 
-- **Sign in to your Mac** with the gate's password. The password is traded for
-  a session that lives in the Keychain; it is never stored.
+- **Sign in to Hermes on your Mac** with your Nous account, through Hermes' own
+  native-app sign-in. The password goes to Nous; the app keeps only the tokens
+  Hermes gives it, in the Keychain.
 - **Inbox grouped by bot**, as the Hermes mobile app lists agents: each bot
   with the latest reply of its lead chat (the pinned one, else the newest),
   the chats worth a look now under it (working, waiting on you, unread or
@@ -93,26 +94,29 @@ needs.
 
 ```
 iPhone (Talaria)
-   │  HTTPS + WebSocket, session cookie
+   │  HTTPS + WebSocket, Hermes sign-in (bearer token, one-use socket tickets)
    ▼
-hermesdash gate on the Mac        password, rate limit, origin check
-   │  loopback, session token
+Tailscale Funnel on the Mac       public HTTPS address, forwards to loopback
+   │
    ▼
 Hermes gateway                    the desktop app's runtime, all profiles
 ```
 
-Talaria does not talk to the gateway directly. It goes through the public
-entrance of a small gate (called hermesdash here) that is published with
-Tailscale Funnel. The gate opens the WebSocket into the gateway at
-`/hd/gateway/ws` (it mints the gateway's one-use ticket, as the desktop app
-does), proxies REST reads to `hermes serve`, and adds `/hd/health` and
-`/hd/owners` (which chats another Hermes process holds).
-[docs/architecture.md](docs/architecture.md) describes the contract.
+Talaria talks to the Hermes gateway directly, through the listener Hermes'
+**Web Access** turns on ("My own URL", published with Tailscale Funnel). The
+phone signs in with Hermes' native-app sign-in (the same flow the desktop app
+uses for a remote backend), sends REST calls with the bearer token it gets, and
+opens the gateway's WebSocket with a one-use ticket. Its chats are the desktop
+app's chats, live on both. [docs/architecture.md](docs/architecture.md)
+describes the contract.
 
 ## Build
 
 Requirements: Xcode 27, [XcodeGen](https://github.com/yonaskolb/XcodeGen)
-(`brew install xcodegen`), and a Mac running Hermes behind the gate.
+(`brew install xcodegen`), and a Mac running Hermes with Web Access on: in the
+desktop app's Settings, Web Access, "My own URL", with a Tailscale Funnel
+address forwarding to it (`tailscale funnel --bg --https=10000
+http://127.0.0.1:9120`).
 
 ```sh
 git clone https://github.com/dnlflores/talaria.git
@@ -126,11 +130,13 @@ open Talaria.xcodeproj
 you control and, optionally, the address to prefill on first launch. No address
 or credential is committed to this repository.
 
-In the simulator the app can use the gate's loopback listener, which needs no
-password:
+In the simulator the app can use Hermes' loopback address. With Web Access on it
+asks for the sign-in too; a Debug build can take saved tokens instead:
 
 ```sh
-SIMCTL_CHILD_TALARIA_SERVER=http://127.0.0.1:4300 \
+python3 scripts/sign-in.py https://<your mac>.ts.net:10000 ~/talaria-sign-in.json
+SIMCTL_CHILD_TALARIA_SERVER=http://127.0.0.1:9120 \
+SIMCTL_CHILD_TALARIA_SIGNIN_FILE=~/talaria-sign-in.json \
   xcrun simctl launch booted <your bundle id>
 ```
 
@@ -140,21 +146,20 @@ SIMCTL_CHILD_TALARIA_SERVER=http://127.0.0.1:4300 \
 # Protocol, transcript and Markdown logic (no network)
 cd Packages/HermesKit && swift test
 
-# The same package against a real backend (read-only unless TALARIA_LIVE_TURN=1)
-TALARIA_LIVE_BASE=http://127.0.0.1:4300 TALARIA_LIVE_PROFILE=<bot> \
-  swift test --filter Live
+# Sign in once in the browser; the tests reuse and renew the saved tokens
+python3 scripts/sign-in.py https://<your mac>.ts.net:10000 ~/talaria-sign-in.json
 
-# The password gate, against a scratch copy with a throwaway password
-python3 scripts/scratch-gate.py /tmp/talaria-gate
-python3 /tmp/talaria-gate/hermesdash.py &
-TALARIA_GATE_BASE=http://127.0.0.1:4321 \
-TALARIA_GATE_PASSWORD="$(cat /tmp/talaria-gate/password.txt)" \
-  swift test --filter passwordGate
+# The same package against a real backend (read-only unless TALARIA_LIVE_TURN=1),
+# sign-in and its renewal included
+TALARIA_LIVE_BASE=https://<your mac>.ts.net:10000 \
+TALARIA_LIVE_SIGNIN=~/talaria-sign-in.json TALARIA_LIVE_PROFILE=<bot> \
+  swift test --filter Live
 
 # The app end to end in the simulator: new chat, streaming, the working
 # state (also after leaving and reopening), a tool call, a written file
 # opened on the phone, an inline question, the model sheet, rename, archive
-TEST_RUNNER_TALARIA_UITEST_SERVER=http://127.0.0.1:4300 \
+TEST_RUNNER_TALARIA_UITEST_SERVER=http://127.0.0.1:9120 \
+TEST_RUNNER_TALARIA_UITEST_SIGNIN=~/talaria-sign-in.json \
 TEST_RUNNER_TALARIA_UITEST_BOT=<bot title> \
   xcodebuild test -project Talaria.xcodeproj -scheme Talaria \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro'
@@ -174,14 +179,14 @@ included.
 
 ```
 Packages/HermesKit/        Swift package, no UI
-  Sources/HermesKit/       gate + JSON-RPC client, models, transcript logic
+  Sources/HermesKit/       sign-in, REST + JSON-RPC client, models, transcript logic
   Sources/MarkdownBlocks/  block-level Markdown parser
 Talaria/                   the app
   App/                     app and chat models
   Theme/                   palettes (generated), type scale
   Components/              Markdown view, shared controls
   Features/                Shell, Connect, Home, Chat, Bots, Kanban, Cron, Settings
-scripts/                   palette generator, icon, scratch gate
+scripts/                   palette generator, icon, sign-in for tests
 docs/                      architecture, roadmap
 ```
 

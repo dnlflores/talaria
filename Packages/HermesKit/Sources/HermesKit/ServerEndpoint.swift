@@ -1,8 +1,8 @@
 import Foundation
 
-/// Where the Hermes gate lives: the public entrance of `hermesdash` on the Mac
-/// (password + session cookie in front of `hermes serve`), or its loopback
-/// listener when the app runs in the simulator on the same machine.
+/// Where Hermes lives: the public address of the gateway's own listener on the Mac (Hermes'
+/// Webapp listener, published with Tailscale Funnel, behind Hermes' sign-in), or its loopback
+/// address when the app runs in the simulator on the same machine.
 public struct ServerEndpoint: Sendable, Hashable, Codable {
   /// Scheme, host, optional port and optional path prefix, without a trailing slash.
   public let baseURL: URL
@@ -62,12 +62,11 @@ public struct ServerEndpoint: Sendable, Hashable, Codable {
     return components.url ?? baseURL
   }
 
-  /// The socket into the Hermes gateway itself: the process the desktop app runs its chats in.
-  /// The gate adds the gateway's one-use ticket. Chats driven through it are the same live chats
-  /// the desktop app shows; `/api/ws` (hermesdash's separate `hermes serve`) ran a second copy of
-  /// each chat that the desktop never saw and that locked the desktop out of it.
+  /// The gateway's chat socket: the process the desktop app runs its chats in, so chats driven
+  /// through it are the same live chats the desktop app shows. A one-use ticket from
+  /// `/api/auth/ws-ticket` admits it.
   public var webSocketURL: URL {
-    var components = URLComponents(url: url(path: "/hd/gateway/ws"), resolvingAgainstBaseURL: false) ?? URLComponents()
+    var components = URLComponents(url: url(path: "/api/ws"), resolvingAgainstBaseURL: false) ?? URLComponents()
     components.scheme = isSecure ? "wss" : "ws"
     return components.url ?? baseURL
   }

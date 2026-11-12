@@ -5,7 +5,8 @@ import XCTest
 /// app. Read-only: the chat opens in watch mode and nothing is sent. Chats the desktop app runs
 /// are not elsewhere: they run in the gateway this app talks to.
 ///
-///   TEST_RUNNER_TALARIA_UITEST_SERVER=http://127.0.0.1:4300 \
+///   TEST_RUNNER_TALARIA_UITEST_SERVER=http://127.0.0.1:9120 \
+///   TEST_RUNNER_TALARIA_UITEST_SIGNIN=<tokens file from scripts/sign-in.py> \
 ///   TEST_RUNNER_TALARIA_UITEST_ELSEWHERE="<title of a chat a terminal is running>" \
 ///   xcodebuild test-without-building ... -only-testing:TalariaUITests/ElsewhereTests
 @MainActor
@@ -26,6 +27,7 @@ final class ElsewhereTests: XCTestCase {
     continueAfterFailure = false
     app = XCUIApplication()
     app.launchEnvironment["TALARIA_SERVER"] = server
+    app.launchEnvironment["TALARIA_SIGNIN_FILE"] = environment["TALARIA_UITEST_SIGNIN"] ?? ""
     app.launch()
   }
 

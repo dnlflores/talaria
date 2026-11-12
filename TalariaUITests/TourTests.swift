@@ -3,7 +3,8 @@ import XCTest
 /// Walks every area against a real backend and saves a screenshot of each, for looking at a
 /// layout change on iPhone and iPad. Read-only: it opens screens and makes no model calls.
 ///
-///   TEST_RUNNER_TALARIA_UITEST_SERVER=http://127.0.0.1:4300 \
+///   TEST_RUNNER_TALARIA_UITEST_SERVER=http://127.0.0.1:9120 \
+///   TEST_RUNNER_TALARIA_UITEST_SIGNIN=<tokens file from scripts/sign-in.py> \
 ///   TEST_RUNNER_TALARIA_UITEST_TOUR=1 TEST_RUNNER_TALARIA_UITEST_SHOTS=/some/dir \
 ///   xcodebuild test-without-building ... -only-testing:TalariaUITests/TourTests
 @MainActor
@@ -22,6 +23,7 @@ final class TourTests: XCTestCase {
     continueAfterFailure = true
     app = XCUIApplication()
     app.launchEnvironment["TALARIA_SERVER"] = server
+    app.launchEnvironment["TALARIA_SIGNIN_FILE"] = environment["TALARIA_UITEST_SIGNIN"] ?? ""
     app.launch()
   }
 

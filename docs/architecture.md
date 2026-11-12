@@ -15,7 +15,8 @@ Talaria (SwiftUI app)
                   Home, Chat, Bots, Kanban, Cron, Settings
         │
 HermesKit (Swift package, no UI)
-  HermesHTTP      REST through the gate, sign-in
+  HermesHTTP      REST to Hermes, sign-in tokens and their renewal
+  NativeSignIn    PKCE and the loopback listener the sign-in comes back to
   RPCConnection   JSON-RPC over the gateway WebSocket, reconnect
   HermesClient    the calls the app makes, by name
   ChatState       transcript + live status, advanced by gateway events
@@ -31,36 +32,44 @@ MarkdownBlocks    block-level Markdown parser
 `HermesKit` and `MarkdownBlocks` build and test on macOS with `swift test`,
 which keeps the protocol logic checkable without a simulator.
 
-## The gate
+## Connecting to Hermes
 
-Chats run in the Hermes gateway on the Mac, the same process the desktop app
-runs them in. In front of it sits hermesdash, a small Python server with two
-listeners (it also runs `hermes serve` for REST reads):
+Talaria talks straight to Hermes on the Mac: the gateway's own HTTP listener,
+the process the desktop app runs its chats in. Nothing else sits in between.
 
-| Listener | Auth | Used by |
+| Address | Auth | Used by |
 |---|---|---|
-| loopback | none | the simulator on the same Mac |
-| public (behind Tailscale Funnel) | password, then a signed cookie | the phone |
+| `http://127.0.0.1:9120` (`webapp.port`) | Hermes' sign-in when Web Access is on | the simulator on the same Mac |
+| its public HTTPS address (Tailscale Funnel to that port, `webapp.public_url`) | Hermes' sign-in | the phone and iPad |
 
-What Talaria relies on:
+Turning it on is Hermes' own **Web Access** ("My own URL"): the desktop app's
+Settings, or `hermes_cli.webapp_access` (`plan`, `register`, `serve`) then a
+gateway restart. It registers the Nous sign-in callback for the public address.
 
-- `POST /login` with a form-encoded `password`. Success is a redirect that
-  sets `hd_session`; a wrong password is a 401 page; five failures from one
-  client within fifteen minutes lock it out until they age off.
-- `GET /hd/health`: 200 with backend state when the caller is allowed in, 401
-  with `X-Hermesdash-Login: 1` when it must sign in, 503 when no password is
-  set on the Mac.
-- `GET /hd/owners`: conversations another Hermes process on the Mac holds
-  (the gateway's own chats are shared, not held, so they are left out).
-- `/hd/gateway/ws`: a WebSocket into the gateway. hermesdash mints the
-  gateway's one-use ticket on its control socket (`~/.hermes/gateway.sock`,
-  same OS user only), as the desktop app does, and pumps bytes.
-- Everything else under `/api/` is proxied to `hermes serve` (REST only).
-  Writes and WebSocket upgrades must carry an `Origin` that matches the host.
+Sign-in is Hermes' native-app flow (RFC 8252 with PKCE), the one the desktop
+app uses for a remote backend:
 
-The app keeps the cookie value in the Keychain and attaches it by hand to REST
-calls and to the WebSocket handshake. Shared cookie storage is not used, and
-the password is never written anywhere.
+1. The app listens on `http://127.0.0.1:<any port>/callback` (`LoopbackRedirect`)
+   and opens `/auth/native/authorize?code_challenge=…&code_challenge_method=S256&redirect_uri=…&state=…`
+   in an `ASWebAuthenticationSession`.
+2. Hermes sends the browser through the Nous account sign-in and back to the
+   loopback address with a one-time code. The listener answers with a redirect
+   to `talaria-auth://signed-in`, which closes the sheet.
+3. `POST /auth/native/token {code, code_verifier}` returns `access_token`,
+   `refresh_token`, `expires_at` and `provider`. The app keeps them in the
+   Keychain (`KeychainSignInStore`); the password goes to Nous, never to the app.
+
+Then:
+
+- REST calls carry `Authorization: Bearer <access_token>`. A 401 renews once
+  with `POST /auth/native/refresh {refresh_token, provider}` (one renewal for
+  any number of waiting calls) and retries; a refused renewal means sign in again.
+- Each WebSocket gets a one-use ticket from `POST /api/auth/ws-ticket`, offered
+  as the second subprotocol: `hermes-gateway-v1, hermes-gateway-ticket.<ticket>`.
+- `GET /api/status` (no sign-in) says whether sign-in is needed
+  (`auth_required`, `auth_providers`); `GET /api/auth/me` checks the held one.
+- Bearer calls need no `Origin` (Hermes checks it only for cookie writes).
+  Signing out forgets the tokens: `/auth/logout` revokes cookie sessions only.
 
 ## The gateway protocol
 
@@ -270,7 +279,10 @@ process, so chats it runs are shared by the desktop app and this one. A chat
 another process holds (a terminal running its own agent) refuses turns from
 anyone else. Talaria treats that as a normal state, not an error:
 
-1. Before opening a chat it asks `/hd/owners`.
+1. Hermes has no list of chats other processes hold. A chat counts as held
+   elsewhere when its row says a turn is running there (the heartbeat:
+   `last_activity_description` set, `last_activity_at` under three minutes
+   old) and the gateway is not running it, or when a send is refused.
 2. An owned chat opens in watch mode: the stored transcript, refreshed every
    few seconds, with a notice explaining why.
 3. Sending from an owned chat calls `session.branch_stored`, which copies the
@@ -303,5 +315,3 @@ twice.
 - Diff review and the working-folder picker.
 - Push notifications. iOS suspends the socket in the background, so a reply
   that finishes while the app is closed is seen on the next open.
-- A direct connection to the gateway (OAuth or basic auth) without the
-  gate.

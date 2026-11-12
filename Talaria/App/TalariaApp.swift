@@ -31,7 +31,7 @@ struct RootView: View {
       switch app.phase {
       case .launching:
         Wordmark(size: 30)
-      case .needsServer, .needsPassword:
+      case .needsServer, .needsSignIn:
         ConnectView()
           .transition(.opacity)
       case .ready:
