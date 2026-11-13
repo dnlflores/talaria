@@ -102,26 +102,35 @@ def chat_title(title: Optional[str]) -> str:
 # MARK: Alerts
 
 
-def _alert(title: str, subtitle: str, body: str, *, session_id: str, profile: str, kind: str) -> dict:
+def _alert(title: str, subtitle: str, body: str, *, session_id: str, profile: str, kind: str,
+           state: Optional[dict] = None) -> dict:
+    """``state`` is the chat's Live Activity content state now. With it the alert also wakes the app
+    (``content-available``), which moves the activity on itself: iOS does not hand the app the
+    update token of an activity the Mac started by push, so the Mac often cannot."""
     alert = {"title": title, "body": body or subtitle}
     if body and subtitle:
         alert["subtitle"] = subtitle
-    return {
-        "aps": {"alert": alert, "sound": "default", "thread-id": session_id, "mutable-content": 0},
-        "talaria": {"kind": kind, "profile": profile, "session_id": session_id},
-    }
+    aps = {"alert": alert, "sound": "default", "thread-id": session_id, "mutable-content": 0}
+    custom = {"kind": kind, "profile": profile, "session_id": session_id}
+    if state is not None:
+        aps["content-available"] = 1
+        custom["state"] = state
+    return {"aps": aps, "talaria": custom}
 
 
 def finished_alert(*, bot: str, title: Optional[str], text: Optional[str], status: Optional[str],
-                   session_id: str, profile: str) -> dict:
+                   session_id: str, profile: str, state: Optional[dict] = None) -> dict:
     heading = {"error": f"{bot} hit an error", "interrupted": f"{bot} stopped"}.get(status or "", f"{bot} finished")
     body = preview(text) or ("The reply is ready." if status not in ("error", "interrupted") else "")
-    return _alert(heading, chat_title(title), body, session_id=session_id, profile=profile, kind="finished")
+    return _alert(heading, chat_title(title), body, session_id=session_id, profile=profile, kind="finished",
+                  state=state)
 
 
-def waiting_alert(*, bot: str, title: Optional[str], question: Optional[str], session_id: str, profile: str) -> dict:
+def waiting_alert(*, bot: str, title: Optional[str], question: Optional[str], session_id: str, profile: str,
+                  state: Optional[dict] = None) -> dict:
     body = preview(question, 200) or "It is waiting for your answer."
-    return _alert(f"{bot} needs you", chat_title(title), body, session_id=session_id, profile=profile, kind="waiting")
+    return _alert(f"{bot} needs you", chat_title(title), body, session_id=session_id, profile=profile, kind="waiting",
+                  state=state)
 
 
 def test_alert() -> dict:

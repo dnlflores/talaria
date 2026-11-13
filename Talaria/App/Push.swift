@@ -45,6 +45,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     return true
   }
 
+  /// The finished and needs-you notifications wake the app (`content-available`) with the chat's
+  /// new Live Activity state.
+  func application(
+    _ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any]
+  ) async -> UIBackgroundFetchResult {
+    await PushCenter.shared.applyActivityState(from: userInfo) ? .newData : .noData
+  }
+
   func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
     PushCenter.shared.deviceTokenArrived(PushRegistration.hex(deviceToken))
   }
@@ -84,6 +92,9 @@ final class PushCenter {
   @ObservationIgnored private var pushToStartToken: String?
   @ObservationIgnored private var observing = false
   @ObservationIgnored private var watched: Set<String> = []
+  /// The update token last handed to the Mac for each activity id.
+  @ObservationIgnored private var sentTokens: [String: String] = [:]
+  @ObservationIgnored private var sendingTokens: Set<String> = []
   @ObservationIgnored private var registerTask: Task<Void, Never>?
   @ObservationIgnored private var lastRegistered: (PushRegistration, Date)?
   @ObservationIgnored private var pendingOpen: ChatRef?
@@ -138,6 +149,7 @@ final class PushCenter {
     Task {
       await refreshAuthorization()
       scheduleRegister()
+      await sendMissingActivityTokens()
     }
   }
 
@@ -226,11 +238,44 @@ final class PushCenter {
     }
   }
 
-  /// This phone sent a message to a chat. With "Sent from this phone", that chat now notifies.
-  func noteSent(storedID: String) {
-    guard preferences.notifyScope == PushRegistration.Scope.phone.rawValue, let http else { return }
-    let deviceID = deviceID
-    Task { try? await http.followForPush(deviceID: deviceID, sessionID: storedID) }
+  /// This phone sent a message to a chat. With "Sent from this phone", that chat now notifies; and
+  /// the reply gets its Live Activity from here at once.
+  func noteSent(profile: String, storedID: String, title: String) {
+    if preferences.notifyScope == PushRegistration.Scope.phone.rawValue, let http {
+      let deviceID = deviceID
+      Task { try? await http.followForPush(deviceID: deviceID, sessionID: storedID) }
+    }
+    startActivity(profile: profile, sessionID: storedID, title: title)
+  }
+
+  /// An activity the app starts itself, unlike one the Mac starts by push, gets its update token
+  /// (`pushTokenUpdates`), so the Mac can show every step on it. It reaches the Mac well before the
+  /// Mac would start one of its own (`START_AFTER` in the plugin), which then updates this one.
+  private func startActivity(profile: String, sessionID: String, title: String) {
+    let mine = Activity<ChatActivityAttributes>.activities.filter { $0.attributes.sessionID == sessionID }
+    guard preferences.liveActivities, macState == .ready, ActivityAuthorizationInfo().areActivitiesEnabled,
+      !mine.contains(where: { $0.activityState == .active })
+    else { return }
+    // The last reply's "Done" would otherwise sit beside the new one for its ten minutes.
+    let finished = Set(mine.map(\.id))
+    if !finished.isEmpty {
+      Task {
+        for activity in Activity<ChatActivityAttributes>.activities where finished.contains(activity.id) {
+          await activity.end(nil, dismissalPolicy: .immediate)
+        }
+      }
+    }
+    let bot = app?.profiles.first(where: { $0.name == profile })?.title ?? "Hermes"
+    let attributes = ChatActivityAttributes(profile: profile, sessionID: sessionID, botName: bot, chatTitle: title)
+    let state = ChatActivityAttributes.ContentState(phase: .working, startedAt: Date().timeIntervalSince1970, title: title)
+    do {
+      let activity = try Activity.request(
+        attributes: attributes, content: ActivityContent(state: state, staleDate: Date().addingTimeInterval(60 * 60)),
+        pushType: .token)
+      PushCenter.trace("started here \(activity.id) \(sessionID.prefix(14))")
+    } catch {
+      PushCenter.trace("could not start here: \(error)")
+    }
   }
 
   // MARK: Live Activities
@@ -238,6 +283,7 @@ final class PushCenter {
   func observeActivities() {
     guard !observing else { return }
     observing = true
+    PushCenter.trace("observeActivities, \(Activity<ChatActivityAttributes>.activities.count) running, app state \(UIApplication.shared.applicationState.rawValue)")
     Task { [weak self] in
       for await data in Activity<ChatActivityAttributes>.pushToStartTokenUpdates {
         guard let self else { return }
@@ -250,6 +296,7 @@ final class PushCenter {
     }
     Task { [weak self] in
       for await activity in Activity<ChatActivityAttributes>.activityUpdates {
+        PushCenter.trace("activityUpdates \(activity.id) \(activity.attributes.sessionID.prefix(14)) state=\(activity.activityState)")
         self?.watch(activity)
       }
     }
@@ -257,18 +304,81 @@ final class PushCenter {
   }
 
   /// Hands each activity's update token to the Mac, so it can update and end that activity.
+  ///
+  /// An activity the Mac started by push wakes the app in the background, and the app is
+  /// suspended again within moments: the token usually comes a beat after the activity, and
+  /// `pushTokenUpdates` then never yields (seen on iOS 27, simulator and iPhone). So the app asks
+  /// for background time while it waits, and also reads `pushToken` itself until it shows up.
   private func watch(_ activity: Activity<ChatActivityAttributes>) {
     guard watched.insert(activity.id).inserted else { return }
-    let attributes = activity.attributes
+    let id = activity.id
+    PushCenter.trace("watch \(id) token-now=\(activity.pushToken != nil)")
     Task { [weak self] in
       for await data in activity.pushTokenUpdates {
-        await self?.sendActivityToken(PushRegistration.hex(data), for: attributes)
+        PushCenter.trace("pushTokenUpdates \(id)")
+        await self?.sendActivityToken(PushRegistration.hex(data), activityID: id)
       }
+    }
+    guard activity.activityState == .active, !activity.content.state.isOver else { return }
+    let wait = UIApplication.shared.beginBackgroundTask(withName: "talaria.activity-token-wait")
+    Task { [weak self] in
+      defer { if wait != .invalid { UIApplication.shared.endBackgroundTask(wait) } }
+      for _ in 0..<25 {
+        if let self, self.sentTokens[id] != nil { return }
+        if let data = Activity<ChatActivityAttributes>.activities.first(where: { $0.id == id })?.pushToken {
+          PushCenter.trace("pushToken read \(id)")
+          await self?.sendActivityToken(PushRegistration.hex(data), activityID: id)
+          return
+        }
+        try? await Task.sleep(for: .seconds(1))
+      }
+      PushCenter.trace("no token for \(id) after 25s")
     }
   }
 
-  private func sendActivityToken(_ token: String, for attributes: ChatActivityAttributes) async {
-    guard let http, http.hasSession else { return }
+  /// Moves a chat's Live Activity to the state a notification carries. iOS 27 does not hand the app
+  /// the update token of an activity the Mac started by push (seen on simulator and iPhone: the
+  /// app only ever gets the push-to-start token), so the Mac cannot update that activity itself;
+  /// its finished and needs-you notifications wake the app to do it instead.
+  func applyActivityState(from userInfo: [AnyHashable: Any]) async -> Bool {
+    guard let chat = ChatRef(userInfo: userInfo),
+      let custom = userInfo["talaria"] as? [String: Any],
+      let raw = custom["state"],
+      let data = try? JSONSerialization.data(withJSONObject: raw),
+      let state = try? JSONDecoder().decode(ChatActivityAttributes.ContentState.self, from: data)
+    else { return false }
+    var applied = false
+    for activity in Activity<ChatActivityAttributes>.activities
+    where activity.attributes.sessionID == chat.sessionID && activity.attributes.profile == chat.profile
+      && activity.activityState == .active
+    {
+      let content = ActivityContent(state: state, staleDate: nil)
+      if state.isOver {
+        await activity.end(content, dismissalPolicy: .after(Date().addingTimeInterval(10 * 60)))
+      } else {
+        await activity.update(content)
+      }
+      applied = true
+    }
+    PushCenter.trace("applyActivityState \(chat.sessionID.prefix(14)) \(state.phase) applied=\(applied)")
+    return applied
+  }
+
+  /// Tokens that came while the app was suspended, picked up on the next open.
+  private func sendMissingActivityTokens() async {
+    for activity in Activity<ChatActivityAttributes>.activities where activity.activityState == .active {
+      guard let data = activity.pushToken else { continue }
+      await sendActivityToken(PushRegistration.hex(data), activityID: activity.id)
+    }
+  }
+
+  private func sendActivityToken(_ token: String, activityID: String) async {
+    guard sentTokens[activityID] != token, !sendingTokens.contains(token),
+      let attributes = Activity<ChatActivityAttributes>.activities.first(where: { $0.id == activityID })?.attributes,
+      let http, http.hasSession
+    else { return }
+    sendingTokens.insert(token)
+    defer { sendingTokens.remove(token) }
     // Often runs in a background wake: ask for the seconds the request needs.
     let task = UIApplication.shared.beginBackgroundTask(withName: "talaria.activity-token")
     defer { if task != .invalid { UIApplication.shared.endBackgroundTask(task) } }
@@ -276,15 +386,36 @@ final class PushCenter {
       do {
         try await http.registerActivity(
           deviceID: deviceID, sessionID: attributes.sessionID, profile: attributes.profile, token: token)
+        sentTokens[activityID] = token
+        PushCenter.trace("registerActivity ok \(attributes.sessionID.prefix(14))")
         return
       } catch HermesError.http(let status, _) where status == 404 {
         // The Mac does not know this phone yet (first launch): register, then try again.
         lastRegistered = nil
         await register(force: true)
       } catch {
+        PushCenter.trace("registerActivity failed: \(error)")
         try? await Task.sleep(for: .seconds(Double(attempt + 1) * 2))
       }
     }
+  }
+
+  /// DEBUG builds keep a trace of the Live Activity token hand-off in Documents/push-trace.log,
+  /// readable from the Mac (`simctl get_app_container`, `devicectl device copy from`).
+  nonisolated static func trace(_ line: String) {
+    #if DEBUG
+      guard let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+      let url = folder.appendingPathComponent("push-trace.log")
+      let stamp = ISO8601DateFormatter().string(from: Date())
+      let data = Data("\(stamp) \(line)\n".utf8)
+      if let handle = try? FileHandle(forWritingTo: url) {
+        handle.seekToEndOfFile()
+        handle.write(data)
+        try? handle.close()
+      } else {
+        try? data.write(to: url)
+      }
+    #endif
   }
 
   /// A chat was opened: its notifications have been seen, and a finished activity for it can go.
@@ -378,7 +509,14 @@ final class PushCenter {
       }
       Task {
         for activity in Activity<ChatActivityAttributes>.activities { await activity.end(nil, dismissalPolicy: .immediate) }
-        _ = try? Activity.request(attributes: attributes, content: ActivityContent(state: state, staleDate: nil))
+        let push = ProcessInfo.processInfo.environment["TALARIA_DEMO_ACTIVITY_PUSH"] == "1"
+        do {
+          let activity = try Activity.request(
+            attributes: attributes, content: ActivityContent(state: state, staleDate: nil), pushType: push ? .token : nil)
+          PushCenter.trace("demo requested \(activity.id) push=\(push)")
+        } catch {
+          PushCenter.trace("demo request failed: \(error)")
+        }
       }
     }
   #endif

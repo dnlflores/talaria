@@ -41,11 +41,19 @@ questions and final answer, and turns the changes into pushes
 through the system `curl`; the provider token is an ES256 JWT signed with
 `cryptography`, which Hermes already ships.
 
-When a turn starts, the plugin starts the Live Activity with a push-to-start
-push. iOS wakes the app to hand over that activity's update token, which the
-app posts to `/activities`; steps, questions and the end then go to that
-activity. If the token arrives after the reply already ended, the activity is
-ended at once.
+A Live Activity comes from one of two places:
+
+- **The phone**, when the message was sent from it. The app starts the activity
+  itself and posts its update token to `/activities`; steps, questions and the
+  end then go to that activity. If the token arrives after the reply already
+  ended, the activity is ended at once.
+- **The Mac**, for a reply sent from elsewhere that is still running after 15
+  seconds, or that asks a question (`START_AFTER`). It starts the activity with
+  a push-to-start push. iOS allows only a few of those an hour, which is why
+  quick replies get none. iOS 27 does not give the app the update token of an
+  activity started this way, so the finished and needs-you notifications carry
+  the activity's new state and wake the app (`content-available`), which moves
+  the activity on itself. Steps do not reach such an activity.
 
 Data lives in `~/.hermes/plugin-data/talaria-push/` (0700): `state.json`
 (tokens, 0600) and the APNs key.

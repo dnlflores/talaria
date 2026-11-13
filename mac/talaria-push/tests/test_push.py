@@ -21,7 +21,7 @@ from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 
 from talaria_push import payloads  # noqa: E402
 from talaria_push.apns import APNs, Credentials, Result, make_jwt  # noqa: E402
-from talaria_push.notifier import STEP_INTERVAL, Notifier  # noqa: E402
+from talaria_push.notifier import START_AFTER, STEP_INTERVAL, Notifier  # noqa: E402
 from talaria_push.store import FOLLOW_TTL, Store  # noqa: E402
 from talaria_push.tracker import Tracker  # noqa: E402
 
@@ -160,6 +160,17 @@ class PayloadTests(unittest.TestCase):
                          "Editing a file: ChatView.swift")
         self.assertEqual(payloads.step_text({"name": "mcp__linear__save_issue"}), "Using linear save issue")
 
+    def test_alert_carries_the_activity_state_and_wakes_the_app(self):
+        state = payloads.content_state(phase="done", started_at=100, ended_at=160, title="Fix it", summary="All good.")
+        alert = payloads.finished_alert(bot="Ada", title="Fix it", text="All good.", status="complete",
+                                        session_id="s", profile="ada", state=state)
+        self.assertEqual(alert["aps"]["content-available"], 1)
+        self.assertEqual(alert["talaria"]["state"]["phase"], "done")
+        plain = payloads.finished_alert(bot="Ada", title="Fix it", text="All good.", status="complete",
+                                        session_id="s", profile="ada")
+        self.assertNotIn("content-available", plain["aps"])
+        self.assertNotIn("state", plain["talaria"])
+
     def test_finished_alert_titles(self):
         def title(status):
             return payloads.finished_alert(bot="Ada", title="Fix it", text="All good.", status=status,
@@ -295,6 +306,10 @@ class NotifierTests(unittest.TestCase):
 
     def test_whole_turn(self):
         self.feed(self.tracker.observe("ada", [row("s1", "working", title="Fix it")], self.clock.now))
+        self.notifier.flush()
+        self.assertEqual(self.apns.sent, [])  # a quick reply needs no Live Activity
+        self.clock.now += START_AFTER
+        self.notifier.flush()
         start = self.apns.sent[-1]
         self.assertEqual(start["token"], "22" * 32)
         self.assertEqual(start["topic"], "com.example.talaria.push-type.liveactivity")
@@ -342,6 +357,21 @@ class NotifierTests(unittest.TestCase):
         self.assertEqual(end["payload"]["aps"]["event"], "end")
         self.assertEqual(end["payload"]["aps"]["content-state"]["phase"], "done")
         self.assertIsNone(self.store.activity("d1", "s1"))
+
+    def test_quick_replies_start_no_activity_and_questions_start_one_at_once(self):
+        self.feed(self.tracker.observe("ada", [row("s1", "working")], self.clock.now))
+        self.clock.now += 5
+        self.feed(self.tracker.observe("ada", [], self.clock.now))
+        self.clock.now += START_AFTER
+        self.notifier.flush()
+        self.assertEqual([s["push_type"] for s in self.apns.sent], ["alert"])  # finished, no activity
+        self.feed(self.tracker.observe("ada", [row("s2", "working")], self.clock.now))
+        self.feed(self.tracker.event("s2", "clarify.request", {"question": "Go?"}))
+        self.assertEqual([s["push_type"] for s in self.apns.sent[1:]], ["alert", "liveactivity"])
+        self.assertEqual(self.apns.sent[-1]["payload"]["aps"]["event"], "start")
+        self.clock.now += START_AFTER
+        self.notifier.flush()
+        self.assertEqual(len(self.apns.sent), 3)  # not started twice
 
     def test_token_after_the_end_ends_the_activity(self):
         self.feed(self.tracker.observe("ada", [row("s1", "working")], 1))

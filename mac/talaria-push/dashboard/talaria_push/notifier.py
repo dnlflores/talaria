@@ -17,6 +17,11 @@ log = logging.getLogger("talaria_push")
 # update per activity in this many seconds (the latest step wins); phase changes go at once.
 STEP_INTERVAL = 12.0
 
+# iOS allows only a handful of push-started Live Activities an hour (about eight on a development
+# build), and quick replies do not need one: the finished notification says it all. So the Mac
+# starts one only for a reply still running after this many seconds, or one asking a question.
+START_AFTER = 15.0
+
 
 class Notifier:
     def __init__(self, store: Store, apns: APNs, clock: Callable[[], float] = time.time):
@@ -26,6 +31,7 @@ class Notifier:
         self.recent: deque[dict] = deque(maxlen=40)
         self._last_update: dict[tuple[str, str], float] = {}
         self._pending: dict[tuple[str, str], Turn] = {}
+        self._pending_start: dict[tuple[str, str], Turn] = {}
 
     # MARK: Routing
 
@@ -52,9 +58,13 @@ class Notifier:
         bot = payloads.bot_name(turn.profile, device.get("bots"))
         alerts = device.get("alerts", True)
         activities = device.get("live_activities", True)
+        key = (device["device_id"], turn.session_id)
         if kind == "started":
             if activities:
-                self._start_activity(device, turn, bot, now)
+                if now - turn.started_at >= START_AFTER:
+                    self._start_activity(device, turn, bot, now)
+                else:
+                    self._pending_start[key] = turn
         elif kind == "step":
             if activities:
                 self._update_activity(device, turn, now, priority=5, throttle=True)
@@ -62,23 +72,37 @@ class Notifier:
             if alerts:
                 self._alert(device, turn, payloads.waiting_alert(
                     bot=bot, title=turn.title, question=turn.question, session_id=turn.session_id,
-                    profile=turn.profile), "waiting")
+                    profile=turn.profile, state=turn.state() if activities else None), "waiting")
             if activities:
-                self._update_activity(device, turn, now, priority=10)
+                if self._pending_start.pop(key, None) is not None:
+                    self._start_activity(device, turn, bot, now)
+                else:
+                    self._update_activity(device, turn, now, priority=10)
         elif kind == "resumed":
             if activities:
                 self._update_activity(device, turn, now, priority=5)
         elif kind == "finished":
+            self._pending_start.pop(key, None)
             if alerts:
                 self._alert(device, turn, payloads.finished_alert(
                     bot=bot, title=turn.title, text=turn.final_text, status=turn.final_status,
-                    session_id=turn.session_id, profile=turn.profile), "finished")
+                    session_id=turn.session_id, profile=turn.profile,
+                    state=turn.state() if activities else None), "finished")
             if activities:
                 self._end_activity(device, turn, now)
 
     def flush(self) -> None:
-        """Step updates held back by the throttle whose wait is over."""
+        """Activities whose reply has now run long enough, and step updates held back by the
+        throttle whose wait is over."""
         now = self.clock()
+        for key, turn in list(self._pending_start.items()):
+            if turn.ended_at is not None:
+                self._pending_start.pop(key, None)
+            elif now - turn.started_at >= START_AFTER:
+                self._pending_start.pop(key, None)
+                device = self.store.device(key[0])
+                if device and device.get("live_activities", True) and self.wants(device, turn):
+                    self._start_activity(device, turn, payloads.bot_name(turn.profile, device.get("bots")), now)
         for key, turn in list(self._pending.items()):
             if now - self._last_update.get(key, 0) < STEP_INTERVAL:
                 continue
