@@ -162,7 +162,18 @@ final class AppModel {
   static func makeSignInStore() -> any SignInStore {
     #if DEBUG
       // UI tests and simulator screenshots: the tokens `scripts/sign-in.py` saved on the Mac.
-      if let path = ProcessInfo.processInfo.environment["TALARIA_SIGNIN_FILE"], !path.isEmpty {
+      // `TALARIA_REMEMBER_SIGNIN_FILE=1` keeps the path for launches iOS makes itself (tapping a
+      // notification after the app quit, in `NotificationTapTests`); `=0` forgets it.
+      let environment = ProcessInfo.processInfo.environment
+      let remembered = "debug.signInFile"
+      switch environment["TALARIA_REMEMBER_SIGNIN_FILE"] {
+      case "1": UserDefaults.standard.set(environment["TALARIA_SIGNIN_FILE"], forKey: remembered)
+      case "0": UserDefaults.standard.removeObject(forKey: remembered)
+      default: break
+      }
+      if let path = environment["TALARIA_SIGNIN_FILE"] ?? UserDefaults.standard.string(forKey: remembered),
+        !path.isEmpty
+      {
         return FileSignInStore(path: path)
       }
     #endif

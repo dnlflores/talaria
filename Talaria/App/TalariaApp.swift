@@ -36,6 +36,7 @@ struct TalariaApp: App {
       PushCenter.shared.app = app
       #if DEBUG
         PushCenter.shared.startDemoActivityIfAsked()
+        PushCenter.shared.scheduleTestNotificationIfAsked()
       #endif
       await app.launch()
     }

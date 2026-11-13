@@ -215,3 +215,97 @@ final class NotificationSettingsTests: XCTestCase {
     shoot("push-settings-2")
   }
 }
+
+/// Tapping a notification opens its chat: once with the app in the background, once after it was
+/// quit. The app schedules a notification shaped like the Mac's (`TALARIA_TEST_NOTIFICATION`,
+/// DEBUG), so this needs no Mac push; the chat must exist on the backend.
+///
+///   TEST_RUNNER_TALARIA_UITEST_SERVER=http://127.0.0.1:9120 TEST_RUNNER_TALARIA_UITEST_SIGNIN=<tokens file> \\
+///   TEST_RUNNER_TALARIA_UITEST_TAP_CHAT=<profile>/<stored id> \\
+///   xcodebuild test-without-building ... -only-testing:TalariaUITests/NotificationTapTests
+@MainActor
+final class NotificationTapTests: XCTestCase {
+  private var server = ""
+  private var signIn = ""
+  private var chat = ""
+  private var shots: String?
+  private let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+
+  override func setUp() async throws {
+    let environment = ProcessInfo.processInfo.environment
+    guard let server = environment["TALARIA_UITEST_SERVER"], !server.isEmpty,
+      let chat = environment["TALARIA_UITEST_TAP_CHAT"], chat.contains("/")
+    else {
+      throw XCTSkip("Set TEST_RUNNER_TALARIA_UITEST_SERVER and TEST_RUNNER_TALARIA_UITEST_TAP_CHAT.")
+    }
+    self.server = server
+    self.chat = chat
+    signIn = environment["TALARIA_UITEST_SIGNIN"] ?? ""
+    shots = environment["TALARIA_UITEST_SHOTS"]
+    continueAfterFailure = false
+  }
+
+  private func shoot(_ name: String) {
+    let screenshot = XCUIScreen.main.screenshot()
+    let attachment = XCTAttachment(screenshot: screenshot)
+    attachment.name = name
+    attachment.lifetime = .keepAlways
+    add(attachment)
+    if let shots {
+      try? FileManager.default.createDirectory(atPath: shots, withIntermediateDirectories: true)
+      try? screenshot.pngRepresentation.write(to: URL(fileURLWithPath: shots).appendingPathComponent("\(name).png"))
+    }
+  }
+
+  /// Launches the app so it schedules the notification, and allows notifications if iOS asks.
+  private func launchScheduling(_ marker: String) -> XCUIApplication {
+    let app = XCUIApplication()
+    app.launchEnvironment["TALARIA_SERVER"] = server
+    app.launchEnvironment["TALARIA_SIGNIN_FILE"] = signIn
+    app.launchEnvironment["TALARIA_PUSH_PROMPT"] = "1"
+    app.launchEnvironment["TALARIA_TEST_NOTIFICATION"] = "\(chat)/\(marker)"
+    // The launch iOS makes when the banner is tapped after a quit carries no environment.
+    app.launchEnvironment["TALARIA_REMEMBER_SIGNIN_FILE"] = "1"
+    // Late enough that home has loaded and the test has left the app before it shows.
+    app.launchEnvironment["TALARIA_TEST_NOTIFICATION_DELAY"] = "15"
+    app.launch()
+    let allow = springboard.buttons["Allow"]
+    if allow.waitForExistence(timeout: 4) { allow.tap() }
+    XCTAssertTrue(app.buttons["New chat"].waitForExistence(timeout: 30), "home did not load")
+    return app
+  }
+
+  /// Taps the banner, then checks the app came up, stayed up and shows the chat.
+  private func tapBanner(_ marker: String, app: XCUIApplication, step: String) {
+    let banner = springboard.descendants(matching: .any)
+      .matching(NSPredicate(format: "label CONTAINS %@", marker)).firstMatch
+    XCTAssertTrue(banner.waitForExistence(timeout: 20), "no notification banner (\(step))")
+    shoot("tap-\(step)-banner")
+    banner.tap()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15), "the app did not open (\(step))")
+    let composer = app.textViews["composer.input"].firstMatch
+    XCTAssertTrue(composer.waitForExistence(timeout: 30), "the chat did not open (\(step))")
+    sleep(4)
+    XCTAssertEqual(app.state, .runningForeground, "the app went away after opening (\(step))")
+    shoot("tap-\(step)-chat")
+  }
+
+  func testTappingANotificationOpensItsChat() throws {
+    let warm = "tap-warm-\(Int(Date().timeIntervalSince1970) % 100_000)"
+    let app = launchScheduling(warm)
+    XCUIDevice.shared.press(.home)
+    tapBanner(warm, app: app, step: "background")
+
+    let cold = "tap-cold-\(Int(Date().timeIntervalSince1970) % 100_000)"
+    _ = launchScheduling(cold)
+    app.terminate()
+    tapBanner(cold, app: app, step: "quit")
+  }
+
+  override func tearDown() async throws {
+    let app = XCUIApplication()
+    app.launchEnvironment["TALARIA_REMEMBER_SIGNIN_FILE"] = "0"
+    app.launch()
+    app.terminate()
+  }
+}

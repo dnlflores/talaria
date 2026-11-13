@@ -34,7 +34,12 @@ struct ChatRef: Sendable, Equatable {
 }
 
 /// UIKit's half of notifications: the APNs device token, and notifications arriving or tapped.
-final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+///
+/// The notification delegate methods are main-actor isolated (hence `@preconcurrency`): iOS calls
+/// them on the main thread and expects their completion there too. As `nonisolated async` methods,
+/// Swift finished them on a background thread, and UIKit aborted on its main-thread assertion while
+/// saving the app's snapshot after a tap (`_performBlockAfterCATransactionCommitSynchronizes`).
+final class AppDelegate: NSObject, UIApplicationDelegate, @preconcurrency UNUserNotificationCenterDelegate {
   func application(
     _ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
   ) -> Bool {
@@ -61,17 +66,16 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     PushCenter.shared.registrationFailed(error.localizedDescription)
   }
 
-  nonisolated func userNotificationCenter(
+  func userNotificationCenter(
     _ center: UNUserNotificationCenter, willPresent notification: UNNotification
   ) async -> UNNotificationPresentationOptions {
     let chat = ChatRef(userInfo: notification.request.content.userInfo)
-    let onScreen = await MainActor.run { PushCenter.shared.isOnScreen(chat) }
-    return onScreen ? [] : [.banner, .list, .sound]
+    return PushCenter.shared.isOnScreen(chat) ? [] : [.banner, .list, .sound]
   }
 
-  nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+  func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
     guard let chat = ChatRef(userInfo: response.notification.request.content.userInfo) else { return }
-    await MainActor.run { PushCenter.shared.open(chat) }
+    PushCenter.shared.open(chat)
   }
 }
 
@@ -517,6 +521,29 @@ final class PushCenter {
         } catch {
           PushCenter.trace("demo request failed: \(error)")
         }
+      }
+    }
+
+    /// A notification shaped like the Mac's, for `NotificationTapTests`: tapping it runs the same
+    /// delegate method a real one does. `TALARIA_TEST_NOTIFICATION=<profile>/<stored id>/<title>`,
+    /// shown `TALARIA_TEST_NOTIFICATION_DELAY` seconds (default 6) after launch.
+    func scheduleTestNotificationIfAsked() {
+      let environment = ProcessInfo.processInfo.environment
+      guard let raw = environment["TALARIA_TEST_NOTIFICATION"] else { return }
+      let parts = raw.split(separator: "/", maxSplits: 2).map(String.init)
+      guard parts.count == 3 else { return }
+      let delay = Double(environment["TALARIA_TEST_NOTIFICATION_DELAY"] ?? "") ?? 6
+      Task {
+        await requestAuthorization()
+        let content = UNMutableNotificationContent()
+        content.title = "Hermes finished"
+        content.subtitle = parts[2]
+        content.body = "The reply is ready."
+        content.userInfo = ["talaria": ["kind": "finished", "profile": parts[0], "session_id": parts[1]]]
+        let request = UNNotificationRequest(
+          identifier: "talaria.test", content: content,
+          trigger: UNTimeIntervalNotificationTrigger(timeInterval: delay, repeats: false))
+        try? await UNUserNotificationCenter.current().add(request)
       }
     }
   #endif
