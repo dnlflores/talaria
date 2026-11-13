@@ -17,6 +17,8 @@ yet.
   approvals, sudo and secret prompts, model (provider, then model) and effort,
   photo and file attachments, rename, read-along for chats held elsewhere,
   continue as a new version.
+- Jump to latest stays hidden until at least one visible chat screen from the
+  bottom, independently of whether new content is being followed.
 - A working row at the foot of a running turn and "Working" in the title bar.
   `session.resume`'s `running` and `turn_started_at` restore it after a
   reconnect; tool events alone start it; a quiet turn is re-checked against

@@ -15,6 +15,8 @@ struct TranscriptView: View {
   @State private var position = ScrollPosition(edge: .bottom)
   /// True while the view should keep the newest content in sight.
   @State private var isFollowing = true
+  /// Button visibility is geometric, not the intent to auto-follow new content.
+  @State private var showsJumpToLatest = false
   @State private var isUserScrolling = false
   @State private var visibleLimit = TranscriptView.pageSize
   @State private var expanded: Set<UUID> = []
@@ -80,6 +82,7 @@ struct TranscriptView: View {
       .frame(maxWidth: Metrics.readableWidth, alignment: .leading)
       .frame(maxWidth: .infinity)
     }
+    .accessibilityIdentifier("transcript.scroll")
     .defaultScrollAnchor(.bottom, for: .initialOffset)
     .scrollPosition($position)
     .scrollDismissesKeyboard(.interactively)
@@ -116,6 +119,14 @@ struct TranscriptView: View {
         isFollowing = true
       }
     }
+    .onScrollGeometryChange(for: Bool.self) { geometry in
+      let distanceToBottom = geometry.contentSize.height + geometry.contentInsets.bottom
+        - geometry.contentOffset.y - geometry.containerSize.height
+      let viewportHeight = geometry.visibleRect.height
+      return viewportHeight > 0 && distanceToBottom >= viewportHeight
+    } action: { _, shouldShow in
+      showsJumpToLatest = shouldShow
+    }
     .onScrollGeometryChange(for: Extent.self) { geometry in
       Extent(content: geometry.contentSize.height, container: geometry.containerSize.height)
     } action: { _, _ in
@@ -127,7 +138,7 @@ struct TranscriptView: View {
       withAnimation(.snappy(duration: 0.3)) { position.scrollTo(edge: .bottom) }
     }
     .overlay(alignment: .bottom) {
-      if !isFollowing, !chat.isEmpty, !chat.isLoading {
+      if showsJumpToLatest, !chat.isEmpty, !chat.isLoading {
         Button {
           isFollowing = true
           withAnimation(.snappy(duration: 0.3)) { position.scrollTo(edge: .bottom) }
@@ -144,7 +155,7 @@ struct TranscriptView: View {
         .accessibilityLabel("Jump to latest")
       }
     }
-    .animation(.snappy(duration: 0.2), value: isFollowing)
+    .animation(.snappy(duration: 0.2), value: showsJumpToLatest)
     .sheet(item: $inspected) { tool in
       ToolDetailSheet(tool: tool)
         .presentationDetents([.medium, .large])

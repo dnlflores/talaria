@@ -39,6 +39,20 @@ mac/talaria-push  Hermes plugin on the Mac: watches every chat, sends APNs pushe
 `HermesKit` and `MarkdownBlocks` build and test on macOS with `swift test`,
 which keeps the protocol logic checkable without a simulator.
 
+## Transcript scrolling
+
+Auto-follow and the **Jump to latest** button are separate states. Scrolling up
+or expanding a work log stops auto-follow so incoming text does not pull you
+away. That alone does not show the button: scroll geometry must put the bottom
+at least one visible viewport below the screen. The distance includes the
+bottom content inset (composer, keyboard and bars), and the threshold uses the
+current visible rectangle, so it adapts to the keyboard and window size. A
+short chat, the bottom itself and bottom overscroll keep the button hidden.
+
+`TranscriptScrollTests` exercises the production transcript and composer using
+a DEBUG-only offline chat, including short drags, expanded tool logs, scrolling
+back down and jumping to the latest reply.
+
 ## Connecting to Hermes
 
 Talaria talks straight to Hermes on the Mac: the gateway's own HTTP listener,

@@ -27,7 +27,9 @@ T3 Tools.
   Search bots and chats, pin, mark unread, archive.
 - **Chat** with streaming replies, Markdown (code, tables, task lists, quotes)
   and a collapsed work log per turn ("Worked for 2m") that opens to every tool
-  call with its input and output.
+  call with its input and output. **Jump to latest** appears only when you are
+  at least one visible chat screen from the bottom, not when you expand a tool
+  log near the latest reply.
 - **A working state you can see:** while a reply runs, the foot of the chat
   says what the agent is doing ("Running a command", "Writing the answer")
   with the elapsed time, the title bar says "Working", and the inbox marks the

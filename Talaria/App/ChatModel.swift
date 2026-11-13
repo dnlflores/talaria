@@ -118,6 +118,26 @@ final class ChatModel: Identifiable {
     owner = app.owners[storedID]
   }
 
+  #if DEBUG
+  /// Offline UI-test data rendered by the real transcript, without attaching to a live chat.
+  static func scrollPreview(app: AppModel, short: Bool) -> ChatModel {
+    let chat = ChatModel(app: app, profile: "preview", storedID: "scroll-preview", row: nil, live: nil)
+    chat.state.title = "Scroll preview"
+    if !short {
+      for turn in 1...8 {
+        chat.state.items.append(.user("Earlier question \(turn)", timestamp: Double(turn)))
+        let lines = (1...14).map { "Earlier reply \(turn), line \($0)." }.joined(separator: "\n\n")
+        chat.state.items.append(TranscriptItem(kind: .assistant, text: lines))
+      }
+    }
+    chat.state.items.append(.user("Inspect the latest change.", timestamp: 20))
+    chat.state.items.append(.tool(ToolCall(callID: "scroll-preview-tool", name: "read_file", isDone: true)))
+    chat.state.items.append(TranscriptItem(kind: .assistant, text: "Latest reply. Everything is up to date."))
+    chat.isLoading = false
+    return chat
+  }
+  #endif
+
   private var client: HermesClient? { app?.client }
 
   /// A turn run elsewhere is laid out as live too: its work log counts tools so far, and its
