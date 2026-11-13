@@ -783,6 +783,7 @@ final class ChatModel: Identifiable {
         $0.timestamp = sentAt
       }
       hasSpoken = true
+      PushCenter.shared.noteSent(storedID: storedID)
       if status == "queued", !fromQueue { app?.show("Queued. It goes out after the current reply.") }
       if state.title.isEmpty { state.title = String((text.isEmpty ? picked.first?.name ?? "" : text).prefix(60)) }
       app?.scheduleReload(after: 2.5)

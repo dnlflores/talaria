@@ -45,7 +45,7 @@ final class QueueFlowTests: XCTestCase {
   }
 
   private var input: XCUIElement {
-    app.textViews["composer.input"].firstMatch.exists ? app.textViews["composer.input"].firstMatch : app.textFields["composer.input"].firstMatch
+    app.textViews["composer.input"].firstMatch
   }
 
   private func type(_ text: String, then button: String) {

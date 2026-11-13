@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct TalariaApp: App {
+  @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate
   @State private var app = AppModel()
   @Environment(\.scenePhase) private var scenePhase
 
@@ -29,7 +30,17 @@ struct TalariaApp: App {
       RootView()
     }
     .environment(app)
-    .task { await app.launch() }
+    .task {
+      PushCenter.shared.app = app
+      #if DEBUG
+        PushCenter.shared.startDemoActivityIfAsked()
+      #endif
+      await app.launch()
+    }
+    // A tapped Live Activity: talaria://chat?profile=<bot>&session=<id>.
+    .onOpenURL { url in
+      if let chat = ChatRef(url: url) { PushCenter.shared.open(chat) }
+    }
     .onChange(of: scenePhase) { _, phase in
       if phase == .active { app.becameActive() }
       if phase == .background { app.wentToBackground() }

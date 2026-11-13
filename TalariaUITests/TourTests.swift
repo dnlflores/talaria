@@ -121,8 +121,9 @@ final class TourTests: XCTestCase {
         app.buttons["Done"].firstMatch.tap()
       }
       // The model chooser: providers first, then one provider's models. Nothing is switched.
+      // Disabled in a chat that cannot reply here (a Slack thread, one a terminal holds).
       let modelButton = app.buttons["Model and effort"]
-      if modelButton.waitForExistence(timeout: 3) {
+      if modelButton.waitForExistence(timeout: 3), modelButton.isEnabled {
         modelButton.tap()
         let provider = app.buttons.matching(identifier: "model.provider").firstMatch
         if provider.waitForExistence(timeout: 60) {

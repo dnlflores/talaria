@@ -31,6 +31,14 @@ yet.
   (`path`, `profile`, `session_id`).
 - iPad: a three-column split (areas, list, detail).
 
+## Done: notifications, Live Activities, keyboard
+
+- Push notifications when a chat finishes or a bot needs an answer, and a
+  Live Activity while a reply runs, sent by the `talaria-push` Hermes plugin on
+  the Mac (`mac/talaria-push`) with the user's APNs key. It watches
+  `session.active_list` for every bot and follows busy chats' events.
+- A hardware keyboard's Return sends; Shift-Return adds a line.
+
 ## Done, read side: Bots, Kanban, Cron
 
 - Bots: list, page with model, soul (`GET /api/profiles/{name}/soul`) and
@@ -88,10 +96,9 @@ yet.
 
 ## Then: what only a phone can do
 
-- Push notifications with actions (approve, answer, reply). This needs a
-  sender on the Mac that watches the event stream and holds an APNs key, plus
-  a device token registered with it.
+- Actions on notifications (approve, answer, reply): the sender exists
+  (`mac/talaria-push`); this needs notification categories and a route back
+  to `clarify.respond` / `approval.respond`.
 - Share extension: send a photo, file, link or text to a bot from any app.
 - App Intents and widgets: ask a bot from Siri or Shortcuts, see running turns.
-- A Live Activity while a long turn runs.
 - Voice: dictation is the keyboard's today; `voice.*` covers the rest.

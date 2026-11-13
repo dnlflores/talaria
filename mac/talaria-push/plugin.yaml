@@ -1,0 +1,5 @@
+name: talaria-push
+version: "0.1.0"
+description: "Push notifications and Live Activities for the Talaria iPhone app: a chat finished, or a bot needs your answer. Sends straight to Apple (APNs) with your own key; nothing goes through a third party."
+author: Talaria
+kind: standalone

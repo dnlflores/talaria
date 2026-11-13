@@ -27,11 +27,17 @@ targets:
     platform: iOS
     sources:
       - path: Talaria
+      - path: Shared
+    entitlements:
+      path: Talaria/Talaria.entitlements
+      properties:
+        aps-environment: development
     dependencies:
       - package: HermesKit
         product: HermesKit
       - package: HermesKit
         product: MarkdownBlocks
+      - target: TalariaActivity
     settings:
       base:
         INFOPLIST_FILE: Talaria/Info.plist
@@ -42,6 +48,24 @@ targets:
         CODE_SIGN_STYLE: Automatic
         ENABLE_USER_SCRIPT_SANDBOXING: YES
         SWIFT_EMIT_LOC_STRINGS: NO
+
+  # The Live Activity: a running reply on the Lock Screen and in the Dynamic Island.
+  TalariaActivity:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: TalariaActivity
+      - path: Shared
+    settings:
+      base:
+        INFOPLIST_FILE: TalariaActivity/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        PRODUCT_BUNDLE_IDENTIFIER: $(TALARIA_BUNDLE_ID).activity
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Automatic
+        SKIP_INSTALL: YES
+        SWIFT_EMIT_LOC_STRINGS: NO
+        ENABLE_USER_SCRIPT_SANDBOXING: YES
 
   TalariaUITests:
     type: bundle.ui-testing

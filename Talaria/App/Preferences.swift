@@ -13,6 +13,12 @@ final class Preferences {
   var lastProfile: String { didSet { defaults.set(lastProfile, forKey: Key.lastProfile) } }
   /// Home list filter: a profile name, or empty for every bot.
   var profileFilter: String { didSet { defaults.set(profileFilter, forKey: Key.profileFilter) } }
+  /// A notification when a reply finishes or a bot asks something (sent by the Mac).
+  var notifyFinished: Bool { didSet { defaults.set(notifyFinished, forKey: Key.notifyFinished) } }
+  /// A Live Activity while a reply runs.
+  var liveActivities: Bool { didSet { defaults.set(liveActivities, forKey: Key.liveActivities) } }
+  /// Which chats notify: `all`, or `phone` (chats this phone sent to). See `PushRegistration.Scope`.
+  var notifyScope: String { didSet { defaults.set(notifyScope, forKey: Key.notifyScope) } }
   private var drafts: [String: String]
 
   private enum Key {
@@ -24,6 +30,9 @@ final class Preferences {
     static let lastProfile = "chat.lastProfile"
     static let profileFilter = "home.profileFilter"
     static let drafts = "chat.drafts"
+    static let notifyFinished = "push.notifyFinished"
+    static let liveActivities = "push.liveActivities"
+    static let notifyScope = "push.scope"
   }
 
   init(defaults: UserDefaults = .standard) {
@@ -34,6 +43,9 @@ final class Preferences {
     lastProfile = defaults.string(forKey: Key.lastProfile) ?? ""
     profileFilter = defaults.string(forKey: Key.profileFilter) ?? ""
     drafts = defaults.dictionary(forKey: Key.drafts) as? [String: String] ?? [:]
+    notifyFinished = defaults.object(forKey: Key.notifyFinished) as? Bool ?? true
+    liveActivities = defaults.object(forKey: Key.liveActivities) as? Bool ?? true
+    notifyScope = defaults.string(forKey: Key.notifyScope) ?? "all"
   }
 
   /// The address baked in at build time from the untracked `Config/Local.xcconfig`, if any.

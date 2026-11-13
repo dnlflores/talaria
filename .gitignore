@@ -26,3 +26,5 @@ password.txt
 
 # macOS
 .DS_Store
+__pycache__/
+build-device/

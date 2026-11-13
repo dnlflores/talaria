@@ -8,7 +8,6 @@ struct ComposerView: View {
   @Bindable var chat: ChatModel
   @Environment(AppModel.self) private var app
   @Environment(\.palette) private var palette
-  @FocusState private var isFocused: Bool
   @State private var showsPhotos = false
   @State private var showsFiles = false
   @State private var photoItems: [PhotosPickerItem] = []
@@ -57,14 +56,22 @@ struct ComposerView: View {
         }
         .accessibilityLabel("Attach")
 
-        TextField(placeholder, text: $chat.draft, axis: .vertical)
-          .lineLimit(1...8)
-          .font(AppFont.body)
-          .foregroundStyle(palette.foreground)
-          .focused($isFocused)
-          .accessibilityIdentifier("composer.input")
-          .padding(.vertical, 9)
-          .frame(minHeight: 40)
+        ComposerInput(text: $chat.draft, placeholder: placeholder) {
+          // Return on a hardware keyboard; Shift-Return adds a line (ComposerInput).
+          if chat.canSend { Task { await chat.send() } }
+        }
+        .overlay(alignment: .topLeading) {
+          if chat.draft.isEmpty {
+            Text(placeholder)
+              .font(AppFont.body)
+              .foregroundStyle(palette.placeholder)
+              .lineLimit(1)
+              .allowsHitTesting(false)
+              .accessibilityHidden(true)
+          }
+        }
+        .padding(.vertical, 9)
+        .frame(minHeight: 40)
 
         sendButton
       }

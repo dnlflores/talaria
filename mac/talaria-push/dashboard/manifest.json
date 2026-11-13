@@ -1,0 +1,13 @@
+{
+  "name": "talaria-push",
+  "label": "Talaria push",
+  "description": "Notifications and Live Activities on the Talaria iPhone app when a chat finishes or needs you",
+  "icon": "Bell",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/talaria-push",
+    "hidden": true
+  },
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}

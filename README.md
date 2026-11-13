@@ -47,6 +47,19 @@ T3 Tools.
 - **Questions and approvals:** questions the agent asks are answered inline in
   the transcript; command approvals and sudo or secret prompts arrive as sheets.
 - **Model and thinking effort** per conversation, from the Mac's own catalog.
+- **Notifications:** "Ada finished" with the start of the reply when a chat
+  ends, and "Ada needs you" when a bot asks something or wants an approval,
+  with the phone locked or the app closed. Tapping one opens the chat. Your Mac
+  sends them straight to Apple with your own APNs key (the `talaria-push`
+  Hermes plugin in `mac/`); nothing goes through a third party. Settings can
+  limit them to chats sent from the phone.
+- **Live Activities:** while a reply runs, the Lock Screen and the Dynamic
+  Island show the bot, the chat, how long it has been working and what it is
+  doing ("Editing a file: ChatView.swift"); a question shows as "Needs you" and
+  the end as "Done in 4m" with the start of the answer. Commands and code never
+  show there.
+- **Keyboard:** with a hardware keyboard, Return sends and Shift-Return adds a
+  line. The on-screen keyboard's Return still adds a line.
 - **Attachments:** photos (resized on the phone) and files.
 - **One chat on the phone and the desktop app:** chats run in the Hermes
   gateway on the Mac, the process the desktop app runs them in. A chat open in
@@ -85,7 +98,7 @@ The goal is everything the Hermes desktop app does. In order:
 2. Workspace panes: diff review, working folder, terminal.
 3. Capabilities: skills, MCP servers, connectors, toolsets.
 4. Messaging channels, profiles and settings.
-5. Push notifications with actions, a share extension, widgets.
+5. Notification actions (approve, answer, reply), a share extension, widgets.
 
 [docs/roadmap.md](docs/roadmap.md) maps each area to the gateway methods it
 needs.
@@ -128,7 +141,24 @@ open Talaria.xcodeproj
 
 `Config/Local.xcconfig` is untracked. It holds your signing team, a bundle id
 you control and, optionally, the address to prefill on first launch. No address
-or credential is committed to this repository.
+or credential is committed to this repository. The app uses the Push
+Notifications capability, so it needs a paid developer team; Xcode's automatic
+signing registers the app id (and `<bundle id>.activity` for the Live Activity)
+with `-allowProvisioningUpdates`.
+
+### Notifications
+
+Your Mac sends them, through the `talaria-push` Hermes plugin
+([mac/talaria-push](mac/talaria-push/README.md)):
+
+1. In your Apple developer account, Keys > +: tick Apple Push Notifications
+   service (APNs), Sandbox & Production, Team Scoped; download
+   `AuthKey_<KEYID>.p8`.
+2. `scripts/install-push-plugin.sh --key ~/Downloads/AuthKey_<KEYID>.p8`
+   copies the plugin into `~/.hermes/plugins/`, enables it and puts the key in
+   place. Add `--team <TEAMID>` for the simulator, whose builds carry no team.
+3. Open the app: Settings > Notifications says "Ready", and "Send a test
+   notification" checks the whole path.
 
 In the simulator the app can use Hermes' loopback address. With Web Access on it
 asks for the sign-in too; a Debug build can take saved tokens instead:
@@ -173,7 +203,11 @@ throwaway job you name in `TEST_RUNNER_TALARIA_UITEST_CRON_JOB`;
 (`TEST_RUNNER_TALARIA_UITEST_ELSEWHERE=<its title>`) reads as working.
 `swift test --filter SharedChat` (with `TALARIA_LIVE_TURN=1`) checks that a
 turn from either the phone or the desktop app reaches the other, questions
-included.
+included. `ActivityLookTests` (`TEST_RUNNER_TALARIA_UITEST_ACTIVITY_LOOK=1`)
+screenshots the Live Activity in each phase with no Mac;
+`NotificationSettingsTests` (`TEST_RUNNER_TALARIA_UITEST_PUSH=1`) allows
+notifications and shows what the Mac said; the push plugin has its own tests
+(`python -m unittest discover -s mac/talaria-push/tests` with Hermes' Python).
 
 ## Layout
 
@@ -186,7 +220,10 @@ Talaria/                   the app
   Theme/                   palettes (generated), type scale
   Components/              Markdown view, shared controls
   Features/                Shell, Connect, Home, Chat, Bots, Kanban, Cron, Settings
-scripts/                   palette generator, icon, sign-in for tests
+Shared/                    the Live Activity's attributes (app and widget)
+TalariaActivity/           the Live Activity: Lock Screen and Dynamic Island
+mac/talaria-push/          Hermes plugin on the Mac that sends the pushes
+scripts/                   palette generator, icon, sign-in for tests, push plugin install
 docs/                      architecture, roadmap
 ```
 

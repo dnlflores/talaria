@@ -10,9 +10,12 @@ Talaria (SwiftUI app)
   AppModel        connection phase, inbox, navigation, prompts from the agent
   ChatModel       one open conversation and its composer
   AreaState       what Bots, Kanban and Cron have open (CronModel, KanbanModel)
+  PushCenter      notification permission, APNs and Live Activity tokens, registers
+                  them with the Mac; opens the chat a notification or activity names
   Views           Shell (Chats and Bots tabs on iPhone, Kanban, Cron and Settings
                   in the inbox's More menu; sidebar split on iPad without Cron), Connect,
                   Home, Chat, Bots, Kanban, Cron, Settings
+TalariaActivity   widget extension: the Live Activity (Lock Screen, Dynamic Island)
         │
 HermesKit (Swift package, no UI)
   HermesHTTP      REST to Hermes, sign-in tokens and their renewal
@@ -23,10 +26,14 @@ HermesKit (Swift package, no UI)
   TranscriptLayout  rows the transcript view draws
   FileExtraction  the files a turn wrote, edited or delivered
   PromptQueue     messages waiting for the running reply
+  PushRegistration  what the phone tells the Mac's push plugin; SigningFacts
+  ComposerKey     what a hardware key does in the composer
   UserContent     a user message's words and its `@image:` pictures
   Workspace       cron, kanban and file calls and their models
         │
 MarkdownBlocks    block-level Markdown parser
+
+mac/talaria-push  Hermes plugin on the Mac: watches every chat, sends APNs pushes
 ```
 
 `HermesKit` and `MarkdownBlocks` build and test on macOS with `swift test`,
@@ -309,9 +316,61 @@ device) replaces the settled items once. A message that was typed and not yet
 acknowledged is matched against the fresh copy so it is neither lost nor sent
 twice.
 
+## Notifications and Live Activities
+
+iOS suspends the app's socket soon after it leaves the screen, so the phone
+cannot notice a reply ending on its own. The Mac does: the `talaria-push`
+Hermes plugin (`mac/talaria-push`) runs inside the gateway and sends Apple's
+push service what to show, with the user's own APNs key.
+
+```
+Talaria ── POST /api/plugins/talaria-push/devices ──▶ plugin routes (gateway listener)
+   ▲        device token, push-to-start token,           │
+   │        settings, bot names                          ▼
+   │                                              watcher (one per Mac)
+   │                                                session.active_list every 2 s, all bots
+   │                                                session.resume of each busy chat:
+   │                                                tool.start, clarify/approval, message.complete
+   │                                                  │
+   └──────────────── APNs (HTTP/2, ES256 token) ◀─────┘
+```
+
+- **Which chats:** sources a person starts (desktop app, terminal, Talaria;
+  `gui`, `local`, `tui`, ...). Messaging threads, cron, kanban and sub-agents
+  do not notify. With "Sent from this phone", only chats the phone sent to in
+  the last day (`POST /follow` on every send).
+- **Alerts:** working or waiting to idle is "<bot> finished" (or "hit an
+  error", "stopped", from `message.complete`'s `status`), the chat's title and
+  the start of the answer, Markdown flattened. A clarify or approval is
+  "<bot> needs you" with the question. One notification per chat in
+  Notification Center (`apns-collapse-id` from the chat id). On screen, a
+  notification for the chat already open is not shown; opening a chat clears
+  its notifications.
+- **Live Activities:** a chat that starts working gets one through
+  push-to-start (`input-push-token: 1`). iOS wakes the app to hand over that
+  activity's own update token, which `PushCenter` posts to `/activities`
+  (in a background task, with a REST client built from the saved address when
+  there is no screen). The Mac then sends the step ("Editing a file: x.swift";
+  commands and code never go on the Lock Screen), "Needs you", and the end with
+  the start of the answer, dismissed after ten minutes. A token that arrives
+  after the reply ended ends the activity at once. Step updates go at most every
+  12 seconds at priority 5; phase changes at once. If an end never arrives, the
+  app ends an activity whose chat it sees idle when the inbox loads.
+- **Wire shape:** `ChatActivityAttributes` (`Shared/`) is the contract: the
+  plugin sends `attributes` and `content-state` with the same keys
+  (`phase`, `startedAt` in Unix seconds, `endedAt`, `step`, `summary`, `title`).
+- **Environment:** the app reads `aps-environment` and the team from its
+  embedded provisioning profile (`SigningFacts`): Xcode-signed builds use the
+  sandbox host. The simulator has no profile; it uses the sandbox and the team
+  from the plugin's `config.json`.
+- **Keyboard:** the composer is a `UITextView` (`ComposerInput`). SwiftUI's
+  multi-line `TextField` swallows a hardware Return on iOS 27 (no new line, no
+  `onSubmit`, no `onKeyPress`), while a text view's `pressesBegan` sees it
+  before text input does. The on-screen keyboard's Return never goes through
+  `pressesBegan`, so it still types a new line.
+
 ## What is deliberately not here yet
 
 - Slash commands typed into the composer are sent as plain text.
 - Diff review and the working-folder picker.
-- Push notifications. iOS suspends the socket in the background, so a reply
-  that finishes while the app is closed is seen on the next open.
+- Actions on notifications (approve, answer, reply from the banner).

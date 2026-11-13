@@ -44,7 +44,7 @@ final class LiveFlowTests: XCTestCase {
   }
 
   private func send(_ text: String) {
-    let input = app.textViews["composer.input"].firstMatch.exists ? app.textViews["composer.input"].firstMatch : app.textFields["composer.input"].firstMatch
+    let input = app.textViews["composer.input"].firstMatch
     XCTAssertTrue(input.waitForExistence(timeout: 20), "composer input")
     input.tap()
     input.typeText(text)

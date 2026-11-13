@@ -42,6 +42,8 @@ struct SettingsView: View {
           }
         }
 
+        NotificationSettings()
+
         GroupedSection("Appearance") {
           Picker("Appearance", selection: $preferences.appearance) {
             ForEach(AppearanceMode.allCases) { mode in Text(mode.name).tag(mode) }

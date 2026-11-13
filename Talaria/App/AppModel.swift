@@ -130,7 +130,7 @@ final class AppModel {
   private let signIns: any SignInStore = AppModel.makeSignInStore()
   @ObservationIgnored private var signInSheet: SignInSheet?
 
-  private static func makeSignInStore() -> any SignInStore {
+  static func makeSignInStore() -> any SignInStore {
     #if DEBUG
       // UI tests and simulator screenshots: the tokens `scripts/sign-in.py` saved on the Mac.
       if let path = ProcessInfo.processInfo.environment["TALARIA_SIGNIN_FILE"], !path.isEmpty {
@@ -213,6 +213,7 @@ final class AppModel {
 
   /// Forgets the sign-in and returns to the sign-in screen. The address is kept for next time.
   func signOut() async {
+    await PushCenter.shared.unregister()
     let old = client
     teardown()
     await old?.http.logout()
@@ -284,6 +285,10 @@ final class AppModel {
     Task { await refreshSessions() }
     Task { await refreshStatus() }
     startActivityProbe()
+    let push = PushCenter.shared
+    push.app = self
+    Task { await push.start(asking: Self.asksForNotifications) }
+    push.openPending()
     #if DEBUG
       // UI tests open one conversation straight away: `TALARIA_OPEN_CHAT=<profile>/<stored id>`.
       if let target = ProcessInfo.processInfo.environment["TALARIA_OPEN_CHAT"], let slash = target.firstIndex(of: "/"),
@@ -294,12 +299,24 @@ final class AppModel {
     #endif
   }
 
+  /// Whether to ask for notification permission on the first signed-in launch. Not in UI tests
+  /// and simulator screenshots (the system alert would cover the screen), unless they ask for it.
+  private static var asksForNotifications: Bool {
+    #if DEBUG
+      let environment = ProcessInfo.processInfo.environment
+      if environment["TALARIA_PUSH_PROMPT"] == "1" { return true }
+      if !(environment["TALARIA_SIGNIN_FILE"] ?? "").isEmpty { return false }
+    #endif
+    return true
+  }
+
   /// Foreground: the socket has usually died while the phone slept.
   func becameActive() {
     guard phase == .ready, let client else { return }
     Task { await client.rpc.kick() }
     Task { await refreshSessions(quiet: true) }
     startActivityProbe()
+    PushCenter.shared.becameActive()
   }
 
   /// Background: no polling while nobody is looking.
@@ -519,6 +536,7 @@ final class AppModel {
       hasLoadedSessions = true
       if let chat = openChat, let row = rows.first(where: { $0.id == chat.storedID }) { chat.rowChanged(row) }
       trackWorking()
+      PushCenter.shared.reconcile { [unowned self] id in self.isWorking(id) || self.needsYou(id) }
     } catch HermesError.loginRequired {
       connection = .unauthorized
       if phase == .ready {
@@ -711,7 +729,10 @@ final class AppModel {
   private func refreshProfiles() async {
     guard let client, let list = try? await client.profiles() else { return }
     let added = Set(list.map(\.name)) != Set(profiles.map(\.name))
+    let renamed = list.map(\.title) != profiles.map(\.title)
     profiles = list
+    // Pushes name the bot: the Mac learns the names with the registration.
+    if added || renamed { PushCenter.shared.settingsChanged() }
     // Counts and the per-bot top-up are read per bot, so a changed bot list needs a reload.
     if added { scheduleReload(after: 0.3) }
     for profile in list where profile.hasAvatar && avatars[profile.name] == nil {
@@ -903,6 +924,7 @@ final class AppModel {
 
   func chatAppeared(_ chat: ChatModel) {
     openChat = chat
+    PushCenter.shared.chatOpened(storedID: chat.storedID)
   }
 
   func chatDisappeared(_ chat: ChatModel) {
