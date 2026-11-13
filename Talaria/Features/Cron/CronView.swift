@@ -68,6 +68,8 @@ final class CronModel {
 struct CronList: View {
   let model: CronModel
   @Binding var selection: String?
+  /// Only this bot's jobs (opened from its hub). Nil: every bot's.
+  var profile: String?
   @Environment(AppModel.self) private var app
   @Environment(\.palette) private var palette
 
@@ -80,10 +82,11 @@ struct CronList: View {
             .listRowBackground(Color.clear)
             .listRowSeparatorTint(palette.border)
         }
-      } else if model.jobs.isEmpty {
+      } else if ordered.isEmpty {
         EmptyStateView(
           symbol: "clock", title: model.error == nil ? "No cron jobs" : "Can't load cron jobs",
-          text: model.error ?? "Jobs you schedule on your Mac show up here.")
+          text: model.error ?? (profile.map { "Jobs \(app.title(forProfile: $0)) runs on a schedule show up here." }
+            ?? "Jobs you schedule on your Mac show up here."))
           .listRowSeparator(.hidden)
           .listRowBackground(Color.clear)
       } else {
@@ -119,7 +122,7 @@ struct CronList: View {
     .scrollContentBackground(.hidden)
     .background(palette.screen.ignoresSafeArea())
     .environment(\.defaultMinListRowHeight, 10)
-    .navigationTitle("Cron")
+    .navigationTitle(profile.map { "\(app.title(forProfile: $0)) · Cron" } ?? "Cron")
     .navigationBarTitleDisplayMode(.inline)
     .refreshable { await model.refresh(app.client) }
     .task {
@@ -133,7 +136,7 @@ struct CronList: View {
 
   /// Running and failing jobs first, then by the next run.
   private var ordered: [CronJob] {
-    model.jobs.sorted { a, b in
+    model.jobs.filter { profile == nil || $0.profile == profile }.sorted { a, b in
       func rank(_ job: CronJob) -> Int {
         if job.isRunning { return 0 }
         if job.lastRunFailed && !job.isPaused { return 1 }

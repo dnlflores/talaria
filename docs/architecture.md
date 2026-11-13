@@ -7,14 +7,18 @@ the Mac; the phone renders state and sends intent.
 
 ```
 Talaria (SwiftUI app)
-  AppModel        connection phase, inbox, navigation, prompts from the agent
+  AppModel        connection phase, inbox, navigation (the Chats stack and the agent hub's
+                  stack), prompts from the agent; starred models, each bot's default
+                  catalog and skills (AppModel+Agents)
   ChatModel       one open conversation and its composer
-  AreaState       what Bots, Kanban and Cron have open (CronModel, KanbanModel)
+  AreaState       what Agents, Kanban and Cron have open (CronModel, KanbanModel)
   PushCenter      notification permission, APNs and Live Activity tokens, registers
                   them with the Mac; opens the chat a notification or activity names
-  Views           Shell (Chats and Bots tabs on iPhone, Kanban, Cron and Settings
-                  in the inbox's More menu; sidebar split on iPad without Cron), Connect,
-                  Home, Chat, Bots, Kanban, Cron, Settings
+  Views           Shell (iPhone: a hidden-bar TabView of Chats and Agents under a
+                  floating glass dock that adds New chat and Settings; Kanban and Cron in
+                  the inbox's More menu and the hub. iPad: sidebar split without Cron),
+                  Connect, Home, Chat, Models (model chooser parts), Bots (agent hub and
+                  its pages), Kanban, Cron, Settings
 TalariaActivity   widget extension: the Live Activity (Lock Screen, Dynamic Island)
         │
 HermesKit (Swift package, no UI)
@@ -30,6 +34,8 @@ HermesKit (Swift package, no UI)
   ComposerKey     what a hardware key does in the composer
   UserContent     a user message's words and its `@image:` pictures
   Workspace       cron, kanban and file calls and their models
+  AgentSettings   favourite models (the desktop app's shared UI preference), a bot's
+                  default model catalog and its change, skills
         │
 MarkdownBlocks    block-level Markdown parser
 
@@ -382,6 +388,44 @@ Talaria ── POST /api/plugins/talaria-push/devices ──▶ plugin routes (g
   `onSubmit`, no `onKeyPress`), while a text view's `pressesBegan` sees it
   before text input does. The on-screen keyboard's Return never goes through
   `pressesBegan`, so it still types a new line.
+
+## The look and the agent hub
+
+The app follows the Hermes mobile app. The Hermes family (`Theme/HermesPalette.swift`,
+hand-written, light and dark) is the default; an install that predates it is switched
+to it once (`theme.hermesLook`), and Settings still offers the six T3 families. Shared
+pieces live in `Components/Glass.swift`: `glassCard()` (grouped surface, hairline
+edge, soft shadow), `NavRow` (line icon, name, value, chevron), `Chip` (lavender fill
+and indigo edge when picked, derived from each palette's `primary`), `GlassSearchField`.
+Real Liquid Glass (`glassEffect`) is kept for floating controls: the dock and capsule
+buttons.
+
+On iPhone the system tab bar is hidden and `Dock` floats over the first screen of
+Chats and Agents (`TabView` still keeps each area's place and appear/disappear). It
+hides once a page is stacked on top, so chats and pages get the whole screen. New chat
+starts with the hub's bot in Agents and asks which bot in Chats; Settings stacks on the
+area on screen.
+
+The Agents area (`AgentHubView.swift`) shows one bot: a switcher over every bot on
+iPhone, the bot list's pick on iPad. Its rows open pages on the hub's own stack
+(`HubRoute`, `AppModel.hubPath`); a chat opened from there stacks there too
+(`openChat`, `show` and `startChat` check `tab == .bots`). On iPad Chats, Cron and
+Kanban rows switch to those areas instead (Cron filtered to the bot through
+`AreaState.cronProfile`).
+
+- **Default model:** `GET /api/model/options?profile=` (the catalog without a session,
+  same shape as `model.options`, plus the bot's `model` and `provider`) and `POST
+  /api/model/set?profile= {scope: "main", provider, model}`, the desktop app's
+  Settings > Models write. An expensive model answers `confirm_required` with a
+  message; the app asks, then repeats with `confirm_expensive_model`. It writes the
+  bot's config.yaml (new chats only) and reserializes the file (`null`s become empty,
+  empty maps are dropped).
+- **Favourites:** the desktop app keeps starred models in the Mac's shared UI
+  preferences (`GET`/`PATCH /api/ui-preferences`, key `hermes.desktop.favorite-models`,
+  a JSON array of `provider::model` in starring order; an empty list deletes the key).
+  The phone reads them each time a chooser opens and merges with the Mac's list before
+  writing, so stars set on either side show on both.
+- **Skills:** `skills.manage {action: "list", profile}` answers category to names.
 
 ## What is deliberately not here yet
 

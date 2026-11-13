@@ -41,11 +41,15 @@ yet.
   `session.active_list` for every bot and follows busy chats' events.
 - A hardware keyboard's Return sends; Shift-Return adds a line.
 
-## Done, read side: Bots, Kanban, Cron
+## Done, read side: Agents, Kanban, Cron
 
-- Bots: list, page with model, soul (`GET /api/profiles/{name}/soul`) and
-  recent chats, Bot Chat (`session.list {title: "Bot Chat"}`, else
-  `session.create`), new chat.
+- Agents: a hub per bot (switcher on iPhone, list on iPad) with Bot Chat
+  (`session.list {title: "Bot Chat"}`, else `session.create`), new chat, and
+  rows for its default model, skills (`skills.manage list`), chats, cron jobs,
+  kanban and soul (`GET /api/profiles/{name}/soul`).
+- Default model: change it from the hub (`GET /api/model/options?profile=`,
+  `POST /api/model/set`), with the desktop app's starred models
+  (`/api/ui-preferences`, `hermes.desktop.favorite-models`) shared both ways.
 - Kanban: boards, the board one column at a time, card detail with brief,
   latest summary, runs (open the run's chat), comments and linked cards.
   Polled every 10 seconds while on screen.
@@ -78,7 +82,11 @@ yet.
 
 ## Then: capabilities
 
-- Skills: `skills.manage`, `skills.reload`
+Each lands as a row in the agent hub (its Integrations section in the Hermes
+mobile app: Connections, Plugins, MCP).
+
+- Skills: the hub lists them read-only; next `skills.manage` install, search
+  and inspect, `skills.reload`
 - MCP servers: `mcp.catalog`, `mcp.servers.*`
 - Connectors: `connectors.*`
 - Tools and toolsets: `tools.list`, `tools.configure`, `toolsets.list`

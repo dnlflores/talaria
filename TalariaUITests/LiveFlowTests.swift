@@ -156,16 +156,14 @@ final class LiveFlowTests: XCTestCase {
     XCTAssertTrue(app.staticTexts["Answered"].waitForExistence(timeout: 10))
     shoot("07-question-answered")
 
-    // 4. Model: pick the provider, then a model. The chat switches to it.
+    // 4. Model: the model in use and its efforts first, then every model behind provider chips
+    // (the provider in use picked). The chat switches to the model picked.
     app.buttons["Model and effort"].tap()
     XCTAssertTrue(app.descendants(matching: .any)["model.current"].waitForExistence(timeout: 20), "no model in use shown")
-    let inUseProvider = app.buttons.matching(
-      NSPredicate(format: "identifier == 'model.provider' AND label CONTAINS 'In use'")).firstMatch
-    XCTAssertTrue(inUseProvider.waitForExistence(timeout: 60), "the providers did not load, or none is marked in use")
     shoot("08-models")
     // Effort: every level the model offers is named in full, and a pick round-trips the backend.
     let efforts = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'effort.'"))
-    XCTAssertGreaterThan(efforts.count, 0, "no thinking efforts shown")
+    XCTAssertTrue(efforts.firstMatch.waitForExistence(timeout: 20), "no thinking efforts shown")
     let names = efforts.allElementsBoundByIndex.map(\.label)
     XCTAssertEqual(Set(names).count, names.count, "an effort is listed twice: \(names)")
     let pick = efforts.matching(NSPredicate(format: "NOT (identifier == 'effort.none')")).element(boundBy: 0)
@@ -173,6 +171,10 @@ final class LiveFlowTests: XCTestCase {
     let picked = NSPredicate(format: "isSelected == true")
     expectation(for: picked, evaluatedWith: pick)
     waitForExpectations(timeout: 15)
+    app.buttons["model.all"].tap()
+    let inUseProvider = app.buttons.matching(
+      NSPredicate(format: "identifier == 'model.provider' AND label CONTAINS 'In use'")).firstMatch
+    XCTAssertTrue(inUseProvider.waitForExistence(timeout: 60), "the providers did not load, or none is marked in use")
     inUseProvider.tap()
     let rows = app.buttons.matching(identifier: "model.row")
     XCTAssertTrue(rows.matching(NSPredicate(format: "label CONTAINS 'in use'")).firstMatch.waitForExistence(timeout: 10),

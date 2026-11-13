@@ -17,25 +17,25 @@ struct NotificationSettings: View {
       GroupedSection("Notifications") {
         ValueRow("This \(device)", permissionText, color: permissionColor)
         if push.authorization == .notDetermined {
-          Hairline().padding(.leading, 16)
+          GroupDivider()
           ActionRow("Allow notifications", systemImage: "bell.badge") {
             Task { await push.requestAuthorization() }
           }
         } else if push.authorization == .denied {
-          Hairline().padding(.leading, 16)
+          GroupDivider()
           ActionRow("Turn on in iOS Settings", systemImage: "gear") {
             if let url = URL(string: UIApplication.openNotificationSettingsURLString) { openURL(url) }
           }
         }
-        Hairline().padding(.leading, 16)
+        GroupDivider()
         ValueRow("Your Mac", macText, color: macColor)
           .accessibilityIdentifier("push.mac")
-        Hairline().padding(.leading, 16)
+        GroupDivider()
         ToggleRow(
           title: "When a reply finishes", detail: "And when a bot asks you something.", isOn: $preferences.notifyFinished
         )
         .accessibilityIdentifier("push.alerts")
-        Hairline().padding(.leading, 16)
+        GroupDivider()
         ToggleRow(
           title: "Live Activities",
           detail: activitiesEnabled
@@ -43,7 +43,7 @@ struct NotificationSettings: View {
           isOn: $preferences.liveActivities
         )
         .accessibilityIdentifier("push.activities")
-        Hairline().padding(.leading, 16)
+        GroupDivider()
         Picker("Chats", selection: $preferences.notifyScope) {
           Text("All chats").tag(PushRegistration.Scope.all.rawValue)
           Text("Sent from this phone").tag(PushRegistration.Scope.phone.rawValue)
@@ -51,7 +51,7 @@ struct NotificationSettings: View {
         .pickerStyle(.segmented)
         .padding(12)
         .accessibilityIdentifier("push.scope")
-        Hairline().padding(.leading, 16)
+        GroupDivider()
         ActionRow("Send a test notification", systemImage: "paperplane", isWorking: push.isTesting) {
           Task { await push.sendTest() }
         }

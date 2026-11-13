@@ -24,19 +24,19 @@ struct SettingsView: View {
             }
             Spacer(minLength: 0)
           }
-          .padding(.horizontal, 16)
-          .padding(.vertical, 13)
+          .padding(.horizontal, 18)
+          .padding(.vertical, 15)
           if !app.hermesVersion.isEmpty {
-            Hairline().padding(.leading, 16)
+            GroupDivider()
             ValueRow("Hermes", app.hermesVersion, mono: true)
           }
-          Hairline().padding(.leading, 16)
-          ValueRow("Bots", "\(app.profiles.count)")
-          Hairline().padding(.leading, 16)
+          GroupDivider()
+          ValueRow("Agents", "\(app.profiles.count)")
+          GroupDivider()
           ActionRow("Sign out", systemImage: "rectangle.portrait.and.arrow.right") {
             Task { await app.signOut() }
           }
-          Hairline().padding(.leading, 16)
+          GroupDivider()
           ActionRow("Use a different Mac", systemImage: "arrow.left.arrow.right", isDestructive: true) {
             confirmsForget = true
           }
@@ -49,8 +49,8 @@ struct SettingsView: View {
             ForEach(AppearanceMode.allCases) { mode in Text(mode.name).tag(mode) }
           }
           .pickerStyle(.segmented)
-          .padding(12)
-          Hairline().padding(.leading, 16)
+          .padding(14)
+          GroupDivider()
           LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
             ForEach(ThemeFamily.allCases) { family in
               ThemeSwatch(
@@ -61,13 +61,13 @@ struct SettingsView: View {
               }
             }
           }
-          .padding(12)
+          .padding(14)
         }
 
         GroupedSection("About") {
           ValueRow("Version", Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
-          Hairline().padding(.leading, 16)
-          Text("Talaria is a personal client for Hermes Agent by Nous Research. Its colors and layout follow T3 Code's mobile app (MIT). Type is DM Sans (SIL Open Font License).")
+          GroupDivider()
+          Text("Talaria is a personal client for Hermes Agent by Nous Research. Its look follows the Hermes mobile app; the other color families come from T3 Code's mobile app (MIT). Type is DM Sans (SIL Open Font License).")
             .font(AppFont.label)
             .foregroundStyle(palette.foregroundMuted)
             .lineSpacing(2)
@@ -77,6 +77,8 @@ struct SettingsView: View {
       }
       .padding(.horizontal, 16)
       .padding(.vertical, 12)
+      .frame(maxWidth: 680)
+      .frame(maxWidth: .infinity)
     }
     .background(palette.screen.ignoresSafeArea())
     .navigationTitle("Settings")

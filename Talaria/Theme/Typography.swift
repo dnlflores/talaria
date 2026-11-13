@@ -43,7 +43,7 @@ enum AppFont {
 enum Metrics {
   static let screenPadding: CGFloat = 18
   static let rowSpacing: CGFloat = 4
-  static let cardRadius: CGFloat = 22
+  static let cardRadius: CGFloat = 26
   static let bubbleRadius: CGFloat = 20
   static let controlRadius: CGFloat = 14
   static let hairline: CGFloat = 1 / 3

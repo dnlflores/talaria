@@ -24,17 +24,31 @@ enum Route: Hashable {
   }
 }
 
-/// The top-level areas. The iPhone tab bar holds Chats and Bots; the iPad sidebar adds Kanban and
-/// Settings. Everything else opens from the inbox's More menu.
+/// Pages of the agent hub (the Agents area). On iPhone they stack over the hub, a chat opened
+/// from them too; on iPad they stack in the detail column.
+enum HubRoute: Hashable {
+  case model(profile: String)
+  case skills(profile: String)
+  case soul(profile: String)
+  case cron(profile: String)
+  case chats(profile: String)
+  case kanban
+  case settings
+  case chat(profile: String, storedID: String)
+}
+
+/// The top-level areas. The iPhone dock holds Chats and Agents (with New chat and Settings beside
+/// them); the iPad sidebar adds Kanban and Settings. Cron opens from the inbox's More menu and from
+/// the agent hub.
 enum AppTab: String, Hashable, CaseIterable, Identifiable {
   case chats, bots, kanban, cron, settings
 
   /// The areas in the iPad sidebar.
   static let sidebar: [AppTab] = [.chats, .bots, .kanban, .settings]
 
-  /// The areas in the inbox's More menu: those not in the dock.
+  /// The areas in the inbox's More menu: those not in the dock (Settings is in the iPhone dock).
   static func moreMenu(splitLayout: Bool) -> [AppTab] {
-    splitLayout ? allCases.filter { !sidebar.contains($0) } : [.kanban, .cron, .settings]
+    splitLayout ? allCases.filter { !sidebar.contains($0) } : [.kanban, .cron]
   }
 
   var id: String { rawValue }
@@ -42,7 +56,7 @@ enum AppTab: String, Hashable, CaseIterable, Identifiable {
   var title: String {
     switch self {
     case .chats: return "Chats"
-    case .bots: return "Bots"
+    case .bots: return "Agents"
     case .kanban: return "Kanban"
     case .cron: return "Cron"
     case .settings: return "Settings"
@@ -51,8 +65,8 @@ enum AppTab: String, Hashable, CaseIterable, Identifiable {
 
   var symbol: String {
     switch self {
-    case .chats: return "bubble.left.and.bubble.right"
-    case .bots: return "person.2"
+    case .chats: return "message"
+    case .bots: return "circle.grid.cross"
     case .kanban: return "rectangle.split.3x1"
     case .cron: return "clock"
     case .settings: return "gearshape"
@@ -111,6 +125,18 @@ final class AppModel {
   var path: [Route] = []
   /// The bot whose conversations the iPad list column shows instead of the inbox.
   var splitAgent: String?
+  /// The agent hub's stack on iPhone.
+  var hubPath: [HubRoute] = []
+  /// The bot the iPhone agent hub shows. Empty: the bot used last, else the default one.
+  var hubProfile = ""
+  /// Models starred in the model chooser, shared with the desktop app (`FavoriteModels`).
+  var favoriteModels: [String] = []
+  @ObservationIgnored var favoritesLoaded = false
+  /// Each bot's model catalog for its default model, and why one failed to load.
+  var defaultCatalogs: [String: ModelCatalog] = [:]
+  var defaultCatalogErrors: [String: String] = [:]
+  /// Each bot's installed skills.
+  var skillLists: [String: [SkillCategory]] = [:]
   /// The Chats area shows the inbox and a chat side by side (iPad, regular width).
   var usesSplitLayout = false
   /// What the Bots, Kanban and Cron areas have open.
@@ -247,6 +273,12 @@ final class AppModel {
     path = []
     tab = .chats
     splitAgent = nil
+    hubPath = []
+    favoriteModels = []
+    favoritesLoaded = false
+    defaultCatalogs = [:]
+    defaultCatalogErrors = [:]
+    skillLists = [:]
     agentTotals = [:]
     headPreviews = [:]
     headPreviewStamps = [:]
@@ -856,8 +888,11 @@ final class AppModel {
   func openChat(profile: String, storedID: String) {
     let route = Route.chat(profile: profile, storedID: storedID)
     // On iPhone, Kanban lives on the Chats stack: a card's run opens over it, and back returns.
+    // The agent hub has its own stack, and a chat opened from its pages stacks there.
     if tab == .chats, !usesSplitLayout {
       path.append(route)
+    } else if tab == .bots, !usesSplitLayout {
+      hubPath.append(.chat(profile: profile, storedID: storedID))
     } else {
       tab = .chats
       path = [route]
@@ -866,6 +901,7 @@ final class AppModel {
 
   /// Opens an area that has no tab of its own on iPhone; on iPad, selects it in the sidebar.
   func openArea(_ area: AppTab) {
+    if area == .cron { areas.cronProfile = nil }
     guard !usesSplitLayout, let route = Route.area(area) else {
       tab = area
       return
@@ -881,7 +917,13 @@ final class AppModel {
   }
 
   private func show(_ route: Route) {
-    if usesSplitLayout { path = [route] } else { path.append(route) }
+    if usesSplitLayout {
+      path = [route]
+    } else if tab == .bots, case .chat(let profile, let storedID) = route {
+      hubPath.append(.chat(profile: profile, storedID: storedID))
+    } else {
+      path.append(route)
+    }
   }
 
   /// Starts an empty conversation with a bot and opens it. Nothing is stored until the first message.
@@ -894,7 +936,8 @@ final class AppModel {
       let live = try await client.create(profile: profile, options: options)
       preferences.lastProfile = profile
       chatCache[live.storedID] = ChatModel(app: self, profile: profile, storedID: live.storedID, row: nil, live: live)
-      tab = .chats
+      // From the agent hub on iPhone the chat stacks over the hub; anywhere else it opens in Chats.
+      if tab != .bots || usesSplitLayout { tab = .chats }
       show(.chat(profile: profile, storedID: live.storedID))
     } catch {
       show("Could not start a chat: \(error.localizedDescription)", kind: .failure)
@@ -909,6 +952,10 @@ final class AppModel {
 
   func showVersion(profile: String, storedID: String) {
     let route = Route.chat(profile: profile, storedID: storedID)
+    if tab == .bots, !usesSplitLayout, let last = hubPath.indices.last, case .chat = hubPath[last] {
+      hubPath[last] = .chat(profile: profile, storedID: storedID)
+      return
+    }
     if let last = path.indices.last {
       path[last] = route
     } else {

@@ -26,6 +26,8 @@ final class Preferences {
     /// `server.address`) must not carry over, or the app would keep going through hermesdash.
     static let server = "hermes.address"
     static let theme = "theme.family"
+    /// Set once the Hermes look has been switched on for an install that predates it.
+    static let hermesLook = "theme.hermesLook"
     static let appearance = "theme.appearance"
     static let lastProfile = "chat.lastProfile"
     static let profileFilter = "home.profileFilter"
@@ -38,7 +40,15 @@ final class Preferences {
   init(defaults: UserDefaults = .standard) {
     self.defaults = defaults
     serverAddress = defaults.string(forKey: Key.server) ?? ""
-    themeFamily = ThemeFamily(rawValue: defaults.string(forKey: Key.theme) ?? "") ?? .standard
+    // The Hermes look replaced the T3 one as the app's look: switch it on once, even for a family
+    // picked before it existed. Settings > Appearance still offers the others.
+    if defaults.bool(forKey: Key.hermesLook) {
+      themeFamily = ThemeFamily(rawValue: defaults.string(forKey: Key.theme) ?? "") ?? .hermes
+    } else {
+      themeFamily = .hermes
+      defaults.set(ThemeFamily.hermes.rawValue, forKey: Key.theme)
+      defaults.set(true, forKey: Key.hermesLook)
+    }
     appearance = AppearanceMode(rawValue: defaults.string(forKey: Key.appearance) ?? "") ?? .system
     lastProfile = defaults.string(forKey: Key.lastProfile) ?? ""
     profileFilter = defaults.string(forKey: Key.profileFilter) ?? ""

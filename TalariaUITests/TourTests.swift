@@ -39,21 +39,29 @@ final class TourTests: XCTestCase {
     }
   }
 
-  /// An area: the iPad sidebar row, an iPhone tab, or on iPhone the inbox's More menu, which
-  /// holds Kanban and Settings.
+  /// An area: the iPad sidebar row, the iPhone dock (Chats, Agents, Settings), or on iPhone the
+  /// inbox's More menu, which holds Kanban and Cron.
   private func open(tab title: String) {
     let area = app.buttons["area.\(title.lowercased())"]
     if area.waitForExistence(timeout: 2) && area.isHittable {
       area.tap()
       return
     }
-    let tab = app.tabBars.buttons[title]
-    if tab.exists && tab.isHittable {
-      tab.tap()
+    // The dock shows on an area's first screen only: step back to it.
+    let dockChats = app.buttons["dock.chats"]
+    if UIDevice.current.userInterfaceIdiom == .phone {
+      for _ in 0..<5 where !dockChats.exists {
+        guard goBack() else { break }
+        sleep(1)
+      }
+    }
+    let dock = app.buttons["dock.\(title.lowercased())"]
+    if dock.exists && dock.isHittable {
+      dock.tap()
       return
     }
     let chats = app.buttons["area.chats"]
-    if chats.exists { chats.tap() } else { app.tabBars.buttons["Chats"].tap() }
+    if chats.exists { chats.tap() } else { dockChats.tap() }
     let more = app.buttons["home.more"]
     for _ in 0..<4 where !more.exists {
       let back = app.buttons["BackButton"].firstMatch
@@ -70,13 +78,33 @@ final class TourTests: XCTestCase {
     item.tap()
   }
 
-  /// The dock holds only the areas used most: Chats and Bots on iPhone, plus Kanban and
-  /// Settings in the iPad sidebar. Cron is in the More menu on both.
+  /// The back button of the page on top. On iPad the first bar button is the sidebar toggle, so
+  /// only the system back button (`BackButton`) will do.
+  @discardableResult
+  private func goBack() -> Bool {
+    let back = app.buttons["BackButton"].firstMatch
+    if back.exists {
+      back.tap()
+      return true
+    }
+    guard UIDevice.current.userInterfaceIdiom == .phone else { return false }
+    let first = app.navigationBars.buttons.element(boundBy: 0)
+    guard first.exists else { return false }
+    first.tap()
+    return true
+  }
+
+  /// The iPhone dock holds Chats and Agents, then New chat and Settings; the iPad sidebar has
+  /// Chats, Agents, Kanban and Settings. Cron is in the More menu on both.
   private func checkDock() {
     if UIDevice.current.userInterfaceIdiom == .phone {
-      let names = app.tabBars.buttons.allElementsBoundByIndex.map(\.label)
-      XCTAssertEqual(names, ["Chats", "Bots"], "tab bar: \(names)")
+      for id in ["dock.chats", "dock.agents", "dock.new", "dock.settings"] {
+        XCTAssertTrue(app.buttons[id].exists, "\(id) is not in the dock")
+      }
+      let systemTab = app.tabBars.buttons.firstMatch
+      XCTAssertFalse(systemTab.exists && systemTab.isHittable, "the system tab bar shows")
     } else {
+      XCTAssertTrue(app.buttons["area.agents"].waitForExistence(timeout: 5))
       XCTAssertTrue(app.buttons["area.kanban"].waitForExistence(timeout: 5))
       XCTAssertFalse(app.buttons["area.cron"].exists, "Cron is in the iPad sidebar")
     }
@@ -120,18 +148,19 @@ final class TourTests: XCTestCase {
         shoot("02b-file")
         app.buttons["Done"].firstMatch.tap()
       }
-      // The model chooser: providers first, then one provider's models. Nothing is switched.
+      // The model chooser: the model in use and favourites, then every model. Nothing is switched.
       // Disabled in a chat that cannot reply here (a Slack thread, one a terminal holds).
       let modelButton = app.buttons["Model and effort"]
       if modelButton.waitForExistence(timeout: 3), modelButton.isEnabled {
         modelButton.tap()
-        let provider = app.buttons.matching(identifier: "model.provider").firstMatch
-        if provider.waitForExistence(timeout: 60) {
-          sleep(1)
-          shoot("02c-model-providers")
-          provider.tap()
+        if app.descendants(matching: .any)["model.current"].waitForExistence(timeout: 20) {
           sleep(2)
-          shoot("02d-model-list")
+          shoot("02c-model")
+          app.buttons["model.all"].tap()
+          if app.buttons.matching(identifier: "model.provider").firstMatch.waitForExistence(timeout: 60) {
+            sleep(2)
+            shoot("02d-model-list")
+          }
         }
         app.buttons["Done"].firstMatch.tap()
         sleep(1)
@@ -139,14 +168,39 @@ final class TourTests: XCTestCase {
       if UIDevice.current.userInterfaceIdiom != .pad { app.navigationBars.buttons.element(boundBy: 0).tap() }
     }
 
-    open(tab: "Bots")
+    open(tab: "Agents")
     sleep(2)
-    shoot("03-bots")
-    if tapFirst("bot.row") {
-      sleep(3)
-      shoot("04-bot")
-      if UIDevice.current.userInterfaceIdiom != .pad { app.navigationBars.buttons.element(boundBy: 0).tap() }
+    if UIDevice.current.userInterfaceIdiom == .pad, tapFirst("bot.row") { sleep(2) }
+    shoot("03-agents")
+    // The hub's pages: the default model (and every model), the skills. Nothing is changed.
+    let modelRow = app.buttons["hub.model"]
+    if modelRow.waitForExistence(timeout: 5) {
+      modelRow.tap()
+      sleep(4)
+      shoot("04-default-model")
+      let all = app.buttons["model.all"]
+      if all.waitForExistence(timeout: 5) {
+        all.tap()
+        sleep(3)
+        shoot("04b-all-models")
+        goBack()
+        sleep(1)
+      }
+      goBack()
+      sleep(1)
     }
+    let skillsRow = app.buttons["hub.skills"]
+    if skillsRow.waitForExistence(timeout: 5) {
+      skillsRow.tap()
+      sleep(3)
+      shoot("04c-skills")
+      goBack()
+      sleep(1)
+    }
+    app.swipeUp()
+    sleep(1)
+    shoot("04d-agents-scrolled")
+    app.swipeDown()
 
     open(tab: "Kanban")
     sleep(3)

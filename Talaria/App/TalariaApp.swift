@@ -13,7 +13,7 @@ struct TalariaApp: App {
         TranscriptScrollFixture()
       } else if ProcessInfo.processInfo.arguments.contains("--transcript-preview") {
         ThemedRoot(
-          family: ThemeFamily(rawValue: ProcessInfo.processInfo.environment["TALARIA_PREVIEW_THEME"] ?? "standard") ?? .standard,
+          family: ThemeFamily(rawValue: ProcessInfo.processInfo.environment["TALARIA_PREVIEW_THEME"] ?? "hermes") ?? .hermes,
           appearance: AppearanceMode(rawValue: ProcessInfo.processInfo.environment["TALARIA_PREVIEW_APPEARANCE"] ?? "light") ?? .light
         ) {
           TranscriptPreviewFixture()

@@ -10,9 +10,10 @@ T3 Tools.
 
 - **Stack:** SwiftUI, Swift 6, no third-party dependencies.
 - **Target:** iPhone and iPad, iOS 27.0 or later (developed against an iPhone 17 Pro).
-- **Look:** the palettes, type scale and layout of
-  [T3 Code](https://github.com/pingdotgg/t3code)'s mobile app, rebuilt natively
-  with Liquid Glass.
+- **Look:** the Hermes mobile app's: a white canvas, frosted cards with line
+  icons, lavender chips and a floating Liquid Glass dock, rebuilt natively.
+  Type is DM Sans; six more color families come from
+  [T3 Code](https://github.com/pingdotgg/t3code)'s mobile app.
 
 ## What works today
 
@@ -48,7 +49,8 @@ T3 Tools.
   any of them to Files or sends them elsewhere.
 - **Questions and approvals:** questions the agent asks are answered inline in
   the transcript; command approvals and sudo or secret prompts arrive as sheets.
-- **Model and thinking effort** per conversation, from the Mac's own catalog.
+- **Model and thinking effort** per conversation, from the Mac's own catalog,
+  and each bot's default model.
 - **Notifications:** "Ada finished" with the start of the reply when a chat
   ends, and "Ada needs you" when a bot asks something or wants an approval,
   with the phone locked or the app closed. Tapping one opens the chat. Your Mac
@@ -72,30 +74,36 @@ T3 Tools.
   phone continues it as a new version, with the full history.
 - **Reconnects:** the socket dies whenever the phone sleeps. On return the
   chat re-attaches and folds in what it missed without rebuilding the screen.
-- **Themes:** six palette families, each light and dark.
-- **Bots:** every bot with its model, soul and recent chats; its standing Bot
-  Chat and a new chat one tap away.
+- **Themes:** Hermes and six T3 color families, each light and dark.
+- **Agents:** one hub per bot, as the Hermes mobile app shows an agent. Swipe
+  between bots at the top; below, its Bot Chat and a new chat, then rows for
+  its default model, skills, chats, cron jobs, the kanban board and its soul.
 - **Kanban:** the board one column at a time, cards with their brief, runs,
   comments and linked cards.
 - **Cron:** every job with its schedule, next and last run and recent runs;
-  pause, resume and run now. Opened from the inbox's ••• menu.
-- **Model:** pick a provider, then one of its models, named the way people say
-  them ("Opus 4.5", "GPT-6.1 Sol 900K") and newest first. Models a plan does not
-  include are folded away; a search box finds a model across every provider.
+  pause, resume and run now. Opened from the inbox's ••• menu, or from a bot's
+  hub with only that bot's jobs.
+- **Model:** the model in use on top, then your starred models, then All
+  models: a chip per provider (the one in use first) and its models, named the
+  way people say them ("Opus 4.5", "GPT-6.1 Sol 900K") and newest first. Models
+  a plan does not include are folded away; search finds a model across every
+  provider. Stars are the desktop app's favourites, kept on the Mac, so a star
+  set on either shows on both. The same chooser sets a bot's default model
+  (the one new chats start on) from its hub.
   Thinking effort lists only the levels the model in use really has: Opus 5.5
   offers Low through Max and no Off (it always thinks), Opus 4.6 has no Extra
   high, Opus 4.5 no Max. `scripts/record-effort-levels.py` checks those rules
   against the backend's own request builders.
-- **iPad:** a sidebar with Chats, Bots, Kanban and Settings, the list beside it
-  and the open chat or page on the right, in either orientation. On iPhone the
-  tab bar holds Chats and Bots; Kanban, Cron and Settings are in the inbox's
-  ••• menu.
+- **iPad:** a sidebar with Chats, Agents, Kanban and Settings, the list beside
+  it and the open chat or page on the right, in either orientation. On iPhone a
+  floating dock holds Chats and Agents, with New chat and Settings in a group
+  of their own; Kanban and Cron are in the inbox's ••• menu and the hub.
 
 ## What is next
 
 The goal is everything the Hermes desktop app does. In order:
 
-1. Bots, Kanban and Cron writes: edit a bot, add and move cards, create and
+1. Agents, Kanban and Cron writes: edit a bot, add and move cards, create and
    edit jobs.
 2. Workspace panes: diff review, working folder, terminal.
 3. Capabilities: skills, MCP servers, connectors, toolsets.
@@ -219,20 +227,23 @@ Packages/HermesKit/        Swift package, no UI
   Sources/MarkdownBlocks/  block-level Markdown parser
 Talaria/                   the app
   App/                     app and chat models
-  Theme/                   palettes (generated), type scale
-  Components/              Markdown view, shared controls
-  Features/                Shell, Connect, Home, Chat, Bots, Kanban, Cron, Settings
+  Theme/                   palettes (Hermes by hand, T3 generated), type scale
+  Components/              Markdown view, frosted cards, rows, chips, shared controls
+  Features/                Shell, Connect, Home, Chat, Models, Bots (agent hub), Kanban,
+                           Cron, Settings
 Shared/                    the Live Activity's attributes (app and widget)
 TalariaActivity/           the Live Activity: Lock Screen and Dynamic Island
 mac/talaria-push/          Hermes plugin on the Mac that sends the pushes
-scripts/                   palette generator, icon, sign-in for tests, push plugin install
+scripts/                   palette generator, icon, sign-in for tests, push plugin install,
+                           gateway-call.mjs (call the backend as the app does)
 docs/                      architecture, roadmap
 ```
 
 ## Credits
 
-- Colors and layout follow T3 Code's mobile app (MIT, T3 Tools Inc.).
-  `scripts/generate-palettes.mjs` ports its theme tokens.
+- The look follows the Hermes mobile app. The Classic, Orchid, Grove, Ocean,
+  Ember and Iris color families come from T3 Code's mobile app (MIT, T3 Tools
+  Inc.); `scripts/generate-palettes.mjs` ports its theme tokens.
 - Type is DM Sans (SIL Open Font License 1.1).
 - The protocol is Hermes Agent's gateway (MIT, Nous Research).
 

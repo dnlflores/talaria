@@ -80,16 +80,19 @@ struct HomeView: View {
         .accessibilityIdentifier("home.more")
       }
 
-      ToolbarItem(placement: .topBarTrailing) {
-        Button(action: beginNewChat) {
-          if isStartingChat {
-            ProgressView()
-          } else {
-            Image(systemName: "square.and.pencil")
+      // On iPhone the dock carries New chat.
+      if app.usesSplitLayout {
+        ToolbarItem(placement: .topBarTrailing) {
+          Button(action: beginNewChat) {
+            if isStartingChat {
+              ProgressView()
+            } else {
+              Image(systemName: "square.and.pencil")
+            }
           }
+          .disabled(isStartingChat)
+          .accessibilityLabel("New chat")
         }
-        .disabled(isStartingChat)
-        .accessibilityLabel("New chat")
       }
     }
     .sheet(isPresented: $showsBotPicker) {
@@ -145,10 +148,9 @@ struct HomeView: View {
         }
       }
       Button {
-        app.areas.bot = group.profile
-        app.tab = .bots
+        app.showBotPage(group.profile)
       } label: {
-        Label("Bot page", systemImage: "person.crop.circle")
+        Label("Agent hub", systemImage: "circle.grid.cross")
       }
     }
     .accessibilityElement(children: .ignore)

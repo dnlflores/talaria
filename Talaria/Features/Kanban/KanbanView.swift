@@ -13,11 +13,6 @@ final class KanbanModel {
   var column = ""
   private(set) var details: [String: KanbanTaskDetail] = [:]
 
-  /// The columns worth a segment: those with cards, plus the one on screen.
-  var segments: [KanbanColumn] {
-    (board?.columns ?? []).filter { !$0.tasks.isEmpty || $0.name == column }
-  }
-
   var currentColumn: KanbanColumn? { board?.columns.first { $0.name == column } }
 
   func refresh(_ client: HermesClient?) async {
@@ -66,6 +61,8 @@ final class KanbanModel {
   }
 }
 
+/// The board, one column at a time: a chip per column with its count, and the column on a card
+/// with what it is for and its cards.
 struct KanbanBoardView: View {
   @Bindable var model: KanbanModel
   @Binding var selection: String?
@@ -73,56 +70,35 @@ struct KanbanBoardView: View {
   @Environment(\.palette) private var palette
 
   var body: some View {
-    List {
-      if model.board != nil, !model.segments.isEmpty {
-        columnPicker
-          .listRowInsets(EdgeInsets(top: 4, leading: Metrics.screenPadding, bottom: 10, trailing: Metrics.screenPadding))
-          .listRowSeparator(.hidden)
-          .listRowBackground(Color.clear)
-      }
-      if !model.hasLoaded {
-        ForEach(0..<5, id: \.self) { _ in
-          RowPlaceholder()
-            .listRowInsets(EdgeInsets())
-            .listRowBackground(Color.clear)
-            .listRowSeparatorTint(palette.border)
+    ScrollView {
+      VStack(alignment: .leading, spacing: 16) {
+        if let board = model.board, !board.columns.isEmpty {
+          columnChips(board.columns)
         }
-      } else if let error = model.error, model.board == nil {
-        EmptyStateView(symbol: "rectangle.split.3x1", title: "Can't load the board", text: error)
-          .listRowSeparator(.hidden)
-          .listRowBackground(Color.clear)
-      } else if let column = model.currentColumn {
-        if column.tasks.isEmpty {
-          EmptyStateView(symbol: "tray", title: "Nothing in \(column.label)", text: "Cards land here as work moves along.")
-            .listRowSeparator(.hidden)
-            .listRowBackground(Color.clear)
-        } else {
-          ForEach(column.tasks.sorted { $0.recency > $1.recency }) { task in
-            let isSelected = app.usesSplitLayout && selection == task.id
-            Button {
-              selection = task.id
-            } label: {
-              KanbanCardRow(task: task)
+        Group {
+          if !model.hasLoaded {
+            VStack(spacing: 0) {
+              ForEach(0..<4, id: \.self) { _ in RowPlaceholder() }
             }
-            .buttonStyle(RowButtonStyle())
-            .listRowInsets(EdgeInsets())
-            .listRowBackground(isSelected ? palette.threadSelected : Color.clear)
-            .listRowSeparator(.hidden, edges: .top)
-            .listRowSeparatorTint(palette.border)
-            .alignmentGuide(.listRowSeparatorLeading) { _ in Metrics.screenPadding }
-            .accessibilityIdentifier("kanban.card")
+            .padding(.vertical, 8)
+            .glassCard()
+          } else if let error = model.error, model.board == nil {
+            EmptyStateView(symbol: "rectangle.split.3x1", title: "Can't load the board", text: error)
+          } else if let column = model.currentColumn {
+            columnCard(column)
           }
         }
+        .padding(.horizontal, 16)
       }
+      .padding(.top, 6)
+      .padding(.bottom, 24)
+      .frame(maxWidth: 760)
+      .frame(maxWidth: .infinity)
     }
-    .listStyle(.plain)
-    .scrollContentBackground(.hidden)
     .background(palette.screen.ignoresSafeArea())
-    .environment(\.defaultMinListRowHeight, 10)
-    .navigationTitle(boardTitle)
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
-      ToolbarItem(placement: .topBarTrailing) { columnsMenu }
+      ToolbarItem(placement: .principal) { boardTitle }
     }
     .refreshable { await model.refresh(app.client) }
     .task {
@@ -134,59 +110,147 @@ struct KanbanBoardView: View {
     }
   }
 
-  private var boardTitle: String {
-    if model.boards.count > 1, let board = model.boards.first(where: { $0.slug == model.boardSlug }) { return board.name }
-    return "Kanban"
-  }
-
-  /// One segment per column that has cards. A board with many busy columns falls back to a menu.
+  /// The board's name; with more than one board, a menu to switch.
   @ViewBuilder
-  private var columnPicker: some View {
-    let segments = model.segments
-    if segments.count <= 4 {
-      Picker("Column", selection: $model.column) {
-        ForEach(segments) { column in
-          Text("\(column.label) \(column.tasks.count)").tag(column.name)
-        }
-      }
-      .pickerStyle(.segmented)
-      .accessibilityIdentifier("kanban.columns")
-    } else {
-      HStack {
-        Text("\(model.currentColumn?.label ?? "") · \(model.currentColumn?.tasks.count ?? 0)")
-          .font(AppFont.bodySemibold)
-          .foregroundStyle(palette.foreground)
-        Spacer()
-        Text("\(segments.count) columns with cards")
-          .font(AppFont.caption)
-          .foregroundStyle(palette.foregroundMuted)
-      }
-    }
-  }
-
-  private var columnsMenu: some View {
-    Menu {
-      Picker("Column", selection: $model.column) {
-        ForEach(model.board?.columns ?? []) { column in
-          Text("\(column.label) (\(column.tasks.count))").tag(column.name)
-        }
-      }
-      .pickerStyle(.inline)
-      if model.boards.count > 1 {
-        Section("Board") {
-          ForEach(model.boards) { board in
-            Button {
-              Task { await model.switchBoard(to: board.slug, client: app.client) }
-            } label: {
-              Label(board.name, systemImage: board.slug == model.boardSlug ? "checkmark" : "rectangle.split.3x1")
-            }
+  private var boardTitle: some View {
+    let name = model.boards.first(where: { $0.slug == model.boardSlug })?.name ?? "Kanban"
+    if model.boards.count > 1 {
+      Menu {
+        ForEach(model.boards) { board in
+          Button {
+            Task { await model.switchBoard(to: board.slug, client: app.client) }
+          } label: {
+            Label(board.name, systemImage: board.slug == model.boardSlug ? "checkmark" : "rectangle.split.3x1")
           }
         }
+      } label: {
+        HStack(spacing: 6) {
+          Text(name).font(AppFont.sans(17, .bold)).foregroundStyle(palette.foreground)
+          Image(systemName: "chevron.down")
+            .font(.system(size: 10, weight: .bold))
+            .foregroundStyle(palette.foregroundMuted)
+            .frame(width: 20, height: 20)
+            .background(palette.subtleStrong, in: Circle())
+        }
       }
-    } label: {
-      Image(systemName: "line.3.horizontal.decrease")
+      .accessibilityLabel("Board, \(name)")
+    } else {
+      Text(name).font(AppFont.sans(17, .bold)).foregroundStyle(palette.foreground)
     }
-    .accessibilityLabel("Columns")
+  }
+
+  /// Every column as a chip with its count, the one on screen picked.
+  private func columnChips(_ columns: [KanbanColumn]) -> some View {
+    ScrollViewReader { reader in
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 8) {
+          ForEach(columns) { column in
+            Chip(title: column.label, count: column.tasks.count, isSelected: model.column == column.name, style: .caps) {
+              UISelectionFeedbackGenerator().selectionChanged()
+              withAnimation(.snappy(duration: 0.25)) { model.column = column.name }
+            }
+            .id(column.name)
+            .accessibilityLabel("\(column.label), \(column.tasks.count)")
+          }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 2)
+      }
+      .onAppear { reader.scrollTo(model.column, anchor: .center) }
+      .onChange(of: model.column) { _, name in withAnimation { reader.scrollTo(name, anchor: .center) } }
+    }
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("kanban.columns")
+  }
+
+  private func columnCard(_ column: KanbanColumn) -> some View {
+    VStack(alignment: .leading, spacing: 0) {
+      VStack(alignment: .leading, spacing: 6) {
+        HStack(spacing: 10) {
+          Image(systemName: column.symbol)
+            .font(.system(size: 15, weight: .medium))
+            .foregroundStyle(palette.iconMuted)
+          Text(column.label)
+            .font(AppFont.sans(21, .bold))
+            .foregroundStyle(palette.foreground)
+          Spacer(minLength: 8)
+          Text("\(column.tasks.count)")
+            .font(AppFont.sans(17))
+            .foregroundStyle(palette.foregroundMuted)
+        }
+        Text(column.purpose)
+          .font(AppFont.footnote)
+          .foregroundStyle(palette.foregroundMuted)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      .padding(.horizontal, 18)
+      .padding(.top, 18)
+      .padding(.bottom, 14)
+      .accessibilityElement(children: .combine)
+
+      GroupDivider(inset: 0)
+
+      if column.tasks.isEmpty {
+        HStack(spacing: 12) {
+          Image(systemName: "tray")
+            .font(.system(size: 17))
+            .foregroundStyle(palette.iconMuted)
+          Text("No tasks")
+            .font(AppFont.sans(17))
+            .foregroundStyle(palette.foregroundMuted)
+        }
+        .padding(.horizontal, 20)
+        .frame(maxWidth: .infinity, minHeight: 110, alignment: .leading)
+        .background(palette.subtle, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .padding(14)
+      } else {
+        ForEach(Array(column.tasks.sorted { $0.recency > $1.recency }.enumerated()), id: \.element.id) { offset, task in
+          if offset > 0 { GroupDivider() }
+          let isSelected = app.usesSplitLayout && selection == task.id
+          Button {
+            selection = task.id
+          } label: {
+            KanbanCardRow(task: task)
+              .background(isSelected ? palette.threadSelected : Color.clear)
+          }
+          .buttonStyle(RowButtonStyle())
+          .accessibilityIdentifier("kanban.card")
+        }
+      }
+    }
+    .glassCard()
+  }
+}
+
+extension KanbanColumn {
+  /// What the column holds, in a line under its name.
+  var purpose: String {
+    switch name {
+    case "triage": return "Ideas waiting for a clear specification"
+    case "todo": return "Specified and waiting to be picked up"
+    case "scheduled": return "Waiting for the time they are set to start"
+    case "ready": return "Ready for a worker to take"
+    case "running": return "A worker is on it now"
+    case "blocked": return "Stuck until something or someone answers"
+    case "review": return "Done by a worker, waiting for a check"
+    case "done": return "Finished"
+    case "archived": return "Put away"
+    default: return "Cards in \(label.lowercased())"
+    }
+  }
+
+  var symbol: String {
+    switch name {
+    case "triage": return "circle.dashed"
+    case "todo": return "circle"
+    case "scheduled": return "calendar"
+    case "ready": return "circle.inset.filled"
+    case "running": return "play.circle"
+    case "blocked": return "exclamationmark.circle"
+    case "review": return "eye.circle"
+    case "done": return "checkmark.circle"
+    default: return "circle"
+    }
   }
 }
 
@@ -234,8 +298,8 @@ private struct KanbanCardRow: View {
         }
       }
     }
-    .padding(.horizontal, Metrics.screenPadding)
-    .padding(.vertical, 12)
+    .padding(.horizontal, 18)
+    .padding(.vertical, 14)
     .frame(maxWidth: .infinity, alignment: .leading)
     .contentShape(Rectangle())
     .accessibilityElement(children: .combine)

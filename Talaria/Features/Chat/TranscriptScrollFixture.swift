@@ -14,7 +14,7 @@ struct TranscriptScrollFixture: View {
   }
 
   var body: some View {
-    ThemedRoot(family: .standard, appearance: .dark) {
+    ThemedRoot(family: .hermes, appearance: .dark) {
       NavigationStack {
         ChatView(chat: chat)
       }

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// A titled group of rows on a `groupedCard` surface: settings and detail pages.
+/// A titled group of rows on a frosted card: settings, detail pages, the agent hub.
 struct GroupedSection<Content: View>: View {
   let title: String
   var trailing: String = ""
@@ -14,35 +14,38 @@ struct GroupedSection<Content: View>: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: 9) {
       if !title.isEmpty {
-        HStack {
-          GroupHeading(text: title)
+        HStack(alignment: .firstTextBaseline) {
+          Text(title)
+            .font(AppFont.footnote)
+            .foregroundStyle(palette.foregroundMuted)
+            .accessibilityAddTraits(.isHeader)
           Spacer(minLength: 8)
           if !trailing.isEmpty {
             Text(trailing).font(AppFont.caption).foregroundStyle(palette.foregroundMuted)
           }
         }
-        .padding(.horizontal, 4)
+        .padding(.horizontal, 18)
       }
       VStack(alignment: .leading, spacing: 0) { content }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(palette.groupedCard, in: RoundedRectangle(cornerRadius: Metrics.cardRadius, style: .continuous))
-        .clipShape(RoundedRectangle(cornerRadius: Metrics.cardRadius, style: .continuous))
+        .glassCard()
     }
   }
 }
 
-/// "SCHEDULE": 11 pt semibold uppercase, the heading over a group.
+/// "FAVOURITES": 12 pt semibold, spaced capitals, the heading over a list.
 struct GroupHeading: View {
   let text: String
   @Environment(\.palette) private var palette
 
   var body: some View {
     Text(text.uppercased())
-      .font(AppFont.sans(11, .semibold))
-      .kerning(0.6)
+      .font(AppFont.sans(12, .semibold))
+      .kerning(1.6)
       .foregroundStyle(palette.foregroundMuted)
+      .accessibilityAddTraits(.isHeader)
   }
 }
 
@@ -52,17 +55,20 @@ struct ValueRow: View {
   let value: String
   var isMono = false
   var valueColor: Color?
+  var symbol: String?
   @Environment(\.palette) private var palette
 
-  init(_ label: String, _ value: String, mono: Bool = false, color: Color? = nil) {
+  init(_ label: String, _ value: String, mono: Bool = false, color: Color? = nil, symbol: String? = nil) {
     self.label = label
     self.value = value
     isMono = mono
     valueColor = color
+    self.symbol = symbol
   }
 
   var body: some View {
-    HStack(alignment: .firstTextBaseline) {
+    HStack(alignment: .firstTextBaseline, spacing: 14) {
+      if let symbol { RowSymbol(name: symbol) }
       Text(label).font(AppFont.body).foregroundStyle(palette.foreground)
       Spacer(minLength: 12)
       Text(value)
@@ -71,8 +77,8 @@ struct ValueRow: View {
         .lineLimit(1)
         .truncationMode(.middle)
     }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 13)
+    .padding(.horizontal, 18)
+    .padding(.vertical, 15)
     .accessibilityElement(children: .combine)
   }
 }
@@ -106,8 +112,8 @@ struct ActionRow: View {
         }
       }
       .foregroundStyle(isDestructive ? palette.dangerForeground : palette.primaryText)
-      .padding(.horizontal, 16)
-      .padding(.vertical, 13)
+      .padding(.horizontal, 18)
+      .padding(.vertical, 15)
       .contentShape(Rectangle())
     }
     .buttonStyle(RowButtonStyle())
@@ -117,10 +123,11 @@ struct ActionRow: View {
 
 /// A hairline between rows of a group, inset from the leading edge.
 struct GroupDivider: View {
-  var inset: CGFloat = 16
+  var inset: CGFloat = 18
+  @Environment(\.palette) private var palette
 
   var body: some View {
-    Hairline().padding(.leading, inset)
+    Rectangle().fill(palette.separator).frame(height: 1).padding(.leading, inset)
   }
 }
 
@@ -171,9 +178,9 @@ struct RowPlaceholder: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
-      RoundedRectangle(cornerRadius: 4).fill(palette.groupedCard).frame(width: 90, height: 11)
-      RoundedRectangle(cornerRadius: 4).fill(palette.groupedCard).frame(maxWidth: 240).frame(height: 14)
-      RoundedRectangle(cornerRadius: 4).fill(palette.groupedCard).frame(width: 150, height: 10)
+      RoundedRectangle(cornerRadius: 4).fill(palette.subtleStrong).frame(width: 90, height: 11)
+      RoundedRectangle(cornerRadius: 4).fill(palette.subtleStrong).frame(maxWidth: 240).frame(height: 14)
+      RoundedRectangle(cornerRadius: 4).fill(palette.subtleStrong).frame(width: 150, height: 10)
     }
     .padding(.horizontal, Metrics.screenPadding)
     .padding(.vertical, 13)
