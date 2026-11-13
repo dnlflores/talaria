@@ -45,9 +45,6 @@ struct MemoryView: View {
     .navigationBarTitleDisplayMode(.inline)
     .refreshable { await load() }
     .task { if notes == nil { await load() } }
-    .task(id: notes?.map(\.titleKey) ?? []) {
-      if let notes { await app.memoryTitles.name(notes) }
-    }
     // Laid out for the card's shape, again when it changes (an iPad turning).
     .task(id: "\(notes?.map(\.id).joined(separator: ",") ?? "")|\(Int(width / 24))") { await layout() }
   }
@@ -84,8 +81,8 @@ struct MemoryView: View {
     GroupedSection("Memories", trailing: "\(notes.count)") {
       ForEach(Array(notes.enumerated()), id: \.element.id) { offset, note in
         if offset > 0 { IconRowDivider() }
-        NavigationLink(value: HubRoute.learning(profile: profile, id: note.id, title: app.memoryTitles.title(for: note))) {
-          MemoryRow(note: note, title: app.memoryTitles.title(for: note))
+        NavigationLink(value: HubRoute.learning(profile: profile, id: note.id, title: note.title)) {
+          MemoryRow(note: note)
         }
         .buttonStyle(RowButtonStyle())
         .accessibilityIdentifier("learning.note")
@@ -97,30 +94,27 @@ struct MemoryView: View {
 extension MemoryNote {
   /// A memory's star: a person for what it knows about you, a note for the rest.
   var symbol: String { isAboutYou ? "person" : "note.text" }
-  var kindName: String { isAboutYou ? "About you" : "Note" }
 }
 
 /// A memory in the list: its title, the start of what it says, and whether it is about you.
 private struct MemoryRow: View {
   let note: MemoryNote
-  let title: String
   @Environment(\.palette) private var palette
 
   var body: some View {
     HStack(alignment: .firstTextBaseline, spacing: 14) {
       RowSymbol(name: note.symbol)
       VStack(alignment: .leading, spacing: 3) {
-        Text(title)
+        Text(note.title)
           .font(AppFont.sans(16, .medium))
           .foregroundStyle(palette.foreground)
           .lineLimit(1)
-          .contentTransition(.opacity)
         Text(note.text)
           .font(AppFont.footnote)
           .foregroundStyle(palette.foregroundMuted)
           .lineLimit(2)
           .multilineTextAlignment(.leading)
-        Text(note.kindName)
+        Text(note.fileName)
           .font(AppFont.caption)
           .foregroundStyle(palette.foregroundTertiary)
       }
@@ -144,7 +138,6 @@ private struct ConstellationCard: View {
   let positions: [String: ConstellationLayout.Point]
   @Binding var selected: String?
   let profile: String
-  @Environment(AppModel.self) private var app
   @Environment(\.palette) private var palette
   @State private var pan: CGSize = .zero
   @State private var zoom: CGFloat = 0
@@ -164,10 +157,6 @@ private struct ConstellationCard: View {
           .font(AppFont.sans(18, .medium))
           .foregroundStyle(palette.foreground)
         Spacer(minLength: 8)
-        if app.memoryTitles.isNaming {
-          ProgressView().controlSize(.mini)
-            .accessibilityLabel("Naming memories")
-        }
         Text("\(notes.count)")
           .font(AppFont.sans(17))
           .foregroundStyle(palette.foregroundMuted)
@@ -176,7 +165,6 @@ private struct ConstellationCard: View {
       .padding(.top, 16)
       .padding(.bottom, 6)
       .accessibilityElement(children: .combine)
-      .accessibilityValue(app.memoryTitles.isNaming ? "naming" : "")
       .accessibilityIdentifier("constellation.header")
 
       map
@@ -185,11 +173,11 @@ private struct ConstellationCard: View {
 
       GroupDivider(inset: 0)
       if let note = selectedNote {
-        NavigationLink(value: HubRoute.learning(profile: profile, id: note.id, title: title(note))) {
+        NavigationLink(value: HubRoute.learning(profile: profile, id: note.id, title: note.title)) {
           HStack(spacing: 12) {
             RowSymbol(name: note.symbol)
             VStack(alignment: .leading, spacing: 2) {
-              Text(title(note))
+              Text(note.title)
                 .font(AppFont.sans(16, .medium))
                 .foregroundStyle(palette.foreground)
                 .lineLimit(1)
@@ -225,12 +213,10 @@ private struct ConstellationCard: View {
     return notes.first { $0.id == selected }
   }
 
-  private func title(_ note: MemoryNote) -> String { app.memoryTitles.title(for: note) }
-
   private func caption(_ note: MemoryNote) -> String {
     let links = web.neighbours(of: note.id).count
     let linked = links == 0 ? "no links" : links == 1 ? "linked to 1 memory" : "linked to \(links) memories"
-    return "\(note.kindName) · \(linked)"
+    return "\(note.fileName) · \(linked)"
   }
 
   // MARK: The map
@@ -298,7 +284,7 @@ private struct ConstellationCard: View {
       ForEach(notes) { note in
         if let at = point(note.id) {
           MemoryStar(
-            note: note, title: title(note), isSelected: note.id == selected,
+            note: note, title: note.title, isSelected: note.id == selected,
             isDimmed: selected != nil && !focus.contains(note.id)
           ) {
             UISelectionFeedbackGenerator().selectionChanged()
@@ -380,7 +366,6 @@ private struct MemoryStar: View {
             .multilineTextAlignment(.center)
             .lineLimit(2)
             .minimumScaleFactor(0.8)
-            .contentTransition(.opacity)
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
             .background(palette.card.opacity(0.92), in: RoundedRectangle(cornerRadius: 8, style: .continuous))

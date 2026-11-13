@@ -29,7 +29,9 @@ import Testing
     #expect(notes[0].id == "memory:memory:0:aaa111")
     #expect(!notes[0].isAboutYou)
     #expect(notes[2].isAboutYou)
-    #expect(notes[0].titleKey == "aaa111")
+    #expect(notes[0].title == "The staging database")
+    #expect(notes[0].fileName == "MEMORY.md")
+    #expect(notes[2].fileName == "USER.md")
   }
 
   @Test func theWebHoldsOnlyMemories() throws {
@@ -61,22 +63,24 @@ import Testing
     #expect(MemoryWeb.links([]).isEmpty)
   }
 
-  @Test func fallbackTitlesComeFromTheFirstClause() {
-    #expect(MemoryTitle.fallback("The home dashboard runs at ~/dash (`dash` on PATH; port 8080).") == "The home dashboard runs")
-    #expect(MemoryTitle.fallback("Never uses exclamation marks in his own writing; wants them avoided.") == "Never uses exclamation marks")
-    #expect(MemoryTitle.fallback("npm install works now (/usr/local owned by the user).") == "Npm install works now")
-    #expect(MemoryTitle.fallback("# Release days\nReleases go out on Tuesdays.") == "Release days")
-    #expect(MemoryTitle.fallback("iOS builds sign automatically") == "iOS builds sign automatically")
-    #expect(MemoryTitle.fallback("") == "Memory")
+  @Test func titlesComeFromTheFirstClause() {
+    #expect(MemoryTitle.make("The home dashboard runs at ~/dash (`dash` on PATH; port 8080).") == "The home dashboard runs")
+    #expect(MemoryTitle.make("Never uses exclamation marks in his own writing; wants them avoided.") == "Never uses exclamation marks")
+    #expect(MemoryTitle.make("npm install works now (/usr/local owned by the user).") == "Npm install works now")
+    #expect(MemoryTitle.make("# Release days\nReleases go out on Tuesdays.") == "Release days")
+    #expect(MemoryTitle.make("iOS builds sign automatically") == "iOS builds sign automatically")
+    #expect(MemoryTitle.make("") == "Memory")
   }
 
-  @Test func modelTitlesAreCleanedUp() {
-    #expect(MemoryTitle.clean("\"Home dashboard.\"") == "Home dashboard")
-    #expect(MemoryTitle.clean("Label: release note style\nextra") == "Release note style")
-    #expect(MemoryTitle.clean("PR review habits") == "PR review habits")
-    #expect(MemoryTitle.clean("iOS build setup") == "iOS build setup")
-    #expect(MemoryTitle.clean("one two three four five six seven") == "One two three four five six")
-    #expect(MemoryTitle.clean("a b c d e f g h i j") == nil)
-    #expect(MemoryTitle.clean("   ") == nil)
+  @Test func asidesAndPathsStayOutOfTitles() {
+    // A short subject's aside is skipped rather than cut into.
+    #expect(MemoryTitle.make("Ada (ada@example.com, Example Co) builds the mobile app and its server.") == "Ada builds the mobile app")
+    // A longer subject keeps its words up to the aside.
+    #expect(MemoryTitle.make("Ada Lovelace (ada, ada@example.com) works on the engine.") == "Ada Lovelace")
+    #expect(MemoryTitle.make("photo-sync (example/photo-sync) runs every night.") == "photo-sync")
+    // A path ends the title.
+    #expect(MemoryTitle.make("Terminal $TMPDIR resolves to /var/folders/..., not the scratch folder.") == "Terminal $TMPDIR resolves")
+    #expect(MemoryTitle.make("Backups live in ~/Backups and run nightly.") == "Backups live")
+    #expect(MemoryTitle.make("Mail goes to ada@example.com first.") == "Mail goes")
   }
 }

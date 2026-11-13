@@ -151,10 +151,7 @@ final class AgentHubTests: XCTestCase {
     XCTAssertTrue(header.label.hasSuffix("\(stars.count)"), "header \(header.label) vs \(stars.count) stars")
     let notes = app.buttons.matching(identifier: "learning.note")
     XCTAssertFalse(app.buttons.matching(identifier: "learning.skill").firstMatch.exists, "skills are listed")
-    // Titles are named on the device; let that finish, then each star's title is a few words.
-    let named = NSPredicate(format: "value != 'naming'")
-    expectation(for: named, evaluatedWith: header)
-    waitForExpectations(timeout: 90)
+    // Each star's title is the memory's first few words.
     for star in stars.allElementsBoundByIndex {
       let label = star.label
       XCTAssertTrue(label.hasSuffix(", memory") || label.hasSuffix(", about you"), "not a memory: \(label)")

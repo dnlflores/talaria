@@ -20,8 +20,11 @@ public struct MemoryNote: Identifiable, Sendable, Equatable {
     self.timestamp = timestamp
   }
 
-  /// What a title is stored under: the text's digest, else the node id.
-  public var titleKey: String { fingerprint.isEmpty ? id : fingerprint }
+  /// Its title: its own opening words (`MemoryTitle.make`).
+  public var title: String { MemoryTitle.make(text) }
+
+  /// The file Hermes keeps it in.
+  public var fileName: String { isAboutYou ? "USER.md" : "MEMORY.md" }
 }
 
 extension LearningGraph {
@@ -119,43 +122,41 @@ public enum MemoryWeb {
     """.split(whereSeparator: \.isWhitespace).map(String.init))
 }
 
-/// Titles for memories, which Hermes keeps as plain paragraphs.
+/// Titles for memories. Hermes keeps a bot's memories as untitled paragraphs in two files
+/// (MEMORY.md and USER.md), so a memory is named by its own opening words: plain string work,
+/// no model.
 public enum MemoryTitle {
-  /// A title made from the memory's own first words, for when no language model is around:
-  /// the first clause, at most five words, without a dangling "at", "in" or "his".
-  public static func fallback(_ text: String) -> String {
+  /// The first clause's first words, at most five, without a dangling "at", "in" or "his". A
+  /// memory that starts with a short first line or a heading is titled by that line.
+  public static func make(_ text: String) -> String {
     var line = text.split(separator: "\n").first.map(String.init) ?? text
     line = line.trimmingCharacters(in: .whitespaces)
     while let first = line.first, "#-*>".contains(first) { line = String(line.dropFirst()).trimmingCharacters(in: .whitespaces) }
     line = line.replacingOccurrences(of: "`", with: "").replacingOccurrences(of: "**", with: "")
+    // "Ada (ada@example.com, ...) builds ...": an aside right after a short subject is dropped,
+    // so the title is not cut inside it.
+    if let open = line.range(of: " ("), line.distance(from: line.startIndex, to: open.lowerBound) < 8,
+      let close = line.range(of: ")", range: open.upperBound..<line.endIndex)
+    {
+      line.replaceSubrange(open.lowerBound..<close.upperBound, with: "")
+    }
     for stop in [". ", "; ", " (", ": ", " — ", " - ", " = ", ", "] {
       if let range = line.range(of: stop), line.distance(from: line.startIndex, to: range.lowerBound) >= 8 {
         line = String(line[..<range.lowerBound])
       }
     }
-    var words = line.split(separator: " ").map(String.init).prefix(5).map { $0 }
+    var words: [String] = []
+    for word in line.split(separator: " ").map(String.init) {
+      // A path, an address or a link ends the title: it says where, not what.
+      if !words.isEmpty, word.hasPrefix("/") || word.hasPrefix("~") || word.contains("://") || word.contains("@") { break }
+      words.append(word)
+      if words.count == 5 { break }
+    }
     while words.count > 2, let last = words.last, trailing.contains(last.lowercased()) { words.removeLast() }
     var title = words.joined(separator: " ").trimmingCharacters(in: CharacterSet(charactersIn: " .,;:!?"))
     if title.isEmpty { return "Memory" }
     if let first = words.first, first.allSatisfy({ $0.isLowercase }) { title = title.prefix(1).uppercased() + title.dropFirst() }
     return title
-  }
-
-  /// A language model's answer as a title: one line, no quotes or end punctuation, a capital first
-  /// letter (unless it starts with a name such as `iOS`), at most six words. Nil when nothing
-  /// usable is left.
-  public static func clean(_ raw: String) -> String? {
-    var title = raw.split(separator: "\n").first.map(String.init) ?? ""
-    title = title.trimmingCharacters(in: .whitespaces)
-    for prefix in ["Label:", "Title:", "label:", "title:"] where title.hasPrefix(prefix) {
-      title = String(title.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
-    }
-    title = title.trimmingCharacters(in: CharacterSet(charactersIn: "\"'“”‘’`*. ,;:!?"))
-    let words = title.split(separator: " ").map(String.init)
-    guard !words.isEmpty, words.count <= 8 else { return nil }
-    title = words.prefix(6).joined(separator: " ")
-    if let first = words.first, first.allSatisfy({ $0.isLowercase }) { title = title.prefix(1).uppercased() + title.dropFirst() }
-    return title.count > 60 ? nil : title
   }
 
   private static let trailing: Set<String> = [

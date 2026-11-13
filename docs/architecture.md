@@ -40,7 +40,7 @@ HermesKit (Swift package, no UI)
   LearningGraph   what a bot learned (skills, memory notes, links) and
                   ConstellationLayout, the deterministic force layout that draws it
   MemoryNotes     a bot's memories with their full text, MemoryWeb (links by shared
-                  words) and MemoryTitle (fallback titles, cleaning model titles)
+                  words) and MemoryTitle (a title from a memory's first words)
         │
 MarkdownBlocks    block-level Markdown parser
 
@@ -519,12 +519,12 @@ Kanban rows switch to those areas instead (Cron filtered to the bot through
   `MemoryWeb`: TF-IDF over their words (a word in only one memory is ignored), cosine
   similarity, each memory joined to its two closest above 0.15 and to any above 0.3.
   `GET /api/learning/node?id=&profile=` opens one in full.
-- **Memory titles:** Hermes keeps memories as untitled paragraphs. `MemoryTitles` asks
-  the on-device Foundation Models model (guided generation, greedy, a few examples in the
-  instructions) for a two-to-four word title per memory, one at a time, and stores them in
-  UserDefaults keyed by the memory's fingerprint, so a memory is named once and a rewritten
-  memory is named again. When the model is unavailable or declines, `MemoryTitle.fallback`
-  uses the first clause's first words.
+- **Memory titles:** Hermes keeps a bot's memories as untitled paragraphs in two files
+  (MEMORY.md, USER.md), so there is no file name per memory. `MemoryTitle.make` titles one
+  by its first clause's first words (at most five; a short subject's bracketed aside is
+  skipped and a path ends the title). No model is asked: naming costs nothing and a title
+  is the same on every device. A memory that starts with a short line or a heading is
+  titled by that line.
 - **Constellation layout:** `ConstellationLayout` runs off the main thread: repulsion, link
   springs, gravity shaped to the card (a tall card gets a tall web), then a pass that
   pushes apart stars whose name boxes would overlap. Names do not scale with pinch (only

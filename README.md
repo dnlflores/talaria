@@ -95,11 +95,10 @@ T3 Tools.
   its default model, skills, chats, cron jobs, the kanban board, its soul and
   its memory.
 - **Memory & Learning:** what a bot remembers, drawn as a constellation: each
-  memory is a star under a short title, with lines between memories that talk
-  about the same things. Apple's on-device model writes the titles (the text
-  never leaves the phone); without Apple Intelligence a memory is titled by its
-  first words. Drag and pinch to look around; tap a star to light up its links
-  and open it. Below, every memory with its title.
+  memory is a star titled by its own first words, with lines between memories
+  that talk about the same things. Drag and pinch to look around; tap a star
+  to light up its links and open it. Below, every memory with its title and
+  the file it lives in (MEMORY.md or USER.md).
 - **Kanban:** the board one column at a time, cards with their brief, runs,
   comments and linked cards.
 - **Cron:** every job with its schedule, next and last run and recent runs;

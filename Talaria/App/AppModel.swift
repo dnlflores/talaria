@@ -132,8 +132,6 @@ final class AppModel {
   var hubPath: [HubRoute] = []
   /// The bot the iPhone agent hub shows. Empty: the bot used last, else the default one.
   var hubProfile = ""
-  /// Titles for memories, named on this device (`MemoryTitles`).
-  let memoryTitles = MemoryTitles()
   /// Models starred in the model chooser, shared with the desktop app (`FavoriteModels`).
   var favoriteModels: [String] = []
   @ObservationIgnored var favoritesLoaded = false
