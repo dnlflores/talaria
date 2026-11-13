@@ -68,13 +68,23 @@ final class TranscriptScrollTests: XCTestCase {
 
   func testJumpAppearsFarAwayAndHidesWhenReturningToBottom() {
     launch()
+    let bottomY = latest.frame.minY
+    let height = transcript.frame.height
     for _ in 0..<4 { drag(from: 0.25, to: 0.65) }
+    XCTAssertGreaterThan(latest.frame.minY - bottomY, height, "the test must scroll at least a screen away")
     shoot("scroll-more-than-one-screen")
     XCTAssertTrue(jump.exists, "the button must appear more than a screen from the bottom")
-    for _ in 0..<2 { drag(from: 0.65, to: 0.25) }
+    // Opposite drags need not cover equal distances (touch slop and scroll deceleration).
+    // Measure the latest row's displacement rather than guessing from the gesture count.
+    for _ in 0..<12 where latest.frame.minY - bottomY > height * 0.4 {
+      drag(from: 0.65, to: 0.5)
+    }
+    let remaining = latest.frame.minY - bottomY
+    XCTAssertGreaterThan(remaining, 60, "the test must still be away from the bottom")
+    XCTAssertLessThan(remaining, height * 0.5, "the test must be comfortably within one screen")
     shoot("scroll-back-within-one-screen")
     XCTAssertFalse(jump.exists, "the button must hide within a screen, before reaching the bottom")
-    for _ in 0..<2 { drag(from: 0.65, to: 0.25) }
+    for _ in 0..<4 where latest.frame.minY - bottomY > 5 { drag(from: 0.65, to: 0.25) }
     XCTAssertTrue(latest.isHittable)
     shoot("scroll-returned-to-bottom")
     XCTAssertFalse(jump.exists, "scrolling back down must hide the button")
