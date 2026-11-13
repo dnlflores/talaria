@@ -53,9 +53,9 @@ struct ComposerInput: UIViewRepresentable {
     return CGSize(width: width, height: min(fitting.height, limit))
   }
 
-  /// DM Sans 16, scaled with Dynamic Type like `AppFont.body`.
+  /// DM Sans 17, scaled with Dynamic Type.
   static var font: UIFont {
-    let base = UIFont(name: "DMSans-Regular", size: 16) ?? .systemFont(ofSize: 16)
+    let base = UIFont(name: "DMSans-Regular", size: 17) ?? .systemFont(ofSize: 17)
     return UIFontMetrics(forTextStyle: .body).scaledFont(for: base)
   }
 

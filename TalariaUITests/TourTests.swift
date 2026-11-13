@@ -148,9 +148,9 @@ final class TourTests: XCTestCase {
         shoot("02b-file")
         app.buttons["Done"].firstMatch.tap()
       }
-      // The model chooser: the model in use and favourites, then every model. Nothing is switched.
-      // Disabled in a chat that cannot reply here (a Slack thread, one a terminal holds).
-      let modelButton = app.buttons["Model and effort"]
+      // The model chooser opens from the composer: the model in use and favourites, then every
+      // model. Nothing is switched. Not there in a chat that cannot reply here (a terminal holds it).
+      let modelButton = app.buttons["composer.model"]
       if modelButton.waitForExistence(timeout: 3), modelButton.isEnabled {
         modelButton.tap()
         if app.descendants(matching: .any)["model.current"].waitForExistence(timeout: 20) {
@@ -200,6 +200,28 @@ final class TourTests: XCTestCase {
     app.swipeUp()
     sleep(1)
     shoot("04d-agents-scrolled")
+    // Memory & Learning: the constellation, then a skill in full (AgentHubTests picks a star).
+    let memoryRow = app.buttons["hub.memory"]
+    if memoryRow.waitForExistence(timeout: 5) {
+      memoryRow.tap()
+      if app.descendants(matching: .any)["constellation.header"].waitForExistence(timeout: 30) {
+        sleep(2)
+        shoot("04e-memory")
+        app.swipeUp()
+        sleep(1)
+        shoot("04g-memory-list")
+        let skill = app.buttons.matching(identifier: "learning.skill").firstMatch
+        if skill.waitForExistence(timeout: 3), skill.isHittable {
+          skill.tap()
+          sleep(3)
+          shoot("04h-learned-skill")
+          goBack()
+          sleep(1)
+        }
+      }
+      goBack()
+      sleep(1)
+    }
     app.swipeDown()
 
     open(tab: "Kanban")

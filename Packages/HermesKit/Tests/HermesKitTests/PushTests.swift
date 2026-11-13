@@ -7,7 +7,7 @@ import Testing
 struct PushTests {
   @Test func theRegistrationBodyIsWhatThePluginReads() {
     let registration = PushRegistration(
-      deviceID: "6F1C-22", name: "Daniel's iPhone", token: PushRegistration.hex(Data([0xAB, 0x01, 0xFF])),
+      deviceID: "6F1C-22", name: "Ada's iPhone", token: PushRegistration.hex(Data([0xAB, 0x01, 0xFF])),
       pushToStartToken: nil, environment: "development", topic: "app.talaria.Talaria", teamID: "ABCDE12345",
       alerts: true, liveActivities: false, scope: .phone, bots: ["ada": "Ada"])
     let body = registration.body

@@ -36,6 +36,9 @@ HermesKit (Swift package, no UI)
   Workspace       cron, kanban and file calls and their models
   AgentSettings   favourite models (the desktop app's shared UI preference), a bot's
                   default model catalog and its change, skills
+  ModelBrand      which company's logo a model or provider shows
+  LearningGraph   what a bot learned (skills, memory notes, links) and
+                  ConstellationLayout, the deterministic force layout that draws it
         │
 MarkdownBlocks    block-level Markdown parser
 
@@ -426,6 +429,28 @@ Kanban rows switch to those areas instead (Cron filtered to the bot through
   The phone reads them each time a chooser opens and merges with the Mac's list before
   writing, so stars set on either side show on both.
 - **Skills:** `skills.manage {action: "list", profile}` answers category to names.
+- **Logos:** `ModelBrand.logo(model:provider:)` picks the maker of the model from its name
+  or `vendor/` prefix (Claude for `claude-…` and `anthropic/…`, Qwen for a local
+  `Qwen3.6-…` file), else the provider's own logo, else nothing (a computer for local
+  providers, the provider's initial otherwise). The images are Lobe Icons' monochrome SVGs
+  in `Assets.xcassets/Logos` as template vectors, tinted by the palette; rerun
+  `scripts/import-logos.mjs` to add one, and add its rule to `ModelBrand`.
+- **Composer:** the model and effort sit in the composer's bottom row and open the model
+  sheet (the title bar's model button is gone). Dictation (`Dictation`) feeds
+  `AVAudioEngine` buffers to `SFSpeechAudioBufferRecognitionRequest`, on-device where
+  supported; the tap block and the result handler are built in `nonisolated` functions,
+  since closures made in a main-actor method would be main-actor isolated and trap on the
+  audio thread. A session counter drops results that arrive after it stopped, so a sent
+  message does not refill the composer.
+- **Memory & Learning:** `GET /api/learning/graph?profile=` (the desktop star map's data:
+  nodes of kind skill or memory with category, use count and creator; edges from
+  `related_skills` and from notes that mention a skill; memory cards) and `GET
+  /api/learning/node?id=&profile=` (a skill's SKILL.md or a note's text, front matter
+  stripped on the phone). `ConstellationLayout` runs off the main thread: repulsion, link
+  springs, gravity sized to a disc that gives every node room, then a pass that pushes
+  apart skills whose names would overlap. Names do not scale with pinch (only distances
+  do), so the map opens at 0.85 or more and stays readable. Clipping does not stop taps,
+  so stars past the card's edge are made inert.
 
 ## What is deliberately not here yet
 

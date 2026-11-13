@@ -196,6 +196,11 @@ struct AgentHub: View {
           NavRow(title: "Soul", symbol: "sparkles")
         }
         .accessibilityIdentifier("hub.soul")
+        IconRowDivider()
+        row(.memory(profile: profile)) {
+          NavRow(title: "Memory", symbol: "brain")
+        }
+        .accessibilityIdentifier("hub.memory")
       }
     }
     .padding(.horizontal, 16)
@@ -316,6 +321,8 @@ struct HubDestination: View {
     case .model(let profile): DefaultModelView(profile: profile)
     case .skills(let profile): SkillsView(profile: profile)
     case .soul(let profile): SoulView(profile: profile)
+    case .memory(let profile): MemoryView(profile: profile)
+    case .learning(let profile, let id, let title): LearningNodeView(profile: profile, id: id, title: title)
     case .cron(let profile): CronPage(profile: profile)
     case .chats(let profile): AgentSessionsView(profile: profile)
     case .kanban: KanbanPage()

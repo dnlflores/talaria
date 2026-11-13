@@ -158,7 +158,7 @@ final class LiveFlowTests: XCTestCase {
 
     // 4. Model: the model in use and its efforts first, then every model behind provider chips
     // (the provider in use picked). The chat switches to the model picked.
-    app.buttons["Model and effort"].tap()
+    app.buttons["composer.model"].tap()
     XCTAssertTrue(app.descendants(matching: .any)["model.current"].waitForExistence(timeout: 20), "no model in use shown")
     shoot("08-models")
     // Effort: every level the model offers is named in full, and a pick round-trips the backend.
@@ -197,7 +197,7 @@ final class LiveFlowTests: XCTestCase {
     XCTAssertFalse(app.buttons.matching(identifier: "model.row").firstMatch.exists, "the model sheet stayed open")
     // The efforts follow the new model.
     sleep(4)
-    app.buttons["Model and effort"].tap()
+    app.buttons["composer.model"].tap()
     XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'effort.'")).firstMatch.waitForExistence(timeout: 20))
     shoot("08c-efforts-after-switch")
     app.buttons["Done"].firstMatch.tap()

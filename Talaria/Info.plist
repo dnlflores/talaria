@@ -35,6 +35,10 @@
 	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Talaria listens after you tap the microphone in the composer, and writes what you say.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Talaria turns what you say into text in the composer. Where the phone can, it does this on the phone.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>NSAppTransportSecurity</key>

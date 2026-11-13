@@ -64,6 +64,10 @@ T3 Tools.
   show there.
 - **Keyboard:** with a hardware keyboard, Return sends and Shift-Return adds a
   line. The on-screen keyboard's Return still adds a line.
+- **Composer:** a card with the text on top and, under it, attach, the model
+  in use with its logo and thinking effort ("GPT-6.1 Sol 900K • High", tap to
+  change either), dictation and send. Dictation uses Apple's speech
+  recognition, on the phone where it can.
 - **Attachments:** photos (resized on the phone) and files.
 - **One chat on the phone and the desktop app:** chats run in the Hermes
   gateway on the Mac, the process the desktop app runs them in. A chat open in
@@ -77,14 +81,21 @@ T3 Tools.
 - **Themes:** Hermes and six T3 color families, each light and dark.
 - **Agents:** one hub per bot, as the Hermes mobile app shows an agent. Swipe
   between bots at the top; below, its Bot Chat and a new chat, then rows for
-  its default model, skills, chats, cron jobs, the kanban board and its soul.
+  its default model, skills, chats, cron jobs, the kanban board, its soul and
+  its memory.
+- **Memory & Learning:** what a bot has learned, drawn as a constellation:
+  the skills it wrote or uses and its memory notes as stars, with lines where
+  a skill names a related one or a note mentions a skill. Drag and pinch to
+  look around; tap a star to light up its links and open it. Below, its
+  skills by use and its notes.
 - **Kanban:** the board one column at a time, cards with their brief, runs,
   comments and linked cards.
 - **Cron:** every job with its schedule, next and last run and recent runs;
   pause, resume and run now. Opened from the inbox's ••• menu, or from a bot's
   hub with only that bot's jobs.
 - **Model:** the model in use on top, then your starred models, then All
-  models: a chip per provider (the one in use first) and its models, named the
+  models: a chip per provider (the one in use first) and its models, each with
+  its maker's logo (OpenAI, Claude, Gemini, Qwen and so on), named the
   way people say them ("Opus 4.5", "GPT-6.1 Sol 900K") and newest first. Models
   a plan does not include are folded away; search finds a model across every
   provider. Stars are the desktop app's favourites, kept on the Mac, so a star
@@ -235,7 +246,8 @@ Shared/                    the Live Activity's attributes (app and widget)
 TalariaActivity/           the Live Activity: Lock Screen and Dynamic Island
 mac/talaria-push/          Hermes plugin on the Mac that sends the pushes
 scripts/                   palette generator, icon, sign-in for tests, push plugin install,
-                           gateway-call.mjs (call the backend as the app does)
+                           gateway-call.mjs (call the backend as the app does),
+                           import-logos.mjs (provider logos into the asset catalog)
 docs/                      architecture, roadmap
 ```
 
@@ -245,6 +257,8 @@ docs/                      architecture, roadmap
   Ember and Iris color families come from T3 Code's mobile app (MIT, T3 Tools
   Inc.); `scripts/generate-palettes.mjs` ports its theme tokens.
 - Type is DM Sans (SIL Open Font License 1.1).
+- Provider and model logos come from Lobe Icons (MIT, LobeHub); the logos are
+  trademarks of their companies.
 - The protocol is Hermes Agent's gateway (MIT, Nous Research).
 
 See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Talaria itself is MIT

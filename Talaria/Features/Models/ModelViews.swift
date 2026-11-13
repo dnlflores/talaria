@@ -64,7 +64,8 @@ struct CurrentModelCard: View {
   var body: some View {
     let name = ModelName(model)
     let card = HStack(spacing: 14) {
-      ProviderMark(provider: providerSlug, name: providerName, size: 38)
+      ModelLogo(model: model, provider: providerSlug, providerName: providerName, size: 32)
+        .frame(width: 38, height: 38)
       VStack(alignment: .leading, spacing: 2) {
         Text(model.isEmpty ? placeholder : name.display)
           .font(AppFont.sans(18, .bold))
@@ -183,7 +184,8 @@ struct ModelRow: View {
     HStack(spacing: 6) {
       Button(action: choose) {
         HStack(spacing: 14) {
-          ProviderMark(provider: providerSlug, name: providerName)
+          ModelLogo(model: modelID, provider: providerSlug, providerName: providerName, size: 30)
+            .frame(width: 34, height: 34)
           VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
               Text(name.name)

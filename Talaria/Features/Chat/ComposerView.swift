@@ -3,14 +3,20 @@ import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The floating glass composer: attach, type, send or stop.
+/// The composer as a card: the text on top, and under it attach, the model in use (tap to change
+/// it), dictation and send.
 struct ComposerView: View {
   @Bindable var chat: ChatModel
+  /// Opens the model and effort chooser.
+  var openModels: () -> Void = {}
   @Environment(AppModel.self) private var app
   @Environment(\.palette) private var palette
   @State private var showsPhotos = false
   @State private var showsFiles = false
   @State private var photoItems: [PhotosPickerItem] = []
+  @State private var dictation = Dictation()
+  /// The text before dictation started; what is heard goes after it.
+  @State private var dictationBase = ""
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
@@ -35,49 +41,37 @@ struct ComposerView: View {
           .padding(.horizontal, 8)
       }
 
-      HStack(alignment: .bottom, spacing: 2) {
-        Menu {
-          Button {
-            showsPhotos = true
-          } label: {
-            Label("Photo Library", systemImage: "photo.on.rectangle")
-          }
-          Button {
-            showsFiles = true
-          } label: {
-            Label("Files", systemImage: "folder")
-          }
-        } label: {
-          Image(systemName: "plus")
-            .font(.system(size: 18, weight: .medium))
-            .foregroundStyle(palette.icon)
-            .frame(width: 40, height: 40)
-            .contentShape(Rectangle())
-        }
-        .accessibilityLabel("Attach")
-
+      VStack(alignment: .leading, spacing: 8) {
         ComposerInput(text: $chat.draft, placeholder: placeholder) {
           // Return on a hardware keyboard; Shift-Return adds a line (ComposerInput).
-          if chat.canSend { Task { await chat.send() } }
+          if chat.canSend { send() }
         }
         .overlay(alignment: .topLeading) {
           if chat.draft.isEmpty {
-            Text(placeholder)
-              .font(AppFont.body)
+            Text(dictation.state == .listening ? "Listening…" : placeholder)
+              .font(AppFont.sans(17))
               .foregroundStyle(palette.placeholder)
               .lineLimit(1)
               .allowsHitTesting(false)
               .accessibilityHidden(true)
           }
         }
-        .padding(.vertical, 9)
-        .frame(minHeight: 40)
+        .frame(minHeight: 26)
+        .padding(.horizontal, 8)
+        .padding(.top, 6)
 
-        sendButton
+        HStack(spacing: 4) {
+          attachMenu
+          modelButton
+          Spacer(minLength: 0)
+          micButton
+          sendButton
+        }
       }
-      .padding(.horizontal, 5)
-      .padding(.vertical, 4)
-      .glassEffect(.regular, in: .rect(cornerRadius: 24))
+      .padding(.horizontal, 10)
+      .padding(.top, 12)
+      .padding(.bottom, 10)
+      .glassCard(radius: 30, fill: palette.card)
     }
     .padding(.horizontal, 12)
     .padding(.top, 6)
@@ -101,6 +95,7 @@ struct ComposerView: View {
       guard case .success(let urls) = result else { return }
       for url in urls { importFile(url) }
     }
+    .onDisappear { dictation.stop() }
   }
 
   private var placeholder: String {
@@ -115,26 +110,143 @@ struct ComposerView: View {
     return ""
   }
 
+  private func send() {
+    dictation.stop()
+    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    Task { await chat.send() }
+  }
+
+  private var attachMenu: some View {
+    Menu {
+      Button {
+        showsPhotos = true
+      } label: {
+        Label("Photo Library", systemImage: "photo.on.rectangle")
+      }
+      Button {
+        showsFiles = true
+      } label: {
+        Label("Files", systemImage: "folder")
+      }
+    } label: {
+      Image(systemName: "plus")
+        .font(.system(size: 19, weight: .regular))
+        .foregroundStyle(palette.icon)
+        .frame(width: 42, height: 42)
+        .background(palette.card, in: Circle())
+        .overlay { Circle().strokeBorder(palette.border, lineWidth: 1) }
+        .contentShape(Circle())
+    }
+    .accessibilityLabel("Attach")
+  }
+
+  // MARK: Model
+
+  /// "GPT-6.1 Sol 900K • High": the model this chat uses and its thinking effort. `short` names
+  /// the effort briefly (Extra high is "X-High"), for when the full line does not fit.
+  private func modelLine(short: Bool = false) -> String {
+    let model = chat.info.model.isEmpty ? (app.profile(named: chat.profile)?.model ?? "") : chat.info.model
+    guard !model.isEmpty else { return "Model" }
+    var line = Format.modelName(model)
+    let effort = chat.info.reasoningEffort
+    if !effort.isEmpty, effort != "none" {
+      let levels = ReasoningLevels(provider: chat.info.provider, model: model, supportsReasoning: true)
+      let level = levels.level(for: effort)
+      line += " • " + ((short ? level?.shortLabel : level?.label) ?? ReasoningLevels.label(effort))
+    }
+    return line
+  }
+
+  private var modelButton: some View {
+    let model = chat.info.model.isEmpty ? (app.profile(named: chat.profile)?.model ?? "") : chat.info.model
+    let provider = chat.info.provider.isEmpty ? (app.profile(named: chat.profile)?.provider ?? "") : chat.info.provider
+    return Button(action: openModels) {
+      HStack(spacing: 6) {
+        ModelLogo(model: model, provider: provider, size: 17, tint: palette.foregroundMuted)
+        ViewThatFits(in: .horizontal) {
+          modelText(modelLine()).fixedSize()
+          modelText(modelLine(short: true)).fixedSize()
+          modelText(modelLine(short: true))
+        }
+      }
+      .padding(.horizontal, 4)
+      .frame(height: 42)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .disabled(chat.continuesAsNewVersion)
+    .layoutPriority(1)
+    .accessibilityLabel("Model and effort, \(modelLine())")
+    .accessibilityIdentifier("composer.model")
+  }
+
+  private func modelText(_ text: String) -> some View {
+    Text(text)
+      .font(AppFont.sans(15))
+      .foregroundStyle(palette.foregroundMuted)
+      .lineLimit(1)
+      .truncationMode(.tail)
+  }
+
+  // MARK: Dictation and send
+
+  private var micButton: some View {
+    let isListening = dictation.state == .listening
+    return Button {
+      if dictation.isActive {
+        dictation.stop()
+      } else {
+        dictationBase = chat.draft
+        Task {
+          await dictation.start { heard in
+            let base = dictationBase.trimmingCharacters(in: .whitespacesAndNewlines)
+            chat.draft = base.isEmpty ? heard : dictationBase + (dictationBase.hasSuffix(" ") || dictationBase.hasSuffix("\n") ? "" : " ") + heard
+          } failed: { message in
+            app.show(message, kind: .failure)
+          }
+        }
+      }
+    } label: {
+      Group {
+        if dictation.state == .starting {
+          ProgressView().controlSize(.small)
+        } else {
+          Image(systemName: isListening ? "waveform" : "mic")
+            .font(.system(size: 19, weight: .regular))
+            .foregroundStyle(isListening ? palette.primaryText : palette.iconMuted)
+            .symbolEffect(.variableColor.iterative, isActive: isListening)
+        }
+      }
+      .frame(width: 38, height: 42)
+      .background(isListening ? palette.selectionFill : Color.clear, in: Circle())
+      .contentShape(Circle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel(isListening ? "Stop dictation" : "Dictate")
+    .accessibilityIdentifier("composer.mic")
+  }
+
   private var sendButton: some View {
-    Button {
+    let isOn = chat.canSend || chat.showsStop
+    return Button {
       if chat.showsStop {
         Task { await chat.stop() }
       } else {
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        Task { await chat.send() }
+        send()
       }
     } label: {
       Image(systemName: chat.showsStop ? "stop.fill" : "arrow.up")
-        .font(.system(size: chat.showsStop ? 13 : 16, weight: .semibold))
-        .foregroundStyle(palette.primaryForeground)
-        .frame(width: 34, height: 34)
-        .background(palette.primary.opacity(chat.canSend || chat.showsStop ? 1 : 0.35), in: Circle())
+        .font(.system(size: chat.showsStop ? 14 : 18, weight: .semibold))
+        .foregroundStyle(isOn ? palette.primaryText : palette.iconSubtle)
+        .frame(width: 46, height: 46)
+        .background(isOn ? palette.primary.opacity(0.26) : palette.subtleStrong, in: Circle())
+        .overlay { Circle().strokeBorder(isOn ? palette.primary.opacity(0.35) : Color.clear, lineWidth: 1) }
+        .shadow(color: isOn ? palette.primary.opacity(0.25) : .clear, radius: 8, y: 3)
         .contentTransition(.symbolEffect(.replace))
-        .frame(width: 40, height: 40)
-        .contentShape(Rectangle())
+        .contentShape(Circle())
     }
     .buttonStyle(.plain)
-    .disabled(!chat.canSend && !chat.showsStop)
+    .disabled(!isOn)
     .accessibilityLabel(chat.showsStop ? "Stop" : chat.sendQueues ? "Queue" : "Send")
   }
 

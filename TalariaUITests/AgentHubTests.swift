@@ -67,7 +67,7 @@ final class AgentHubTests: XCTestCase {
       // Bots beyond the screen's edge are a swipe away.
       for _ in 0..<8 where !app.frame.insetBy(dx: 20, dy: 0).contains(avatar.frame) {
         let picked = app.buttons.matching(NSPredicate(format: "identifier == 'agent.switch' AND isSelected == true")).firstMatch
-        picked.swipeLeft(velocity: .slow)
+        if avatar.frame.midX < app.frame.midX { picked.swipeRight(velocity: .slow) } else { picked.swipeLeft(velocity: .slow) }
         sleep(1)
       }
       avatar.tap()
@@ -134,6 +134,39 @@ final class AgentHubTests: XCTestCase {
     starred.tap()
     XCTAssertTrue(favourite.waitForNonExistence(timeout: 5), "\(name) stayed under Favourites")
     XCTAssertTrue(try waitForMac { $0 == before }, "the Mac kept the star")
+  }
+
+  /// Read-only: the constellation draws what the Mac has learned, a star shows its links, and a
+  /// skill opens in full.
+  func testMemoryShowsTheConstellation() throws {
+    openHub()
+    let memory = app.buttons["hub.memory"]
+    XCTAssertTrue(memory.waitForExistence(timeout: 5))
+    memory.tap()
+    let header = app.descendants(matching: .any)["constellation.header"]
+    XCTAssertTrue(header.waitForExistence(timeout: 30), "no constellation")
+    let stars = app.buttons.matching(identifier: "constellation.star")
+    XCTAssertGreaterThan(stars.count, 0, "no stars drawn")
+    // The count in the header is the number of stars.
+    XCTAssertTrue(header.label.hasSuffix("\(stars.count)"), "header \(header.label) vs \(stars.count) stars")
+    shoot("05-constellation")
+    // The map's own frame spans every star, drawn or not; the card shows the 430 points under its
+    // header. A star's frame takes in its name, so its disc is the top 44 points.
+    let shown = CGRect(x: header.frame.minX, y: header.frame.maxY, width: header.frame.width, height: 430)
+      .insetBy(dx: 30, dy: 30)
+    let star = stars.allElementsBoundByIndex.first { shown.contains(CGPoint(x: $0.frame.midX, y: $0.frame.minY + 22)) }
+    XCTAssertNotNil(star, "no star on screen")
+    star?.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0)).withOffset(CGVector(dx: 0, dy: 22)).tap()
+    let picked = app.buttons["constellation.selected"]
+    XCTAssertTrue(picked.waitForExistence(timeout: 5), "picking a star showed nothing")
+    XCTAssertTrue(picked.label.contains("link"), "no links named: \(picked.label)")
+    shoot("06-star")
+    picked.tap()
+    // A skill's SKILL.md or a note's text, without the YAML front matter.
+    XCTAssertTrue(app.descendants(matching: .any)["learning.content"].waitForExistence(timeout: 20), "the node did not open")
+    XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'name:'")).firstMatch.exists,
+                   "front matter shows")
+    shoot("07-node")
   }
 
   func testDefaultModelChangesAndComesBack() throws {

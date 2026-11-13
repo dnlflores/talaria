@@ -1,7 +1,7 @@
 # Third-party notices
 
-Talaria has no third-party code dependencies. It does carry design data and
-fonts from the projects below.
+Talaria has no third-party code dependencies. It does carry design data,
+fonts and logos from the projects below.
 
 ## T3 Code (color tokens)
 
@@ -53,3 +53,37 @@ names and payload shapes follow the gateway contract that ships with Hermes
 included.
 
 Source: https://github.com/NousResearch/hermes-agent
+
+## Lobe Icons (provider and model logos)
+
+The monochrome logos in `Talaria/Resources/Assets.xcassets/Logos` are copied
+from Lobe Icons (`@lobehub/icons-static-svg`) by `scripts/import-logos.mjs`,
+which only strips sizing and color attributes. The logos are trademarks of
+their respective companies and are shown only to name the company behind a
+model or provider.
+
+Source: https://github.com/lobehub/lobe-icons
+
+```
+MIT License
+
+Copyright (c) 2023 LobeHub
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

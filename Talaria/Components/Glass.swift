@@ -165,6 +165,38 @@ struct ProviderMark: View {
   }
 }
 
+/// The logo of the company that made a model (OpenAI for GPT, Claude for Claude), else of the
+/// provider it runs through; a computer for a model on the Mac, the provider's initial otherwise.
+struct ModelLogo: View {
+  let model: String
+  let provider: String
+  var providerName = ""
+  var size: CGFloat = 28
+  var tint: Color?
+  @Environment(\.palette) private var palette
+
+  var body: some View {
+    Group {
+      if let logo = ModelBrand.logo(model: model, provider: provider) {
+        Image("logo-\(logo)")
+          .renderingMode(.template)
+          .resizable()
+          .scaledToFit()
+          .foregroundStyle(tint ?? palette.foreground)
+          .frame(width: size, height: size)
+      } else if ModelBrand.isLocal(provider: provider) {
+        Image(systemName: "desktopcomputer")
+          .font(.system(size: size * 0.72, weight: .regular))
+          .foregroundStyle(tint ?? palette.foreground)
+          .frame(width: size, height: size)
+      } else {
+        ProviderMark(provider: provider, name: providerName, size: size)
+      }
+    }
+    .accessibilityHidden(true)
+  }
+}
+
 /// A round floating button in Liquid Glass: back, a page's own action.
 struct GlassCircleButton: View {
   let symbol: String

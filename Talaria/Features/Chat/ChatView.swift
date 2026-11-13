@@ -43,7 +43,7 @@ struct ChatView: View {
         }
       }
       .safeAreaInset(edge: .bottom, spacing: 0) {
-        if !chat.isReadOnly { ComposerView(chat: chat) }
+        if !chat.isReadOnly { ComposerView(chat: chat) { showsModels = true } }
       }
       .background(palette.screen.ignoresSafeArea())
       .navigationBarTitleDisplayMode(.inline)
@@ -62,16 +62,8 @@ struct ChatView: View {
           .frame(maxWidth: 260)
           .accessibilityElement(children: .combine)
         }
-        ToolbarItemGroup(placement: .topBarTrailing) {
-          Button {
-            showsModels = true
-          } label: {
-            Image(systemName: "cpu")
-          }
-          .disabled(chat.isReadOnly || chat.continuesAsNewVersion)
-          .accessibilityLabel("Model and effort")
-          moreMenu
-        }
+        // The model is changed from the composer, where it shows.
+        ToolbarItem(placement: .topBarTrailing) { moreMenu }
       }
       .sheet(isPresented: $showsFiles) {
         ChatFilesSheet(files: files, chat: chat)

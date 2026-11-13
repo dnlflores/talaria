@@ -30,6 +30,9 @@ enum HubRoute: Hashable {
   case model(profile: String)
   case skills(profile: String)
   case soul(profile: String)
+  case memory(profile: String)
+  /// One skill or memory note from Memory & Learning.
+  case learning(profile: String, id: String, title: String)
   case cron(profile: String)
   case chats(profile: String)
   case kanban
