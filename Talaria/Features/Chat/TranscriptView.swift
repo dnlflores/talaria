@@ -510,7 +510,8 @@ private struct WorkLogView: View {
                   VStack(alignment: .leading, spacing: 4) {
                     Label("Thinking", systemImage: "sparkle")
                       .font(AppFont.labelMedium)
-                    Text(text)
+                    Text((try? AttributedString(markdown: text,
+                      options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text))
                       .font(.custom("DMSans-Italic", size: 13, relativeTo: .footnote))
                       .lineLimit(isExpanded ? nil : 3)
                       .fixedSize(horizontal: false, vertical: true)
@@ -855,7 +856,7 @@ struct TranscriptPreviewFixture: View {
     }
     var note = TranscriptItem(id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!, kind: .assistant,
       text: "I'll inspect the **file** before making a change.")
-    note.reasoning = "A small, focused change will keep the transcript easy to scan."
+    note.reasoning = "**A small, focused change** will keep the transcript easy to scan.\n\n**Check one change at a time.**"
     var read = ToolCall(callID: "preview-read", name: "read_file", args: ["path": "Talaria/Theme/Theme.swift"], isDone: true)
     read.duration = 0.4
     read.result = "extension Palette { /* semantic transcript colors */ }"

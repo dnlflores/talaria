@@ -50,6 +50,26 @@ mac/talaria-push  Hermes plugin on the Mac: watches every chat, sends APNs pushe
 `HermesKit` and `MarkdownBlocks` build and test on macOS with `swift test`,
 which keeps the protocol logic checkable without a simulator.
 
+## Background work
+
+`BackgroundWorkPanel` lives above the composer, independent of the main turn's
+streaming state. It polls `subagent.list` and `process.list` with the exact stored
+session ID and profile, without resuming or attaching to a conversation. Running
+tasks stay visible after the main agent finishes a reply; expand the panel for
+bounded recent history and tap a task for its full goal or command.
+
+`BackgroundWorkModel` polls every three seconds while visible and foregrounded.
+Cancellation and generation fencing reject late responses after leaving or
+switching scope. Errors retain the last snapshot and say status is unavailable.
+A child disappearing from the live registry is only "No longer running", not
+proof of success. Process exit codes and explicit outcomes determine Completed,
+Failed and Stopped. Large command output is not rendered by the panel.
+
+`BackgroundWorkTests` uses the production panel with a deterministic offline
+preview to check running work during an idle main reply, errors/reconnects,
+completion/failure and details. The opt-in `BackgroundWorkLiveTests` reads real
+scoped gateway work without touching that chat's live attachment.
+
 ## Transcript scrolling
 
 Auto-follow and the **Jump to latest** button are separate states. Scrolling up
@@ -218,7 +238,9 @@ the note only as `message.interim`. So:
 - Every public assistant message stays visible in chronological order, outside
   the collapsed work logs. While a turn runs, its text uses commentary styling,
   not final-answer styling; when the turn ends, the last text becomes the answer.
-  Earlier progress messages never disappear into tool calls.
+  Earlier progress messages never disappear into tool calls. Thinking blocks
+  render inline Markdown while preserving paragraph breaks, so `**bold**`
+  markers do not appear literally and stored text is never destructively stripped.
 - GPT/Codex public progress arrives in the gateway's `display_commentary` array;
   Claude usually sends normal assistant text. Both history readers honor that
   array and `display_reasoning`, including explicitly empty projections. Raw

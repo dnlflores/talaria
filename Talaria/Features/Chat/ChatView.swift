@@ -43,7 +43,10 @@ struct ChatView: View {
         }
       }
       .safeAreaInset(edge: .bottom, spacing: 0) {
-        if !chat.isReadOnly { ComposerView(chat: chat) { showsModels = true } }
+        VStack(spacing: 0) {
+          BackgroundWorkPanel(profile: chat.profile, storedID: chat.storedID)
+          if !chat.isReadOnly { ComposerView(chat: chat) { showsModels = true } }
+        }
       }
       .background(palette.screen.ignoresSafeArea())
       .navigationBarTitleDisplayMode(.inline)

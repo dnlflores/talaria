@@ -20,11 +20,17 @@ yet.
 - Assistant progress messages remain visible between steps; only actual
   reasoning and tool calls collapse. Expanded logs reveal calls 20 at a time
   with Load more, preserving chronological order and per-call inspection.
+  GPT's projected commentary and Claude's normal text display consistently;
+  internal completion receipts stay out of the conversation.
 - Jump to latest stays hidden until at least one visible chat screen from the
   bottom, independently of whether new content is being followed.
 - A running reply keeps its newest line above the composer (queue panel and
   keyboard included) and stops following only when you scroll up; reading back
   is never moved by what arrives below.
+- A background-work strip above the composer, independent of the main reply:
+  scoped `subagent.list` and `process.list`, running tasks, bounded recent
+  outcomes, details, foreground polling and explicit unavailable status.
+- Thinking renders Markdown formatting without literal bold markers.
 - A working row at the foot of a running turn and "Working" in the title bar.
   `session.resume`'s `running` and `turn_started_at` restore it after a
   reconnect; tool events alone start it; a quiet turn is re-checked against

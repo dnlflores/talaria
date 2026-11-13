@@ -9,7 +9,9 @@ struct TalariaApp: App {
   var body: some Scene {
     WindowGroup {
       #if DEBUG
-      if ProcessInfo.processInfo.arguments.contains("--scroll-preview") {
+      if ProcessInfo.processInfo.arguments.contains("--background-preview") {
+        BackgroundWorkPreview()
+      } else if ProcessInfo.processInfo.arguments.contains("--scroll-preview") {
         TranscriptScrollFixture()
       } else if ProcessInfo.processInfo.arguments.contains("--transcript-preview") {
         ThemedRoot(

@@ -30,15 +30,21 @@ T3 Tools.
   and visible progress messages from the agent between steps. Only actual thinking
   and tool calls go in collapsed work logs. Opening a log shows the first 20
   calls; **Load more** reveals the next 20, with each call's input and output
-  available on tap. While a reply streams, its newest line stays in sight
-  above the composer until you scroll up, and reading back is never moved by
-  what arrives below. **Jump to latest** appears only when you are
+  available on tap. GPT and Claude progress updates use the same readable
+  presentation; internal wake receipts do not appear as chat messages.
+  While a reply streams, its newest line stays in sight above the composer
+  until you scroll up, and reading back is never moved by what arrives below.
+  **Jump to latest** appears only when you are
   at least one visible chat screen from the bottom, not when you expand a tool
   log near the latest reply.
 - **A working state you can see:** while a reply runs, the foot of the chat
   says what the agent is doing ("Running a command", "Writing the answer")
   with the elapsed time, the title bar says "Working", and the inbox marks the
   chat. It holds across leaving the chat and the phone sleeping.
+- **Background work:** a separate strip above the composer names running agents
+  and commands even after the main reply finishes. Expand it for recent task
+  status and tap for details. Errors say status is unavailable instead of
+  silently pretending the work finished.
 - **Sending while it works:** a message written while a reply runs waits in a
   queue above the composer instead of cutting in, and goes out as the next turn
   when the reply ends. "Send now" puts a queued message into the running reply,
