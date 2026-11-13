@@ -27,8 +27,10 @@ T3 Tools.
   bot's full list: chats, messaging threads (Slack and others) and runs.
   Search bots and chats, pin, mark unread, archive.
 - **Chat** with streaming replies, Markdown (code, tables, task lists, quotes)
-  and a collapsed work log per turn ("Worked for 2m") that opens to every tool
-  call with its input and output. **Jump to latest** appears only when you are
+  and visible progress messages from the agent between steps. Only actual thinking
+  and tool calls go in collapsed work logs. Opening a log shows the first 20
+  calls; **Load more** reveals the next 20, with each call's input and output
+  available on tap. **Jump to latest** appears only when you are
   at least one visible chat screen from the bottom, not when you expand a tool
   log near the latest reply.
 - **A working state you can see:** while a reply runs, the foot of the chat

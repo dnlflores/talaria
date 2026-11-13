@@ -29,10 +29,12 @@ final class TranscriptPresentationTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["INPUT"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["OUTPUT"].exists)
         app.buttons["Done"].tap()
-        let work = app.buttons["transcript.work"]
+        let work = app.buttons["transcript.work"].firstMatch
         work.tap()
         XCTAssertFalse(thinking.exists)
         XCTAssertFalse(tool.exists)
+        XCTAssertTrue(app.staticTexts["I'll inspect the file before making a change."].exists,
+                      "assistant commentary must stay visible when tools and thinking are collapsed")
         work.tap()
         XCTAssertTrue(thinking.waitForExistence(timeout: 3))
         app.terminate()

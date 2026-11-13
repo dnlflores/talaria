@@ -219,11 +219,14 @@ struct TranscriptView: View {
       UserBubble(item: item, profile: chat.profile, storedID: chat.storedID)
     case .answer(let item):
       AnswerView(item: item)
+    case .commentary(let item):
+      CommentaryView(item: item)
     case .work(let group):
       WorkLogView(
         group: group, isExpanded: expanded.contains(group.id),
         toggle: { toggle(group.id) },
-        inspect: { inspected = $0 })
+        inspect: { inspected = $0 },
+        willReveal: { isFollowing = false })
     case .question(let item):
       ClarifyCard(item: item, botTitle: app.title(forProfile: chat.profile)) { requestID, values in
         chat.answer(requestID: requestID, values: values)
@@ -388,6 +391,17 @@ private struct AnswerView: View {
   }
 }
 
+/// Public progress text stays outside tool logs, distinct from both thinking and the answer.
+private struct CommentaryView: View {
+  let item: TranscriptItem
+
+  var body: some View {
+    MarkdownView(text: FileExtraction.hidingMediaLines(item.text), style: .note)
+      .textSelection(.enabled)
+      .accessibilityIdentifier("transcript.commentary")
+  }
+}
+
 private struct SystemNote: View {
   let text: String
   @Environment(\.palette) private var palette
@@ -415,7 +429,9 @@ private struct WorkLogView: View {
   let isExpanded: Bool
   let toggle: () -> Void
   let inspect: (ToolCall) -> Void
+  var willReveal: () -> Void = {}
   @Environment(\.palette) private var palette
+  @State private var toolLimit = 20
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -478,13 +494,32 @@ private struct WorkLogView: View {
         }
         .padding(.leading, 2)
       }
+      if isExpanded, remainingTools > 0 {
+        Button {
+          willReveal()
+          toolLimit += 20
+        } label: {
+          Text("Load \(min(20, remainingTools)) more tool calls (\(remainingTools) remaining)")
+            .font(AppFont.labelMedium)
+            .foregroundStyle(palette.primaryText)
+            .frame(minHeight: 44)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("transcript.tools.more")
+      }
+    }
+    .onChange(of: isExpanded) { _, open in
+      if !open { toolLimit = 20 }
     }
   }
 
+  private var remainingTools: Int { max(0, group.toolCount - toolLimit) }
   private static let liveTail = 3
 
   private var visible: [TranscriptItem] {
-    if isExpanded { return group.items }
+    if isExpanded { return group.page(toolLimit: toolLimit) }
     return group.isLive ? Array(group.items.suffix(Self.liveTail)) : []
   }
 
@@ -737,11 +772,47 @@ private struct EmptyChat: View {
 #if DEBUG
 /// Reuses the production work log and inspector, but no ChatModel, credentials or network.
 struct TranscriptPreviewFixture: View {
-  @State private var expanded = true
+  @State private var expanded = !ProcessInfo.processInfo.arguments.contains("--many-tools")
+    && !ProcessInfo.processInfo.arguments.contains("--provider-display")
   @State private var inspected: ToolCall?
   @Environment(\.palette) private var palette
 
   private static let rows: [TranscriptRow] = {
+    if ProcessInfo.processInfo.arguments.contains("--provider-display") {
+      let stored: [JSONValue] = [
+        ["role": "assistant", "content": "", "reasoning": "Private GPT reasoning plus flattened public words.",
+         "display_reasoning": "Private GPT reasoning.",
+         "display_commentary": ["GPT: I found the cause. This progress message stays readable outside the tools."],
+         "tool_calls": [["id": "provider-gpt", "function": ["name": "read_file", "arguments": "{}"]]]],
+        ["role": "tool", "tool_call_id": "provider-gpt", "content": "Checked."],
+        ["role": "user", "display_kind": "process_complete", "content": "[IMPORTANT: Background process internal plumbing]"],
+        ["role": "assistant", "content": "GPT: The fix is ready."],
+        ["role": "user", "content": "Compare the next provider."],
+        ["role": "assistant", "content": "Claude: I found the cause. This progress message stays readable outside the tools.",
+         "reasoning": "Private Claude reasoning.",
+         "tool_calls": [["id": "provider-claude", "function": ["name": "read_file", "arguments": "{}"]]]],
+        ["role": "tool", "tool_call_id": "provider-claude", "content": "Checked."],
+        ["role": "user", "display_kind": "async_delegation_complete", "content": "[ASYNC DELEGATION BATCH COMPLETE internal plumbing]"],
+        ["role": "assistant", "content": "Claude: The fix is ready."],
+      ]
+      return TranscriptLayout.rows(for: TranscriptItem.items(fromStoredRows: stored), isStreaming: false)
+    }
+    if ProcessInfo.processInfo.arguments.contains("--many-tools") {
+      let calls = (1...45).map { index -> TranscriptItem in
+        var call = ToolCall(callID: "page-\(index)", name: "read_file",
+          args: ["path": .string("file-\(index).swift")], isDone: true)
+        call.result = "Recorded output for call \(index)."
+        return .tool(call)
+      }
+      return TranscriptLayout.rows(for: [
+        .user("Inspect the files.", timestamp: 1),
+        TranscriptItem(kind: .assistant, text: "I will inspect the files."),
+      ] + calls + [
+        TranscriptItem(kind: .assistant, text: "The checks are complete."),
+        .tool(ToolCall(callID: "page-check", name: "terminal", isDone: true)),
+        TranscriptItem(kind: .assistant, text: "All 45 files checked."),
+      ], isStreaming: false)
+    }
     var note = TranscriptItem(id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!, kind: .assistant,
       text: "I'll inspect the **file** before making a change.")
     note.reasoning = "A small, focused change will keep the transcript easy to scan."
@@ -768,6 +839,8 @@ struct TranscriptPreviewFixture: View {
               WorkLogView(group: group, isExpanded: expanded, toggle: { expanded.toggle() }, inspect: { inspected = $0 })
             case .answer(let item):
               AnswerView(item: item)
+            case .commentary(let item):
+              CommentaryView(item: item)
             default: EmptyView()
             }
           }

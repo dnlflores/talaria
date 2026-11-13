@@ -190,9 +190,27 @@ says which only after the fact: Claude streams a note through
 `message.interim` seals the note (`already_streamed: true`); some models send
 the note only as `message.interim`. So:
 
-- A running turn shows no answer. Everything it writes stays in its live
-  steps, and the last text becomes the answer when the turn ends. Nothing
-  shown as the answer ever moves into the steps.
+- Every public assistant message stays visible in chronological order, outside
+  the collapsed work logs. While a turn runs, its text uses commentary styling,
+  not final-answer styling; when the turn ends, the last text becomes the answer.
+  Earlier progress messages never disappear into tool calls.
+- GPT/Codex public progress arrives in the gateway's `display_commentary` array;
+  Claude usually sends normal assistant text. Both history readers honor that
+  array and `display_reasoning`, including explicitly empty projections. Raw
+  provider sidecars are never used to recover text, bypass redaction, or override
+  a profile's commentary policy. Projected progress cannot become a final answer.
+- Typed `internal_notification`, `process_complete` and
+  `async_delegation_complete` wake receipts are omitted from the conversation,
+  rather than shown as truncated model-facing instructions. No prefix matching
+  is used to hide a person's own words.
+- Only actual `reasoning`/`reasoning_content` and tool calls enter work logs.
+  A message with both reasoning and public text produces two independently
+  identified rows, so neither part hides the other. Questions remain inline.
+- Expanding a work log renders its first 20 tool calls. Load more adds the next
+  20 until exhausted, counting calls rather than reasoning blocks. Collapsing
+  resets the allowance; collapsed live logs still show the latest three steps.
+  This bounds rendered tool rows, not the stored-history network payload.
+  Inputs and outputs are rendered only when a call is inspected.
 - `tool.generating` settles the text before it and names the call being
   drafted ("Writing a file"); `message.interim` replaces that text rather
   than repeating it.

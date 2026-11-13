@@ -273,7 +273,7 @@ private func ids(_ rows: [JSONValue]) -> [Int] { rows.compactMap { $0["id"].int 
       ["id": 6, "role": "user", "display_kind": "steer", "content": "[OUT-OF-BAND USER MESSAGE]\nwrapped", "display_content": "also check the logs"],
     ]
     let items = TranscriptItem.items(fromStoredRows: rows)
-    #expect(items.map(\.kind) == [.user, .system, .system, .user])
+    #expect(items.map(\.kind) == [.user, .system, .user])
     #expect(items.last?.text == "also check the logs")
   }
 

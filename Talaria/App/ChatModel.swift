@@ -131,7 +131,14 @@ final class ChatModel: Identifiable {
       }
     }
     chat.state.items.append(.user("Inspect the latest change.", timestamp: 20))
-    chat.state.items.append(.tool(ToolCall(callID: "scroll-preview-tool", name: "read_file", isDone: true)))
+    if ProcessInfo.processInfo.arguments.contains("--many-tools") {
+      for index in 1...45 {
+        chat.state.items.append(.tool(ToolCall(
+          callID: "scroll-page-\(index)", name: "read_file", args: ["path": .string("file-\(index).swift")], isDone: true)))
+      }
+    } else {
+      chat.state.items.append(.tool(ToolCall(callID: "scroll-preview-tool", name: "read_file", isDone: true)))
+    }
     chat.state.items.append(TranscriptItem(kind: .assistant, text: "Latest reply. Everything is up to date."))
     chat.isLoading = false
     return chat

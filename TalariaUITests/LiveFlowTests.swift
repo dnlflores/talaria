@@ -57,7 +57,7 @@ final class LiveFlowTests: XCTestCase {
     app.descendants(matching: .any).matching(identifier: "transcript.working").firstMatch
   }
 
-  /// Answers on screen. A running turn shows none: its text stays with its steps until it ends.
+  /// Final answers on screen. A running turn uses visible commentary styling instead.
   private var answers: XCUIElementQuery {
     app.descendants(matching: .any).matching(identifier: "transcript.answer")
   }
@@ -99,6 +99,9 @@ final class LiveFlowTests: XCTestCase {
       NSPredicate(format: "identifier == 'transcript.working' AND label CONTAINS 'Running a command'")).firstMatch
     XCTAssertTrue(running.waitForExistence(timeout: 90), "the working row never named the running command")
     XCTAssertEqual(answers.count, answersBefore, "a running turn showed its note as an answer")
+    let commentary = app.descendants(matching: .any).matching(identifier: "transcript.commentary")
+    XCTAssertTrue(commentary.firstMatch.waitForExistence(timeout: 10),
+                  "the agent's progress message was hidden inside the tool log")
     shoot("04a-running")
     XCTAssertTrue(waitForAnswer(containing: "wing-42", timeout: 180), "no answer after the tool call")
     let workRows = app.buttons.matching(NSPredicate(format: "identifier == 'transcript.work' AND label BEGINSWITH 'Worked'"))

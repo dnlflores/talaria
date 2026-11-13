@@ -1,7 +1,7 @@
 import Foundation
 
-/// A stretch of agent activity between a user message and the answer: tool calls,
-/// interim notes and reasoning. Shown collapsed as "Worked for 2m".
+/// Tool calls and private reasoning between visible assistant messages.
+/// Assistant commentary stays in the conversation, never inside this collapsed log.
 public struct WorkLog: Identifiable, Sendable, Equatable {
   public let id: UUID
   public var items: [TranscriptItem]
@@ -12,6 +12,18 @@ public struct WorkLog: Identifiable, Sendable, Equatable {
 
   public var toolCount: Int { items.count { $0.kind == .tool } }
   public var hasError: Bool { items.contains { $0.tool?.isError == true } }
+
+  /// An expanded log reveals calls in chronological batches; reasoning is not a tool call.
+  public func page(toolLimit: Int) -> [TranscriptItem] {
+    var calls = 0
+    return Array(items.prefix { item in
+      if item.kind == .tool {
+        guard calls < max(0, toolLimit) else { return false }
+        calls += 1
+      }
+      return true
+    })
+  }
 
   /// "Worked for 2m", "Thought for 8s", "3 tools", or the count so far while the turn runs
   /// (the transcript's working row says what is happening now).
@@ -46,6 +58,8 @@ public enum TranscriptRow: Identifiable, Sendable, Equatable {
   case user(TranscriptItem)
   /// Assistant text shown in full.
   case answer(TranscriptItem)
+  /// An update from the agent, including text still being written. Not private reasoning.
+  case commentary(TranscriptItem)
   case work(WorkLog)
   /// A question the agent asked (clarify), always visible so it can be answered in place.
   case question(TranscriptItem)
@@ -54,7 +68,7 @@ public enum TranscriptRow: Identifiable, Sendable, Equatable {
 
   public var id: UUID {
     switch self {
-    case .user(let item), .answer(let item), .question(let item), .system(let item): return item.id
+    case .user(let item), .answer(let item), .commentary(let item), .question(let item), .system(let item): return item.id
     case .work(let group): return group.id
     case .files(let files): return files.id
     }
@@ -64,13 +78,9 @@ public enum TranscriptRow: Identifiable, Sendable, Equatable {
 public enum TranscriptLayout {
   /// Groups raw items into rows.
   ///
-  /// Within a finished turn, the last assistant text is the answer; everything before it (tool
-  /// calls, interim notes) folds into a work group. Questions split a group so they stay visible.
-  ///
-  /// A running turn has no answer yet: text the model is writing may be a note before its next
-  /// tool call, and the backend says so only once that call is under way. Shown as the answer it
-  /// would jump into the steps a moment later, so all of it stays in the steps until the turn
-  /// ends, and the last text becomes the answer then.
+  /// Every assistant message stays visible in order. Only tools and actual reasoning fold
+  /// into work groups. While running, text uses commentary styling so it never flashes as
+  /// a final answer before the backend identifies the next tool call.
   public static func rows(for items: [TranscriptItem], isStreaming: Bool) -> [TranscriptRow] {
     var cache: [String: [FileReference]] = [:]
     return rows(for: items, isStreaming: isStreaming, fileCache: &cache)
@@ -90,7 +100,7 @@ public enum TranscriptLayout {
       defer { turn = [] }
       guard !turn.isEmpty else { return }
       let live = isLastTurn && isStreaming
-      let answerIndex = live ? nil : turn.lastIndex { $0.kind == .assistant && !$0.text.isEmpty }
+      let answerIndex = live ? nil : turn.lastIndex { $0.kind == .assistant && !$0.isCommentary && !$0.text.isEmpty }
 
       var group: [TranscriptItem] = []
       var emitted: [TranscriptRow] = []
@@ -100,11 +110,6 @@ public enum TranscriptLayout {
         group = []
       }
       for (index, item) in turn.enumerated() {
-        if index == answerIndex {
-          closeGroup()
-          emitted.append(.answer(item))
-          continue
-        }
         switch item.kind {
         case .system:
           closeGroup()
@@ -112,8 +117,18 @@ public enum TranscriptLayout {
         case .tool where item.tool?.isClarify == true:
           closeGroup()
           emitted.append(.question(item))
-        case .assistant where item.text.isEmpty && item.reasoning.isEmpty:
-          continue
+        case .assistant:
+          if !item.reasoning.isEmpty {
+            // A second, stable identity keeps reasoning and words from sharing a row id.
+            var thought = TranscriptItem(id: item.id.derived(salt: 0x52), kind: .assistant, timestamp: item.timestamp)
+            thought.reasoning = item.reasoning
+            thought.isStreaming = item.isStreaming
+            group.append(thought)
+          }
+          if !item.text.isEmpty {
+            closeGroup()
+            emitted.append(index == answerIndex ? .answer(item) : .commentary(item))
+          }
         default:
           group.append(item)
         }

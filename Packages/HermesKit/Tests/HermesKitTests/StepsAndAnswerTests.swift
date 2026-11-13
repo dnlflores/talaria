@@ -3,8 +3,8 @@ import Testing
 
 @testable import HermesKit
 
-/// Text a running turn writes stays with its steps until the turn ends, so nothing shown as the
-/// answer ever jumps into the steps. Recorded from a real Claude turn: two notes, each followed
+/// Text a running turn writes stays visible as commentary, not final-answer styling.
+/// Recorded from a real Claude turn: two notes, each followed
 /// by a terminal call, then the answer.
 @Suite struct StepsAndAnswerTests {
   private let user = "Do these steps in order."
@@ -14,6 +14,7 @@ import Testing
       switch row {
       case .user: return "user"
       case .answer(let item): return "answer(\(item.text))"
+      case .commentary(let item): return "commentary(\(item.text))"
       case .work(let log): return "work(\(log.items.count)\(log.isLive ? ",live" : ""))"
       case .question: return "question"
       case .system: return "system"
@@ -22,12 +23,12 @@ import Testing
     }
   }
 
-  @Test func textBeingWrittenIsAStepUntilTheTurnEnds() {
+  @Test func textBeingWrittenIsVisibleCommentaryUntilTheTurnEnds() {
     var state = ChatState()
     state.items = [TranscriptItem(kind: .user, text: user, timestamp: 0)]
     state.apply(event: "message.start", payload: [:], now: 1)
     state.apply(event: "message.delta", payload: ["text": "I'll check the clock first."], now: 2)
-    #expect(rowKinds(state) == ["user", "work(1,live)"])
+    #expect(rowKinds(state) == ["user", "commentary(I'll check the clock first.)"])
     #expect(state.activity == .writing)
 
     state.apply(event: "message.complete", payload: ["text": "I'll check the clock first."], now: 3)
@@ -54,7 +55,7 @@ import Testing
 
     state.apply(event: "tool.start", payload: ["tool_id": "t1", "name": "write_file", "args": ["path": "/tmp/a"]], now: 5)
     #expect(state.preparingTool == nil)
-    #expect(rowKinds(state) == ["user", "work(2,live)"])
+    #expect(rowKinds(state) == ["user", "commentary(I'll check the clock first.)", "work(1,live)"])
   }
 
   @Test func aNoteThatWasNeverStreamedIsAddedOnce() {
@@ -83,7 +84,7 @@ import Testing
       ["user": .string(user), "assistant": "I'll check the clock first.\n\nIt printed \"one\".", "streaming": true],
       turnStartedAt: 100, now: 112)
     #expect(state.items.filter { !$0.text.isEmpty && $0.kind == .assistant }.count == 2)
-    #expect(rowKinds(state) == ["user", "work(3,live)"])
+    #expect(rowKinds(state) == ["user", "commentary(I'll check the clock first.)", "work(1,live)", "commentary(It printed \"one\".)"])
 
     var writing = ChatState()
     writing.items = TranscriptItem.items(fromHistory: history)

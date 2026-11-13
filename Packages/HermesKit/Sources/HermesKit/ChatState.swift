@@ -377,12 +377,17 @@ public struct ChatState: Sendable, Equatable {
   /// compression, edits from another device) replaces the settled items once.
   public mutating func reconcile(fresh: [TranscriptItem], inflight: JSONValue, turnStartedAt: Double? = nil, now: Double) {
     if let index = streamIndex { items.remove(at: index) }
-    let settled = items.filter { !$0.isPending && !$0.isLocal }
+    let settledIndices = items.indices.filter { !items[$0].isPending && !items[$0].isLocal }
     var common = 0
-    while common < settled.count, common < fresh.count, settled[common].signature == fresh[common].signature {
+    while common < settledIndices.count, common < fresh.count,
+      items[settledIndices[common]].signature == fresh[common].signature
+    {
+      let index = settledIndices[common]
+      // Matching words keep their identity, but the stored projection determines their role.
+      if items[index].kind == .assistant { items[index].isCommentary = fresh[common].isCommentary }
       common += 1
     }
-    if common == settled.count {
+    if common == settledIndices.count {
       for item in fresh[common...] {
         if item.kind == .user,
           let pendingIndex = items.firstIndex(where: { $0.isPending && !$0.hasLanded && $0.signature == item.signature })
@@ -428,8 +433,16 @@ public struct ChatState: Sendable, Equatable {
   public mutating func reconcileTail(fresh: [TranscriptItem], inflight: JSONValue, turnStartedAt: Double? = nil, now: Double) -> Bool {
     var next = self
     if let index = next.streamIndex { next.items.remove(at: index) }
-    let settled = next.items.filter { !$0.isPending && !$0.isLocal }
-    guard let start = ChatState.alignment(held: settled.map(\.signature), page: fresh.map(\.signature)) else { return false }
+    let settledIndices = next.items.indices.filter { !next.items[$0].isPending && !next.items[$0].isLocal }
+    let held = settledIndices.map { next.items[$0].signature }
+    guard let start = ChatState.alignment(held: held, page: fresh.map(\.signature)) else { return false }
+    let overlap = min(settledIndices.count, start)
+    for offset in 0..<overlap {
+      let index = settledIndices[settledIndices.count - overlap + offset]
+      if next.items[index].kind == .assistant {
+        next.items[index].isCommentary = fresh[start - overlap + offset].isCommentary
+      }
+    }
     for item in fresh[start...] {
       if item.kind == .user,
         let pendingIndex = next.items.firstIndex(where: { $0.isPending && !$0.hasLanded && $0.signature == item.signature })

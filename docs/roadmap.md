@@ -17,6 +17,9 @@ yet.
   approvals, sudo and secret prompts, model (provider, then model) and effort,
   photo and file attachments, rename, read-along for chats held elsewhere,
   continue as a new version.
+- Assistant progress messages remain visible between steps; only actual
+  reasoning and tool calls collapse. Expanded logs reveal calls 20 at a time
+  with Load more, preserving chronological order and per-call inspection.
 - Jump to latest stays hidden until at least one visible chat screen from the
   bottom, independently of whether new content is being followed.
 - A working row at the foot of a running turn and "Working" in the title bar.

@@ -166,6 +166,8 @@ public struct TranscriptItem: Identifiable, Sendable, Equatable {
   /// What actually went to the backend when it differs from `text` (file refs appended).
   public var sentText: String?
   public var reasoning = ""
+  /// The gateway explicitly projected these words as public progress, not a final answer.
+  public var isCommentary = false
   /// Seconds since 1970.
   public var timestamp: Double?
   public var isStreaming = false
@@ -239,6 +241,31 @@ extension TranscriptItem {
   /// Kinds of user row that hold what the person wrote: a plain message, a skill they invoked, and
   /// a message they sent into a running reply (`steer`). Other kinds are notices Hermes wrote.
   static let userKinds: Set<String> = ["", "skill_invocation", "steer"]
+  /// Model-facing wake receipts are not messages from the person or the agent.
+  static let machineryKinds: Set<String> = ["internal_notification", "process_complete", "async_delegation_complete"]
+
+  /// Both history shapes carry the gateway's safe Codex display projection. Never recover
+  /// words from raw provider sidecars, or fall back when an explicitly projected field is empty.
+  private static func assistantItems(_ message: JSONValue, body: String, timestamp: Double?) -> [TranscriptItem] {
+    guard message["display_kind"].string != "hidden" else { return [] }
+    let reasoning = message["display_reasoning"].string
+      ?? message["reasoning"].string.flatMap { $0.isEmpty ? nil : $0 }
+      ?? message["reasoning_content"].stringValue
+    var items: [TranscriptItem] = []
+    for words in message["display_commentary"].array ?? [] {
+      guard let words = words.string, !words.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+      var item = TranscriptItem(kind: .assistant, text: words, timestamp: timestamp)
+      if items.isEmpty { item.reasoning = reasoning }
+      item.isCommentary = true
+      items.append(item)
+    }
+    if !body.isEmpty || items.isEmpty {
+      var item = TranscriptItem(kind: .assistant, text: body, timestamp: timestamp)
+      if items.isEmpty { item.reasoning = reasoning }
+      items.append(item)
+    }
+    return items
+  }
 
   /// The note Hermes writes when it picks up a turn that was cut off; older rows carry no kind.
   static let autoContinueNote = "[System note: Your previous turn was interrupted mid-run"
@@ -260,16 +287,15 @@ extension TranscriptItem {
       case "user":
         // Hidden rows are scaffolding for the model; the desktop app leaves them out too.
         let displayKind = message["display_kind"].string ?? ""
-        if displayKind == "hidden" { continue }
+        if displayKind == "hidden" || machineryKinds.contains(displayKind) { continue }
         if userKinds.contains(displayKind) {
           items.append(.user(message["text"].stringValue, timestamp: timestamp))
         } else {
           items.append(TranscriptItem(kind: .system, text: message["text"].stringValue, timestamp: timestamp))
         }
       case "assistant":
-        var item = TranscriptItem(kind: .assistant, text: message["text"].stringValue, timestamp: timestamp)
-        item.reasoning = message["reasoning"].string ?? message["reasoning_content"].string ?? ""
-        items.append(item)
+        items.append(contentsOf: assistantItems(message,
+          body: message["display_content"].string ?? message["text"].stringValue, timestamp: timestamp))
       default:
         continue
       }
@@ -323,7 +349,7 @@ extension TranscriptItem {
       let displayKind = row["display_kind"].string ?? ""
       switch row["role"].stringValue {
       case "user":
-        if displayKind == "hidden" { continue }
+        if displayKind == "hidden" || machineryKinds.contains(displayKind) { continue }
         let raw = row["display_content"].string.flatMap { $0.isEmpty ? nil : $0 } ?? text(row["content"])
         var body = UserContent.unwrappingOutOfBand(raw)
         if body.isEmpty { continue }
@@ -342,14 +368,10 @@ extension TranscriptItem {
           items.append(TranscriptItem(kind: .system, text: body, timestamp: timestamp))
         }
       case "assistant":
-        let shown = row["display_content"].string.flatMap { $0.isEmpty ? nil : $0 } ?? text(row["content"])
-        let reasoning = row["reasoning"].string.flatMap { $0.isEmpty ? nil : $0 } ?? row["reasoning_content"].stringValue
+        let shown = row["display_content"].string ?? text(row["content"])
         // A hidden row's words are for the model; its calls still show.
-        if displayKind != "hidden", !shown.isEmpty || !reasoning.isEmpty {
-          var item = TranscriptItem(kind: .assistant, text: shown, timestamp: timestamp)
-          item.reasoning = reasoning
-          items.append(item)
-        }
+        items.append(contentsOf: assistantItems(row, body: shown, timestamp: timestamp)
+          .filter { !$0.text.isEmpty || !$0.reasoning.isEmpty })
         for call in row["tool_calls"].parsedIfJSONString.array ?? [] {
           let callID = call["id"].scalarText ?? call["call_id"].scalarText ?? UUID().uuidString
           let arguments = call["function"]["arguments"].isNull ? call["arguments"] : call["function"]["arguments"]

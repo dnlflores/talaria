@@ -75,6 +75,7 @@ import Testing
       switch row {
       case .user: return "user"
       case .answer: return "answer"
+      case .commentary(let item): return "commentary(\(item.text))"
       case .work(let group): return "work(\(group.items.count))"
       case .question: return "question"
       case .system: return "system"
@@ -87,8 +88,8 @@ import Testing
     let rows = TranscriptLayout.rows(
       for: [user("go", at: 100), note("I'll look."), tool("terminal", seconds: 2), tool("patch", seconds: 1), note("All fixed.", at: 225)],
       isStreaming: false)
-    #expect(shape(rows) == ["user", "work(3)", "answer"])
-    guard case .work(let group) = rows[1] else { Issue.record("expected a work group"); return }
+    #expect(shape(rows) == ["user", "commentary(I'll look.)", "work(2)", "answer"])
+    guard case .work(let group) = rows[2] else { Issue.record("expected a work group"); return }
     #expect(group.seconds == 125)
     #expect(group.label == "Worked for 2m 5s")
     #expect(group.toolCount == 2)
@@ -97,16 +98,16 @@ import Testing
 
   @Test func aRunningTurnKeepsItsLatestActivityLive() {
     let running = TranscriptLayout.rows(for: [user("go", at: 1), note("Checking."), tool("terminal", done: false)], isStreaming: true)
-    #expect(shape(running) == ["user", "work(2)"])
-    guard case .work(let group) = running[1] else { Issue.record("expected a work group"); return }
+    #expect(shape(running) == ["user", "commentary(Checking.)", "work(1)"])
+    guard case .work(let group) = running[2] else { Issue.record("expected a work group"); return }
     #expect(group.isLive)
     #expect(group.label == "1 tool so far")
 
-    // Text being written joins the steps: it may be a note before the next tool call.
+    // Text being written stays visible as commentary until the final answer is known.
     var streaming = note("The answer is")
     streaming.isStreaming = true
     let answering = TranscriptLayout.rows(for: [user("go", at: 1), tool("terminal"), streaming], isStreaming: true)
-    #expect(shape(answering) == ["user", "work(2)"])
+    #expect(shape(answering) == ["user", "work(1)", "commentary(The answer is)"])
     let answered = TranscriptLayout.rows(for: [user("go", at: 1), tool("terminal"), note("The answer is 4.")], isStreaming: false)
     #expect(shape(answered) == ["user", "work(1)", "answer"])
   }
