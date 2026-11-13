@@ -7,32 +7,39 @@ struct WorkingDots: View {
   @Environment(\.palette) private var palette
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+  /// How long each dot holds the light before handing it to the next, in seconds.
+  static let beat = 0.32
+
   var body: some View {
     let tint = color ?? palette.primary
-    Group {
-      if reduceMotion {
-        dots(lit: nil, tint: tint)
-      } else {
-        PhaseAnimator([0, 1, 2]) { phase in
-          dots(lit: phase, tint: tint)
-        } animation: { _ in
-          .easeInOut(duration: 0.32)
-        }
-      }
+    // Driven by the clock rather than by animated state changes. Every phase change of an
+    // animation here also animated the dots' position when their row moved in the same update
+    // (a streamed line wrapping), so the dots trailed behind their row or hung in empty space.
+    TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { context in
+      dots(tint: tint, beat: reduceMotion ? nil : context.date.timeIntervalSinceReferenceDate / Self.beat)
     }
     .accessibilityHidden(true)
   }
 
-  private func dots(lit: Int?, tint: Color) -> some View {
+  private func dots(tint: Color, beat: Double?) -> some View {
     HStack(spacing: 3) {
       ForEach(0..<3, id: \.self) { index in
+        let lit = beat.map { Self.lit(index, beat: $0) }
         Circle()
           .fill(tint)
           .frame(width: 5, height: 5)
-          .opacity(lit == nil || lit == index ? 1 : 0.28)
-          .scaleEffect(lit == index ? 1.15 : 1)
+          .opacity(lit.map { 0.28 + 0.72 * $0 } ?? 1)
+          .scaleEffect(1 + 0.15 * (lit ?? 0))
       }
     }
+  }
+
+  /// 1 while dot `index` holds the light, easing to 0 as it passes to a neighbour.
+  static func lit(_ index: Int, beat: Double) -> Double {
+    let position = beat.truncatingRemainder(dividingBy: 3)
+    let distance = abs(position - Double(index))
+    let t = max(0, 1 - min(distance, 3 - distance))
+    return t * t * (3 - 2 * t)
   }
 }
 

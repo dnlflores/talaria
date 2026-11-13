@@ -30,7 +30,9 @@ T3 Tools.
   and visible progress messages from the agent between steps. Only actual thinking
   and tool calls go in collapsed work logs. Opening a log shows the first 20
   calls; **Load more** reveals the next 20, with each call's input and output
-  available on tap. **Jump to latest** appears only when you are
+  available on tap. While a reply streams, its newest line stays in sight
+  above the composer until you scroll up, and reading back is never moved by
+  what arrives below. **Jump to latest** appears only when you are
   at least one visible chat screen from the bottom, not when you expand a tool
   log near the latest reply.
 - **A working state you can see:** while a reply runs, the foot of the chat

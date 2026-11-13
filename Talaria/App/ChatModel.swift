@@ -143,6 +143,48 @@ final class ChatModel: Identifiable {
     chat.isLoading = false
     return chat
   }
+
+  /// Offline: plays running turns through the real event handling, so scroll tests can watch the
+  /// transcript follow streamed text, tool steps, the working row and a queued message.
+  func playPreviewTurns(count: Int, pace: Duration) async {
+    func apply(_ type: String, _ payload: JSONValue = [:]) {
+      _ = state.apply(event: type, payload: payload, now: now)
+    }
+    func words(_ text: String) async {
+      for word in text.split(separator: " ", omittingEmptySubsequences: false) {
+        apply("message.delta", ["text": .string(word + " ")])
+        try? await Task.sleep(for: pace)
+      }
+    }
+    let note = "I'll check how the transcript lays out the newest rows, then run the focused tests so the"
+      + " follow behaviour is measured rather than guessed. This note wraps over several lines on a phone."
+    let answer = (1...4).map { paragraph in
+      "Paragraph \(paragraph) of the answer streams in word by word, growing the last row while the"
+        + " transcript should keep its newest line in sight above the composer."
+    }.joined(separator: "\n\n")
+    for turn in 1...count {
+      state.items.append(.user("Live question \(turn)", timestamp: now))
+      scrollToEnd += 1
+      state.beginTurn(now: now)
+      try? await Task.sleep(for: pace * 8)
+      await words(note)
+      apply("message.interim", ["text": .string(note + " "), "already_streamed": .bool(true)])
+      for step in 1...3 {
+        apply("tool.start", [
+          "tool_id": .string("live-\(turn)-\(step)"), "name": "terminal",
+          "context": .string("xcrun devicectl device process launch --device 0000-\(step) com.example.app"),
+        ])
+        if turn == 1, step == 2 { queue.enqueue(text: "A follow-up written while the reply runs", attachments: [], now: now) }
+        try? await Task.sleep(for: pace * 10)
+        apply("tool.complete", ["tool_id": .string("live-\(turn)-\(step)"), "summary": "done", "duration_s": .number(0.4)])
+        apply("reasoning.delta", ["text": .string("Checking step \(step)")])
+        try? await Task.sleep(for: pace * 6)
+      }
+      await words(answer)
+      apply("message.complete", ["text": .string(answer)])
+      try? await Task.sleep(for: pace * 12)
+    }
+  }
   #endif
 
   private var client: HermesClient? { app?.client }

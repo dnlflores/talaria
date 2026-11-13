@@ -20,6 +20,14 @@ struct TranscriptScrollFixture: View {
       }
     }
     .environment(app)
+    .task {
+      // `--live-turns`: running turns stream in after the chat has settled at the bottom.
+      guard ProcessInfo.processInfo.arguments.contains("--live-turns") else { return }
+      let delay = Double(ProcessInfo.processInfo.environment["TALARIA_LIVE_TURNS_DELAY"] ?? "") ?? 1.5
+      try? await Task.sleep(for: .seconds(delay))
+      let pace = Int(ProcessInfo.processInfo.environment["TALARIA_LIVE_TURNS_PACE_MS"] ?? "") ?? 60
+      await chat.playPreviewTurns(count: 2, pace: .milliseconds(pace))
+    }
   }
 }
 #endif

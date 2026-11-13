@@ -22,6 +22,9 @@ yet.
   with Load more, preserving chronological order and per-call inspection.
 - Jump to latest stays hidden until at least one visible chat screen from the
   bottom, independently of whether new content is being followed.
+- A running reply keeps its newest line above the composer (queue panel and
+  keyboard included) and stops following only when you scroll up; reading back
+  is never moved by what arrives below.
 - A working row at the foot of a running turn and "Working" in the title bar.
   `session.resume`'s `running` and `turn_started_at` restore it after a
   reconnect; tool events alone start it; a quiet turn is re-checked against

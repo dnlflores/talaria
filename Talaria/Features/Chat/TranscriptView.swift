@@ -24,11 +24,8 @@ struct TranscriptView: View {
   @State private var tracker = ScrollTracker()
 
   private static let pageSize = 40
-
-  private struct Extent: Equatable {
-    var content: CGFloat
-    var container: CGFloat
-  }
+  /// This close to the end counts as being at the bottom, where the view follows.
+  private static let followTolerance: CGFloat = 60
 
   /// Where the scroll stands, read on every frame of a scroll.
   private struct Position: Equatable {
@@ -36,6 +33,16 @@ struct TranscriptView: View {
     var content: CGFloat
     var container: CGFloat
     var topInset: CGFloat
+    var bottomInset: CGFloat
+
+    /// How far the end of the transcript is below what shows above the composer.
+    var toBottom: CGFloat { content + bottomInset - offset - container }
+
+    /// The content or the room it shows in changed: new text, the composer or the keyboard.
+    func resized(from old: Position) -> Bool {
+      content != old.content || container != old.container
+        || bottomInset != old.bottomInset || topInset != old.topInset
+    }
   }
 
   /// Scroll bookkeeping kept out of SwiftUI's state: it changes on every frame of a scroll, and a
@@ -49,14 +56,18 @@ struct TranscriptView: View {
     var hasScrolled = false
     /// Rows just added above finish laying out over a few frames; their growth is offset too.
     var settlingUntil = Date.distantPast
+    /// Content grew while following during a gesture, which was left alone until it ends.
+    var grewDuringGesture = false
   }
 
   var body: some View {
     let rows = chat.rows
-    let hidden = max(0, rows.count - visibleLimit)
-    let shown = rows.suffix(visibleLimit)
+    let hidden = windowStart(rows)
+    let shown = rows[hidden...]
     let _ = tracker.firstRow = shown.first?.id
     ScrollView {
+      // No implicit animations in here: an animated update moves every row it touches over its
+      // duration, while the scroll that keeps the end in sight jumps, so rows trail behind.
       VStack(alignment: .leading, spacing: 18) {
         if chat.isLoading {
           TranscriptPlaceholder()
@@ -71,11 +82,9 @@ struct TranscriptView: View {
           }
           if let activity = chat.activity {
             WorkingRow(activity: activity, startedAt: chat.turnStartedAt)
-              .transition(.opacity)
           }
         }
       }
-      .animation(.easeInOut(duration: 0.2), value: chat.isStreaming)
       .padding(.horizontal, Metrics.screenPadding)
       .padding(.top, 12)
       .padding(.bottom, 16)
@@ -89,34 +98,26 @@ struct TranscriptView: View {
     .onScrollPhaseChange { _, phase in
       isUserScrolling = phase == .interacting || phase == .decelerating || phase == .tracking
       if phase == .interacting || phase == .tracking { tracker.hasScrolled = true }
+      // Growth during the gesture was left alone; catch up once the scroll is still. A plain
+      // drag that ends near the end is not moved afterwards.
+      if phase == .idle, tracker.grewDuringGesture {
+        tracker.grewDuringGesture = false
+        if isFollowing { withAnimation(.snappy(duration: 0.25)) { position.scrollTo(edge: .bottom) } }
+      }
     }
     .onScrollGeometryChange(for: Position.self) { geometry in
       Position(
         offset: geometry.contentOffset.y, content: geometry.contentSize.height,
-        container: geometry.containerSize.height, topInset: geometry.contentInsets.top)
+        container: geometry.containerSize.height, topInset: geometry.contentInsets.top,
+        bottomInset: geometry.contentInsets.bottom)
     } action: { old, new in
       // This report is from before rows added above were offset; the next one is from after.
       if keepPlace(old: old, new: new) { return }
+      follow(old: old, new: new)
       // Within a screen of the top, read on; a transcript shorter than the screen fills it.
       let nearTop = new.offset + new.topInset < new.container
-      if nearTop, new.content < new.container {
+      if nearTop, new.content < new.container || tracker.hasScrolled {
         loadEarlier()
-      } else if nearTop, tracker.hasScrolled {
-        // Up here the person is reading back, whatever the follow logic last caught: what
-        // arrives above must not move them.
-        if isFollowing { isFollowing = false }
-        loadEarlier()
-      }
-    }
-
-    .onScrollGeometryChange(for: Bool.self) { geometry in
-      geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height + geometry.contentInsets.bottom - 60
-    } action: { _, atBottom in
-      // Only a person's scrolling can stop the following; content growing under a parked view must not.
-      if isUserScrolling {
-        isFollowing = atBottom
-      } else if atBottom {
-        isFollowing = true
       }
     }
     .onScrollGeometryChange(for: Bool.self) { geometry in
@@ -127,46 +128,81 @@ struct TranscriptView: View {
     } action: { _, shouldShow in
       showsJumpToLatest = shouldShow
     }
-    .onScrollGeometryChange(for: Extent.self) { geometry in
-      Extent(content: geometry.contentSize.height, container: geometry.containerSize.height)
-    } action: { _, _ in
-      // New text, a new row, or the keyboard: keep the end in sight while following.
-      if isFollowing, !isUserScrolling { position.scrollTo(edge: .bottom) }
-    }
     .onChange(of: chat.scrollToEnd) {
       isFollowing = true
       withAnimation(.snappy(duration: 0.3)) { position.scrollTo(edge: .bottom) }
     }
     .overlay(alignment: .bottom) {
-      if showsJumpToLatest, !chat.isEmpty, !chat.isLoading {
-        Button {
-          isFollowing = true
-          withAnimation(.snappy(duration: 0.3)) { position.scrollTo(edge: .bottom) }
-        } label: {
-          Image(systemName: "arrow.down")
-            .font(.system(size: 14, weight: .semibold))
-            .foregroundStyle(palette.foreground)
-            .frame(width: 38, height: 38)
-            .glassEffect(.regular.interactive(), in: .circle)
+      // The button's animation stays on the button: on the scroll view it would also animate
+      // whatever the transcript did in the same update.
+      ZStack {
+        if showsJumpToLatest, !chat.isEmpty, !chat.isLoading {
+          Button {
+            isFollowing = true
+            withAnimation(.snappy(duration: 0.3)) { position.scrollTo(edge: .bottom) }
+          } label: {
+            Image(systemName: "arrow.down")
+              .font(.system(size: 14, weight: .semibold))
+              .foregroundStyle(palette.foreground)
+              .frame(width: 38, height: 38)
+              .glassEffect(.regular.interactive(), in: .circle)
+          }
+          .buttonStyle(.plain)
+          .padding(.bottom, 10)
+          .transition(.scale(scale: 0.8).combined(with: .opacity))
+          .accessibilityLabel("Jump to latest")
         }
-        .buttonStyle(.plain)
-        .padding(.bottom, 10)
-        .transition(.scale(scale: 0.8).combined(with: .opacity))
-        .accessibilityLabel("Jump to latest")
       }
+      .animation(.snappy(duration: 0.2), value: showsJumpToLatest)
     }
-    .animation(.snappy(duration: 0.2), value: showsJumpToLatest)
     .sheet(item: $inspected) { tool in
       ToolDetailSheet(tool: tool)
         .presentationDetents([.medium, .large])
     }
   }
 
+  /// Following starts at the bottom and stops only when the person scrolls up away from it.
+  /// Content growing under a view that is not moving, or arriving mid-gesture, never stops it.
+  /// While following, any resize (new text, the composer, the keyboard) scrolls to the end.
+  private func follow(old: Position, new: Position) {
+    let atBottom = new.toBottom <= Self.followTolerance
+    let wasAtBottom = old.toBottom <= Self.followTolerance
+    if isUserScrolling {
+      if atBottom {
+        if !isFollowing { isFollowing = true }
+      } else if new.offset < old.offset - 0.5, isFollowing {
+        isFollowing = false
+      }
+    } else if atBottom, !isFollowing, !wasAtBottom || new.content < old.content {
+      // Back at the end without a gesture: a work log closed, or the content shrank. Opening one
+      // at the end grows the content, and stays a reading of it.
+      isFollowing = true
+    }
+    // Even when already at the end, or shorter than the screen: until a first `scrollTo`, SwiftUI
+    // re-applied the initial bottom anchor on later size changes, so opening a work log or
+    // Load more in a short chat pulled the reader down.
+    if isFollowing, new.resized(from: old) {
+      if isUserScrolling { tracker.grewDuringGesture = true } else { position.scrollTo(edge: .bottom) }
+    }
+  }
+
+  /// Where the rows on screen start. Following, they are the newest `visibleLimit`. Reading
+  /// back, the top row stays as rows arrive below: sliding it out from under the reader moved
+  /// everything on screen up by its height. It moves up only to show more.
+  private func windowStart(_ rows: [TranscriptRow]) -> Int {
+    let newest = max(0, rows.count - visibleLimit)
+    guard !isFollowing, let first = tracker.firstRow,
+      let index = rows.firstIndex(where: { $0.id == first })
+    else { return newest }
+    return min(index, newest)
+  }
+
   /// Shows more above: rows already read first, else the next older page from the Mac.
   private func loadEarlier() {
     guard !chat.isLoading, !chat.isLoadingOlder else { return }
-    if chat.rows.count > visibleLimit {
-      visibleLimit += Self.pageSize
+    let hidden = windowStart(chat.rows)
+    if hidden > 0 {
+      visibleLimit = chat.rows.count - hidden + Self.pageSize
     } else if chat.hasOlder {
       Task {
         await chat.loadOlder {
@@ -706,7 +742,9 @@ struct ShimmerText: View {
   var font: Font = AppFont.label
   @Environment(\.palette) private var palette
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @State private var phase: CGFloat = -1
+
+  /// One sweep across the text, in seconds.
+  private static let sweep = 1.4
 
   var body: some View {
     Text(text)
@@ -714,18 +752,20 @@ struct ShimmerText: View {
       .foregroundStyle(palette.foregroundSecondary)
       .overlay {
         if !reduceMotion {
-          GeometryReader { proxy in
-            LinearGradient(colors: [.clear, palette.foreground.opacity(0.85), .clear], startPoint: .leading, endPoint: .trailing)
-              .frame(width: proxy.size.width * 0.6)
-              .offset(x: phase * proxy.size.width)
+          // Driven by the clock, like `WorkingDots`: a repeating animation started on appear also
+          // animates any move of the row made in the same update, and the text drifts off its row.
+          TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
+            let progress = context.date.timeIntervalSinceReferenceDate
+              .truncatingRemainder(dividingBy: Self.sweep) / Self.sweep
+            GeometryReader { proxy in
+              LinearGradient(colors: [.clear, palette.foreground.opacity(0.85), .clear], startPoint: .leading, endPoint: .trailing)
+                .frame(width: proxy.size.width * 0.6)
+                .offset(x: (-1 + 2.2 * progress) * proxy.size.width)
+            }
           }
           .mask(Text(text).font(font))
           .allowsHitTesting(false)
         }
-      }
-      .onAppear {
-        guard !reduceMotion else { return }
-        withAnimation(.linear(duration: 1.4).repeatForever(autoreverses: false)) { phase = 1.2 }
       }
   }
 }

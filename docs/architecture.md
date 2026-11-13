@@ -60,9 +60,34 @@ bottom content inset (composer, keyboard and bars), and the threshold uses the
 current visible rectangle, so it adapts to the keyboard and window size. A
 short chat, the bottom itself and bottom overscroll keep the button hidden.
 
+Following starts within 60 pt of the end and stops only when the person scrolls
+up away from it, read frame by frame from the scroll offset. Content that grows
+under a still view, or during a gesture, never stops it, and being near the top
+of a short chat is not taken as reading back. While following, any change to
+the content height or to the room it shows in (the composer, the queue panel,
+the keyboard, the notice under the title) scrolls to the end, and growth during
+a gesture is caught up when the scroll comes to rest. Reading back, the top
+shown row stays as rows arrive below instead of sliding out of the window.
+
+While following, every resize calls `scrollTo(edge: .bottom)`, even at the end
+or in a chat shorter than the screen. Skipping those calls left a short chat
+with no `scrollTo` since opening, and SwiftUI then kept it aligned to the bottom
+on later size changes without any call from the app: Load more pulled the
+reader down by the calls it revealed (`ToolPagingTests`).
+
+The transcript has no implicit animations: an animated update moves every row
+it touches over its duration while the scroll jumps, so rows trail behind. The
+working row's dots and shimmer are drawn from a `TimelineView` clock for the
+same reason; animation phases there also animated the row's moves, and the dots
+hung behind it as streamed lines wrapped.
+
 `TranscriptScrollTests` exercises the production transcript and composer using
 a DEBUG-only offline chat, including short drags, expanded tool logs, scrolling
-back down and jumping to the latest reply.
+back down and jumping to the latest reply. With `--live-turns` it plays running
+turns through the real event handling (streamed text, steps, a queued message)
+and checks that the end stays above the composer, that a chat one to two
+screens tall keeps following after a scroll, and that reading back is not
+moved.
 
 ## Connecting to Hermes
 

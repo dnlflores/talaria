@@ -82,11 +82,23 @@ final class ToolPagingTests: XCTestCase {
     XCTAssertTrue(app.buttons["transcript.tool.scroll-page-20"].exists)
     XCTAssertFalse(app.buttons["transcript.tool.scroll-page-21"].exists)
     let more = app.buttons["transcript.tools.more"]
+    // `isHittable` is also true behind the composer card, where a tap reaches the composer.
+    let composer = app.descendants(matching: .any)["composer.input"]
+    func moreIsClear() -> Bool { more.isHittable && more.frame.maxY < composer.frame.minY - 8 }
     for _ in 0..<12 {
-      if more.isHittable { break }
+      if moreIsClear() { break }
       scroll.swipeUp(velocity: .slow)
     }
-    XCTAssertTrue(more.isHittable)
+    XCTAssertTrue(moreIsClear(), "Load more must show above the composer")
+    // A slow swipe decelerates for a couple of seconds, and a tap before it settles only stops
+    // the scroll instead of pressing the button.
+    var settled = more.frame
+    for _ in 0..<20 {
+      Thread.sleep(forTimeInterval: 0.25)
+      let now = more.frame
+      if now == settled { break }
+      settled = now
+    }
     let watched = app.buttons["transcript.tool.scroll-page-20"]
     let before = watched.frame.minY
     XCTAssertTrue(watched.isHittable, "watch a row beside Load more, not an off-screen row")

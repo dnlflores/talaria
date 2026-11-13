@@ -96,6 +96,89 @@ final class TranscriptScrollTests: XCTestCase {
     shoot("scroll-jumped-to-latest")
   }
 
+  // MARK: Following a running turn (`--live-turns` plays turns through the real event handling)
+
+  private func launchLive(shortChat: Bool, paceMilliseconds: Int = 60) {
+    app.launchArguments.append("--live-turns")
+    if shortChat { app.launchArguments.append("--short-chat") }
+    app.launchEnvironment["TALARIA_LIVE_TURNS_DELAY"] = "4"
+    app.launchEnvironment["TALARIA_LIVE_TURNS_PACE_MS"] = String(paceMilliseconds)
+    launch()
+  }
+
+  private func waitForText(_ needle: String, timeout: TimeInterval = 40) -> Bool {
+    app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", needle)).firstMatch
+      .waitForExistence(timeout: timeout)
+  }
+
+  /// One consistent reading of where the transcript's content ends and where the composer (or the
+  /// queue panel above it) starts.
+  private func endAndComposer() -> (end: CGFloat, composer: CGFloat)? {
+    guard let root = try? app.snapshot() else { return nil }
+    var end: CGFloat = 0
+    var composer = CGFloat.greatestFiniteMagnitude
+    var stack: [any XCUIElementSnapshot] = [root]
+    while let node = stack.popLast() {
+      let id = node.identifier
+      if id.hasPrefix("transcript."), id != "transcript.scroll", id != "transcript.earlier" {
+        end = max(end, node.frame.maxY)
+      } else if id == "composer.input" || id == "queue.panel" {
+        composer = min(composer, node.frame.minY)
+      }
+      stack.append(contentsOf: node.children)
+    }
+    return composer < .greatestFiniteMagnitude ? (end, composer) : nil
+  }
+
+  /// Samples the end of the transcript while the turn streams: it must stay above the composer.
+  private func assertFollows(_ moment: String, samples: Int = 5, file: StaticString = #filePath, line: UInt = #line) {
+    for sample in 0..<samples {
+      guard let reading = endAndComposer() else { return XCTFail("no transcript reading", file: file, line: line) }
+      XCTAssertLessThanOrEqual(
+        reading.end, reading.composer + 1,
+        "\(moment), sample \(sample): the newest content is under the composer", file: file, line: line)
+    }
+  }
+
+  func testLiveTurnStaysInSightAboveTheComposer() {
+    launchLive(shortChat: false)
+    // The queued message shows from the first turn's second step until the turn ends.
+    XCTAssertTrue(app.descendants(matching: .any)["queue.panel"].waitForExistence(timeout: 30))
+    assertFollows("running steps with a queued message")
+    XCTAssertTrue(waitForText("Paragraph 2 of the answer"))
+    assertFollows("streaming the answer")
+    shoot("follow-live-turn")
+    XCTAssertFalse(jump.exists)
+  }
+
+  /// A chat between one and two screens tall used to stop following once it had been scrolled,
+  /// because the bottom was also "near the top", where reading back is assumed.
+  func testShortChatKeepsFollowingAfterAScroll() {
+    launchLive(shortChat: true)
+    drag(from: 0.7, to: 0.4)
+    XCTAssertTrue(waitForText("Paragraph 2 of the answer"))
+    assertFollows("streaming the answer")
+    XCTAssertTrue(waitForText("Live question 2"))
+    assertFollows("next turn")
+    shoot("follow-short-chat")
+    XCTAssertFalse(jump.exists)
+  }
+
+  func testReadingBackIsNotMovedByALiveTurn() {
+    // Slow enough that the first turn is still streaming after the drags.
+    launchLive(shortChat: false, paceMilliseconds: 150)
+    XCTAssertTrue(waitForText("Live question 1"))
+    for _ in 0..<4 { drag(from: 0.25, to: 0.65) }
+    XCTAssertTrue(jump.exists, "the test must be more than a screen up")
+    let before = latest.frame.minY
+    sleep(3)
+    XCTAssertEqual(latest.frame.minY, before, accuracy: 2, "what is being read must not move while the turn streams")
+    shoot("follow-reading-back")
+    jump.tap()
+    XCTAssertTrue(jump.waitForNonExistence(timeout: 3))
+    assertFollows("after jumping back")
+  }
+
   func testShortChatAndBottomBounceNeverShowJumpButton() {
     app.launchArguments.append("--short-chat")
     launch()
