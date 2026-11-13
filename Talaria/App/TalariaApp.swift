@@ -7,15 +7,32 @@ struct TalariaApp: App {
 
   var body: some Scene {
     WindowGroup {
-      ThemedRoot(family: app.preferences.themeFamily, appearance: app.preferences.appearance) {
-        RootView()
+      #if DEBUG
+      if ProcessInfo.processInfo.arguments.contains("--transcript-preview") {
+        ThemedRoot(
+          family: ThemeFamily(rawValue: ProcessInfo.processInfo.environment["TALARIA_PREVIEW_THEME"] ?? "standard") ?? .standard,
+          appearance: AppearanceMode(rawValue: ProcessInfo.processInfo.environment["TALARIA_PREVIEW_APPEARANCE"] ?? "light") ?? .light
+        ) {
+          TranscriptPreviewFixture()
+        }
+      } else {
+        connectedRoot
       }
-      .environment(app)
-      .task { await app.launch() }
-      .onChange(of: scenePhase) { _, phase in
-        if phase == .active { app.becameActive() }
-        if phase == .background { app.wentToBackground() }
-      }
+      #else
+      connectedRoot
+      #endif
+    }
+  }
+
+  private var connectedRoot: some View {
+    ThemedRoot(family: app.preferences.themeFamily, appearance: app.preferences.appearance) {
+      RootView()
+    }
+    .environment(app)
+    .task { await app.launch() }
+    .onChange(of: scenePhase) { _, phase in
+      if phase == .active { app.becameActive() }
+      if phase == .background { app.wentToBackground() }
     }
   }
 }

@@ -440,14 +440,28 @@ private struct WorkLogView: View {
           ForEach(shown) { item in
             if let tool = item.tool {
               ToolRow(tool: tool) { inspect(tool) }
-            } else if !item.text.isEmpty {
-              MarkdownView(text: item.text, style: .note)
-            } else if !item.reasoning.isEmpty {
-              Text(item.reasoning.trimmingCharacters(in: .whitespacesAndNewlines))
-                .font(.custom("DMSans-Italic", size: 13, relativeTo: .footnote))
-                .foregroundStyle(palette.foregroundMuted)
-                .lineLimit(isExpanded ? nil : 3)
-                .fixedSize(horizontal: false, vertical: true)
+            } else {
+              ForEach(Array(item.workContent.enumerated()), id: \.offset) { _, block in
+                switch block {
+                case .reasoning(let text):
+                  VStack(alignment: .leading, spacing: 4) {
+                    Label("Thinking", systemImage: "sparkle")
+                      .font(AppFont.labelMedium)
+                    Text(text)
+                      .font(.custom("DMSans-Italic", size: 13, relativeTo: .footnote))
+                      .lineLimit(isExpanded ? nil : 3)
+                      .fixedSize(horizontal: false, vertical: true)
+                  }
+                  .foregroundStyle(palette.transcriptReasoning)
+                  .padding(.leading, 12)
+                  .padding(.vertical, 3)
+                  .overlay(alignment: .leading) {
+                    Rectangle().fill(palette.transcriptReasoning.opacity(0.5)).frame(width: 2)
+                  }
+                case .commentary(let text):
+                  MarkdownView(text: text, style: .note)
+                }
+              }
             }
           }
         }
@@ -475,27 +489,34 @@ private struct ToolRow: View {
 
   var body: some View {
     Button(action: action) {
-      HStack(alignment: .firstTextBaseline, spacing: 7) {
+      HStack(alignment: .center, spacing: 8) {
         Image(systemName: ToolPresentation.symbol(for: tool.name))
           .font(.system(size: 12, weight: .medium))
-          .foregroundStyle(tool.isError ? palette.dangerForeground : palette.iconMuted)
-          .frame(width: 16)
-        Text(ToolPresentation.title(for: tool.name))
-          .font(AppFont.labelMedium)
-          .foregroundStyle(palette.foregroundSecondary)
-          .layoutPriority(1)
-        Text(detail)
-          .font(AppFont.mono(12))
-          .foregroundStyle(palette.foregroundMuted)
-          .lineLimit(1)
-          .truncationMode(.middle)
+          .foregroundStyle(tool.isError ? palette.dangerForeground : palette.transcriptTool)
+          .frame(width: 26, height: 26)
+          .background((tool.isError ? palette.dangerForeground : palette.transcriptTool).opacity(0.09), in: RoundedRectangle(cornerRadius: 6))
+        VStack(alignment: .leading, spacing: 2) {
+          Text(ToolPresentation.title(for: tool.name))
+            .font(AppFont.labelMedium)
+            .foregroundStyle(tool.isError ? palette.dangerForeground : palette.transcriptTool)
+          if !detail.isEmpty {
+            Text(detail)
+              .font(AppFont.mono(12))
+              .foregroundStyle(palette.foregroundSecondary)
+              .lineLimit(1)
+              .truncationMode(.middle)
+          }
+        }
         Spacer(minLength: 6)
         trailing
       }
+      .frame(minHeight: 44)
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .accessibilityLabel("\(ToolPresentation.title(for: tool.name)) \(detail)")
+    .accessibilityValue(tool.isError ? "Failed" : !tool.isDone ? "Running" : tool.duration.map { "Completed in \(WorkLog.duration($0))" } ?? "Completed")
+    .accessibilityIdentifier("transcript.tool.\(tool.callID)")
   }
 
   private var detail: String { tool.preview }
@@ -701,3 +722,54 @@ private struct EmptyChat: View {
     .padding(.top, 140)
   }
 }
+
+#if DEBUG
+/// Reuses the production work log and inspector, but no ChatModel, credentials or network.
+struct TranscriptPreviewFixture: View {
+  @State private var expanded = true
+  @State private var inspected: ToolCall?
+  @Environment(\.palette) private var palette
+
+  private static let rows: [TranscriptRow] = {
+    var note = TranscriptItem(id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!, kind: .assistant,
+      text: "I'll inspect the **file** before making a change.")
+    note.reasoning = "A small, focused change will keep the transcript easy to scan."
+    var read = ToolCall(callID: "preview-read", name: "read_file", args: ["path": "Talaria/Theme/Theme.swift"], isDone: true)
+    read.duration = 0.4
+    read.result = "extension Palette { /* semantic transcript colors */ }"
+    var failed = ToolCall(callID: "preview-error", name: "terminal", context: "swift test — retry needed", isDone: true)
+    failed.isError = true
+    failed.result = "The first test caught the missing presentation behavior."
+    let running = ToolCall(callID: "preview-running", name: "terminal", context: "Checking the focused tests")
+    return TranscriptLayout.rows(for: [note, .tool(read),
+      TranscriptItem(kind: .assistant, text: "The tool output is separate from my explanation."),
+      .tool(failed), .tool(running),
+      TranscriptItem(kind: .assistant, text: "Tools, thinking and explanations now have a clear hierarchy.")], isStreaming: false)
+  }()
+
+  var body: some View {
+    NavigationStack {
+      ScrollView {
+        VStack(alignment: .leading, spacing: 18) {
+          ForEach(Self.rows) { row in
+            switch row {
+            case .work(let group):
+              WorkLogView(group: group, isExpanded: expanded, toggle: { expanded.toggle() }, inspect: { inspected = $0 })
+            case .answer(let item):
+              AnswerView(item: item)
+            default: EmptyView()
+            }
+          }
+        }
+        .padding(Metrics.screenPadding)
+      }
+      .background(palette.screen)
+      .navigationTitle("Transcript preview")
+      .navigationBarTitleDisplayMode(.inline)
+      .sheet(item: $inspected) { tool in
+        ToolDetailSheet(tool: tool).presentationDetents([.medium, .large])
+      }
+    }
+  }
+}
+#endif

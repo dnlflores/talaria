@@ -70,6 +70,24 @@ extension EnvironmentValues {
 }
 
 extension Palette {
+  /// Semantic transcript accents stay distinct from every family's brand color.
+  /// Dynamic providers follow the effective scheme, including an in-app override.
+  var transcriptTool: Color {
+    Color(uiColor: UIColor { traits in
+      traits.userInterfaceStyle == .dark
+        ? UIColor(red: 0.44, green: 0.81, blue: 0.87, alpha: 1)
+        : UIColor(red: 0, green: 0.36, blue: 0.44, alpha: 1)
+    })
+  }
+
+  var transcriptReasoning: Color {
+    Color(uiColor: UIColor { traits in
+      traits.userInterfaceStyle == .dark
+        ? UIColor(red: 0.77, green: 0.67, blue: 0.94, alpha: 1)
+        : UIColor(red: 0.40, green: 0.27, blue: 0.61, alpha: 1)
+    })
+  }
+
   /// Status colors the T3 token set expresses as adaptive ramps; fixed here per scheme.
   var success: Color { Color(.sRGB, red: 0.06, green: 0.69, blue: 0.45, opacity: 1) }
   var successSurface: Color { success.opacity(0.14) }
