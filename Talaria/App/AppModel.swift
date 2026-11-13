@@ -31,7 +31,7 @@ enum HubRoute: Hashable {
   case skills(profile: String)
   case soul(profile: String)
   case memory(profile: String)
-  /// One skill or memory note from Memory & Learning.
+  /// One memory from Memory & Learning, opened by its graph node id.
   case learning(profile: String, id: String, title: String)
   case cron(profile: String)
   case chats(profile: String)
@@ -132,6 +132,8 @@ final class AppModel {
   var hubPath: [HubRoute] = []
   /// The bot the iPhone agent hub shows. Empty: the bot used last, else the default one.
   var hubProfile = ""
+  /// Titles for memories, named on this device (`MemoryTitles`).
+  let memoryTitles = MemoryTitles()
   /// Models starred in the model chooser, shared with the desktop app (`FavoriteModels`).
   var favoriteModels: [String] = []
   @ObservationIgnored var favoritesLoaded = false

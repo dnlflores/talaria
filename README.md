@@ -83,11 +83,12 @@ T3 Tools.
   between bots at the top; below, its Bot Chat and a new chat, then rows for
   its default model, skills, chats, cron jobs, the kanban board, its soul and
   its memory.
-- **Memory & Learning:** what a bot has learned, drawn as a constellation:
-  the skills it wrote or uses and its memory notes as stars, with lines where
-  a skill names a related one or a note mentions a skill. Drag and pinch to
-  look around; tap a star to light up its links and open it. Below, its
-  skills by use and its notes.
+- **Memory & Learning:** what a bot remembers, drawn as a constellation: each
+  memory is a star under a short title, with lines between memories that talk
+  about the same things. Apple's on-device model writes the titles (the text
+  never leaves the phone); without Apple Intelligence a memory is titled by its
+  first words. Drag and pinch to look around; tap a star to light up its links
+  and open it. Below, every memory with its title.
 - **Kanban:** the board one column at a time, cards with their brief, runs,
   comments and linked cards.
 - **Cron:** every job with its schedule, next and last run and recent runs;

@@ -200,7 +200,7 @@ final class TourTests: XCTestCase {
     app.swipeUp()
     sleep(1)
     shoot("04d-agents-scrolled")
-    // Memory & Learning: the constellation, then a skill in full (AgentHubTests picks a star).
+    // Memory & Learning: the constellation of memories, then one in full (AgentHubTests picks a star).
     let memoryRow = app.buttons["hub.memory"]
     if memoryRow.waitForExistence(timeout: 5) {
       memoryRow.tap()
@@ -210,11 +210,11 @@ final class TourTests: XCTestCase {
         app.swipeUp()
         sleep(1)
         shoot("04g-memory-list")
-        let skill = app.buttons.matching(identifier: "learning.skill").firstMatch
-        if skill.waitForExistence(timeout: 3), skill.isHittable {
-          skill.tap()
+        let memory = app.buttons.matching(identifier: "learning.note").firstMatch
+        if memory.waitForExistence(timeout: 3), memory.isHittable {
+          memory.tap()
           sleep(3)
-          shoot("04h-learned-skill")
+          shoot("04h-memory")
           goBack()
           sleep(1)
         }

@@ -146,8 +146,13 @@ public enum ConstellationLayout {
   }
 
   /// Positions by node id, centered on the origin. `spacing` is about the distance between two
-  /// linked nodes.
-  public static func positions(for graph: LearningGraph, spacing: Double = 150, iterations: Int = 400) -> [String: Point] {
+  /// linked nodes; `room` is the box a star and its name take, in layout units, which no two
+  /// stars' boxes may share. `aspect` is the height over the width of the area the map fills: a
+  /// tall card gets a tall web.
+  public static func positions(
+    for graph: LearningGraph, spacing: Double = 150, iterations: Int = 400, room: (width: Double, height: Double) = (134, 78),
+    aspect: Double = 1
+  ) -> [String: Point] {
     let nodes = graph.nodes
     let count = nodes.count
     guard count > 0 else { return [:] }
@@ -174,11 +179,11 @@ public enum ConstellationLayout {
       guard let a = position[edge.source], let b = position[edge.target] else { return nil }
       return (a, b)
     }
-    let weight = nodes.map { $0.kind == .memory ? 0.6 : 1.0 }
     // Gravity sized so the pushing apart settles into a disc about this wide: every node gets
     // room for its name, and the map stays a web rather than scattering to the edges.
     let radius = spacing * 0.45 * Double(count).squareRoot()
     let gravity = Double(count) * spacing * spacing / (radius * radius)
+    let stretch = min(max(aspect, 0.4), 2.5)
 
     var temperature = spacing
     for _ in 0..<max(iterations, 1) {
@@ -197,7 +202,7 @@ public enum ConstellationLayout {
             distance2 = ddx * ddx + ddy * ddy + 0.01
           }
           let distance = distance2.squareRoot()
-          let force = spacing * spacing * weight[i] * weight[j] / distance
+          let force = spacing * spacing / distance
           dx[i] += ddx / distance * force
           dy[i] += ddy / distance * force
           dx[j] -= ddx / distance * force
@@ -215,11 +220,11 @@ public enum ConstellationLayout {
         dx[b] += ddx / distance * force
         dy[b] += ddy / distance * force
       }
-      // Gravity keeps loose nodes from drifting off.
+      // Gravity keeps loose nodes from drifting off, harder across a tall area than along it.
       for i in 0..<count {
         let r = max((x[i] * x[i] + y[i] * y[i]).squareRoot(), 0.01)
-        dx[i] -= x[i] / r * gravity * r * r / radius
-        dy[i] -= y[i] / r * gravity * r * r / radius
+        dx[i] -= x[i] / r * gravity * r * r / radius * stretch
+        dy[i] -= y[i] / r * gravity * r * r / radius / stretch
         let length = max((dx[i] * dx[i] + dy[i] * dy[i]).squareRoot(), 0.01)
         let step = min(length, temperature)
         x[i] += dx[i] / length * step
@@ -228,21 +233,20 @@ public enum ConstellationLayout {
       temperature = max(temperature * 0.985, spacing * 0.01)
     }
 
-    // Last, make room for the names: a skill's label hangs under its disc, about 128 wide and
-    // 70 tall with the disc, so two skills that close are pushed apart along the shorter overlap.
-    let isSkill = nodes.map { $0.kind == .skill }
-    for _ in 0..<120 {
+    // Last, make room for the names: two stars whose boxes overlap are pushed apart along the
+    // shorter overlap.
+    let (boxX, boxY) = room
+    for _ in 0..<200 {
       var moved = false
       for i in 0..<count {
         for j in (i + 1)..<count {
-          let (boxX, boxY): (Double, Double) = isSkill[i] && isSkill[j] ? (134, 78) : (isSkill[i] || isSkill[j] ? (80, 56) : (34, 34))
           let ddx = x[j] - x[i]
           let ddy = y[j] - y[i]
           let overlapX = boxX - abs(ddx)
           let overlapY = boxY - abs(ddy)
           guard overlapX > 0, overlapY > 0 else { continue }
           moved = true
-          if overlapX / boxX < overlapY / boxY {
+          if overlapX / boxX * stretch < overlapY / boxY {
             let push = overlapX / 2 * (ddx >= 0 ? 1 : -1)
             x[i] -= push
             x[j] += push

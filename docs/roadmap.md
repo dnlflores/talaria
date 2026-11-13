@@ -47,8 +47,8 @@ yet.
   (`session.list {title: "Bot Chat"}`, else `session.create`), new chat, and
   rows for its default model, skills (`skills.manage list`), chats, cron jobs,
   kanban and soul (`GET /api/profiles/{name}/soul`).
-- Memory & Learning: the constellation of skills and notes
-  (`/api/learning/graph`), each one in full (`/api/learning/node`). Next: edit
+- Memory & Learning: the constellation of titled memories, linked by what they
+  say (`/api/learning/graph`), each one in full (`/api/learning/node`). Next: edit
   and delete (`PUT`/`DELETE /api/learning/node`).
 - Default model: change it from the hub (`GET /api/model/options?profile=`,
   `POST /api/model/set`), with the desktop app's starred models

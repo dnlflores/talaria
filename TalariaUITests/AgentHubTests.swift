@@ -136,8 +136,8 @@ final class AgentHubTests: XCTestCase {
     XCTAssertTrue(try waitForMac { $0 == before }, "the Mac kept the star")
   }
 
-  /// Read-only: the constellation draws what the Mac has learned, a star shows its links, and a
-  /// skill opens in full.
+  /// Read-only: the constellation draws only the bot's memories, each under a short title, a star
+  /// shows its links, and a memory opens in full.
   func testMemoryShowsTheConstellation() throws {
     openHub()
     let memory = app.buttons["hub.memory"]
@@ -147,26 +147,58 @@ final class AgentHubTests: XCTestCase {
     XCTAssertTrue(header.waitForExistence(timeout: 30), "no constellation")
     let stars = app.buttons.matching(identifier: "constellation.star")
     XCTAssertGreaterThan(stars.count, 0, "no stars drawn")
-    // The count in the header is the number of stars.
+    // The count in the header is the number of stars, and every star is a memory, none a skill.
     XCTAssertTrue(header.label.hasSuffix("\(stars.count)"), "header \(header.label) vs \(stars.count) stars")
+    let notes = app.buttons.matching(identifier: "learning.note")
+    XCTAssertFalse(app.buttons.matching(identifier: "learning.skill").firstMatch.exists, "skills are listed")
+    // Titles are named on the device; let that finish, then each star's title is a few words.
+    let named = NSPredicate(format: "value != 'naming'")
+    expectation(for: named, evaluatedWith: header)
+    waitForExpectations(timeout: 90)
+    for star in stars.allElementsBoundByIndex {
+      let label = star.label
+      XCTAssertTrue(label.hasSuffix(", memory") || label.hasSuffix(", about you"), "not a memory: \(label)")
+      let title = label.components(separatedBy: ", ").dropLast().joined(separator: ", ")
+      XCTAssertLessThanOrEqual(title.split(separator: " ").count, 6, "not a title: \(title)")
+    }
     shoot("05-constellation")
-    // The map's own frame spans every star, drawn or not; the card shows the 430 points under its
-    // header. A star's frame takes in its name, so its disc is the top 44 points.
-    let shown = CGRect(x: header.frame.minX, y: header.frame.maxY, width: header.frame.width, height: 430)
+    // The map's own frame spans every star, drawn or not; the card shows the 470 points under its
+    // header. A star's frame takes in its name, so its disc is the top 40 points.
+    let shown = CGRect(x: header.frame.minX, y: header.frame.maxY, width: header.frame.width, height: 470)
       .insetBy(dx: 30, dy: 30)
-    let star = stars.allElementsBoundByIndex.first { shown.contains(CGPoint(x: $0.frame.midX, y: $0.frame.minY + 22)) }
+    // Every title fits on the card: no star's disc lies outside it.
+    let card = CGRect(x: header.frame.minX, y: header.frame.maxY, width: header.frame.width, height: 470)
+    for star in stars.allElementsBoundByIndex {
+      XCTAssertTrue(card.contains(CGPoint(x: star.frame.midX, y: star.frame.minY + 20)), "\(star.label) is off the card")
+    }
+    let star = stars.allElementsBoundByIndex.first { shown.contains(CGPoint(x: $0.frame.midX, y: $0.frame.minY + 20)) }
     XCTAssertNotNil(star, "no star on screen")
-    star?.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0)).withOffset(CGVector(dx: 0, dy: 22)).tap()
+    star?.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0)).withOffset(CGVector(dx: 0, dy: 20)).tap()
     let picked = app.buttons["constellation.selected"]
     XCTAssertTrue(picked.waitForExistence(timeout: 5), "picking a star showed nothing")
     XCTAssertTrue(picked.label.contains("link"), "no links named: \(picked.label)")
     shoot("06-star")
     picked.tap()
-    // A skill's SKILL.md or a note's text, without the YAML front matter.
+    // The memory's text in full.
     XCTAssertTrue(app.descendants(matching: .any)["learning.content"].waitForExistence(timeout: 20), "the node did not open")
-    XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'name:'")).firstMatch.exists,
-                   "front matter shows")
     shoot("07-node")
+    goBack()
+    // The list under the map has the same memories.
+    XCTAssertTrue(notes.firstMatch.waitForExistence(timeout: 5), "no memory list")
+    XCTAssertEqual(notes.count, stars.count, "the list and the map disagree")
+    shoot("08-memory-list")
+
+    // On iPad the card changes shape when it turns, and the web is laid out again to fit it.
+    if UIDevice.current.userInterfaceIdiom == .pad {
+      XCUIDevice.shared.orientation = .landscapeLeft
+      defer { XCUIDevice.shared.orientation = .portrait }
+      sleep(3)
+      let turned = CGRect(x: header.frame.minX, y: header.frame.maxY, width: header.frame.width, height: 470)
+      for star in stars.allElementsBoundByIndex where star.frame.minY < app.frame.maxY {
+        XCTAssertTrue(turned.contains(CGPoint(x: star.frame.midX, y: star.frame.minY + 20)), "\(star.label) is off the turned card")
+      }
+      shoot("09-constellation-landscape")
+    }
   }
 
   func testDefaultModelChangesAndComesBack() throws {

@@ -39,6 +39,8 @@ HermesKit (Swift package, no UI)
   ModelBrand      which company's logo a model or provider shows
   LearningGraph   what a bot learned (skills, memory notes, links) and
                   ConstellationLayout, the deterministic force layout that draws it
+  MemoryNotes     a bot's memories with their full text, MemoryWeb (links by shared
+                  words) and MemoryTitle (fallback titles, cleaning model titles)
         │
 MarkdownBlocks    block-level Markdown parser
 
@@ -442,14 +444,23 @@ Kanban rows switch to those areas instead (Cron filtered to the bot through
   since closures made in a main-actor method would be main-actor isolated and trap on the
   audio thread. A session counter drops results that arrive after it stopped, so a sent
   message does not refill the composer.
-- **Memory & Learning:** `GET /api/learning/graph?profile=` (the desktop star map's data:
-  nodes of kind skill or memory with category, use count and creator; edges from
-  `related_skills` and from notes that mention a skill; memory cards) and `GET
-  /api/learning/node?id=&profile=` (a skill's SKILL.md or a note's text, front matter
-  stripped on the phone). `ConstellationLayout` runs off the main thread: repulsion, link
-  springs, gravity sized to a disc that gives every node room, then a pass that pushes
-  apart skills whose names would overlap. Names do not scale with pinch (only distances
-  do), so the map opens at 0.85 or more and stays readable. Clipping does not stop taps,
+- **Memory & Learning:** `GET /api/learning/graph?profile=` (the desktop star map's data)
+  supplies the memory nodes and cards; the skill nodes and their edges are dropped. A node
+  is joined to its card by the fingerprint its id ends with. Memories are linked by
+  `MemoryWeb`: TF-IDF over their words (a word in only one memory is ignored), cosine
+  similarity, each memory joined to its two closest above 0.15 and to any above 0.3.
+  `GET /api/learning/node?id=&profile=` opens one in full.
+- **Memory titles:** Hermes keeps memories as untitled paragraphs. `MemoryTitles` asks
+  the on-device Foundation Models model (guided generation, greedy, a few examples in the
+  instructions) for a two-to-four word title per memory, one at a time, and stores them in
+  UserDefaults keyed by the memory's fingerprint, so a memory is named once and a rewritten
+  memory is named again. When the model is unavailable or declines, `MemoryTitle.fallback`
+  uses the first clause's first words.
+- **Constellation layout:** `ConstellationLayout` runs off the main thread: repulsion, link
+  springs, gravity shaped to the card (a tall card gets a tall web), then a pass that
+  pushes apart stars whose name boxes would overlap. Names do not scale with pinch (only
+  distances do), so the layout reserves their box at the smallest scale the map opens at
+  (0.85), and the map is centered with the names included. Clipping does not stop taps,
   so stars past the card's edge are made inert.
 
 ## What is deliberately not here yet
