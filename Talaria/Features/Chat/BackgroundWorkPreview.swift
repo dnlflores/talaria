@@ -6,7 +6,9 @@ import SwiftUI
 struct BackgroundWorkPreview: View {
   @State private var state: BackgroundWorkState = {
     var value = BackgroundWorkState()
-    value.apply(BackgroundWorkPreviewData.running)
+    if !ProcessInfo.processInfo.arguments.contains("--background-empty") {
+      value.apply(BackgroundWorkPreviewData.running)
+    }
     return value
   }()
 
@@ -40,6 +42,11 @@ struct BackgroundWorkPreview: View {
             .buttonStyle(.bordered)
             .font(AppFont.sans(12))
             HStack {
+              Button("No tasks") {
+                state = BackgroundWorkState()
+                state.apply(try! BackgroundWorkSnapshot(subagents: ["subagents": []], processes: ["processes": []]))
+              }
+                .accessibilityIdentifier("background.preview.empty")
               Button("Fail on next poll") { scheduledPoll = "failure" }
                 .accessibilityIdentifier("background.preview.schedule-failure")
               Button("Lose next poll") { scheduledPoll = "unavailable" }

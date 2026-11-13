@@ -60,7 +60,11 @@ bounded recent history and tap a task for its full goal or command.
 
 `BackgroundWorkModel` polls every three seconds while visible and foregrounded.
 Cancellation and generation fencing reject late responses after leaving or
-switching scope. Errors retain the last snapshot and say status is unavailable.
+switching scope. Discovery stays silent until a snapshot contains tasks; an
+initial failure or a failure after an empty read does not create an error strip.
+The polling lifecycle stays mounted while the strip is hidden, so retries can
+still discover new work. Once tasks are known, errors retain the last snapshot
+and say status is unavailable.
 A child disappearing from the live registry is only "No longer running", not
 proof of success. Process exit codes and explicit outcomes determine Completed,
 Failed and Stopped. Large command output is not rendered by the panel.

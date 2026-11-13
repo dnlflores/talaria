@@ -65,8 +65,9 @@ struct BackgroundWorkPanelContent: View {
   }
 
   var body: some View {
-    // A clean empty read needs no permanent strip. Errors are never hidden as empty work.
-    if !state.rows.isEmpty || state.isUnavailable {
+    // Discover work silently. A failed read alone is not evidence of a task;
+    // retain the unavailable warning only when there is last-known work to show.
+    if !state.rows.isEmpty {
       VStack(alignment: .leading, spacing: 8) {
         Button {
           withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() }

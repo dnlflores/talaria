@@ -29,7 +29,8 @@ yet.
   is never moved by what arrives below.
 - A background-work strip above the composer, independent of the main reply:
   scoped `subagent.list` and `process.list`, running tasks, bounded recent
-  outcomes, details, foreground polling and explicit unavailable status.
+  outcomes, details and foreground polling. Discovery is silent until work is
+  found; subsequent read failures retain known tasks with unavailable status.
 - Thinking renders Markdown formatting without literal bold markers.
 - A working row at the foot of a running turn and "Working" in the title bar.
   `session.resume`'s `running` and `turn_started_at` restore it after a

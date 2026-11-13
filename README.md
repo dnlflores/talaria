@@ -43,8 +43,9 @@ T3 Tools.
   chat. It holds across leaving the chat and the phone sleeping.
 - **Background work:** a separate strip above the composer names running agents
   and commands even after the main reply finishes. Expand it for recent task
-  status and tap for details. Errors say status is unavailable instead of
-  silently pretending the work finished.
+  status and tap for details. Discovery stays silent until tasks are found,
+  including on initial connection failures. If known work cannot be refreshed,
+  it stays visible with status unavailable rather than pretending it finished.
 - **Sending while it works:** a message written while a reply runs waits in a
   queue above the composer instead of cutting in, and goes out as the next turn
   when the reply ends. "Send now" puts a queued message into the running reply,

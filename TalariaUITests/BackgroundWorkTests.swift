@@ -2,6 +2,33 @@ import XCTest
 
 @MainActor
 final class BackgroundWorkTests: XCTestCase {
+  func testInitialPollFailureStaysHiddenUntilWorkIsDiscovered() {
+    continueAfterFailure = false
+    let app = XCUIApplication()
+    app.launchArguments = ["--background-preview", "--background-empty"]
+    app.launch()
+    XCTAssertTrue(app.buttons["background.preview.offline"].waitForExistence(timeout: 10))
+    XCTAssertFalse(app.buttons["background.summary"].exists, "initial discovery must be silent")
+
+    app.buttons["background.preview.offline"].tap()
+    XCTAssertFalse(app.buttons["background.summary"].exists, "a failed first read is not evidence that background work exists")
+    XCTAssertFalse(app.staticTexts["Status unavailable. Retrying…"].exists)
+    shot("background-initial-failure-hidden")
+
+    app.buttons["background.preview.empty"].tap()
+    XCTAssertFalse(app.buttons["background.summary"].exists, "an empty successful read needs no panel")
+    app.buttons["background.preview.offline"].tap()
+    XCTAssertFalse(app.buttons["background.summary"].exists, "empty chats must remain silent on later read failures too")
+
+    app.buttons["background.preview.reconnect"].tap()
+    XCTAssertEqual(app.buttons["background.summary"].label, "Background work · 2 running")
+    app.buttons["background.preview.offline"].tap()
+    XCTAssertTrue(app.buttons["background.summary"].label.contains("status unavailable"))
+    XCTAssertTrue(app.buttons["background.row.agent:preview-agent"].exists)
+    XCTAssertTrue(app.staticTexts["Status unavailable. Last checked: 2 running. Retrying…"].exists)
+    shot("background-discovered-work-unavailable")
+  }
+
   func testTasksRemainVisibleWhileChatIsIdleAndRecoverAfterUnavailableStatus() {
     continueAfterFailure = false
     let app = XCUIApplication()
