@@ -475,8 +475,9 @@ started with (`preferences.lastProfile`, else the first bot) and the last three
 chats opened on the phone. `RecentChats` (HermesKit) keeps them, newest first,
 in `UserDefaults` only: a chat goes in when it comes on screen (a new chat at
 its first message, since the Mac stores nothing before), takes its title from
-each inbox load, and leaves when it is archived here or the list shows it
-archived. `AppModel.updateQuickActions` sets `UIApplication.shortcutItems`
+each inbox load, and leaves when it is archived here, or when a load holds all
+of its bot's chats (the Mac's count) and not this one.
+`AppModel.updateQuickActions` sets `UIApplication.shortcutItems`
 after each change and on going to the background.
 
 The SwiftUI app has no scene delegate of its own, so `AppDelegate` names

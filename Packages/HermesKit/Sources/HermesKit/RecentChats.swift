@@ -42,16 +42,26 @@ public struct RecentChats: Codable, Sendable, Equatable {
     RecentChats(entries: entries.filter { $0.storedID != storedID })
   }
 
-  /// Takes the titles from a fresh list read. A chat the list shows as archived drops out; one the
-  /// list leaves out keeps what was known (the list is a window, not every chat).
-  public func refreshingTitles(from rows: [SessionSummary], botTitles: [String: String] = [:]) -> RecentChats {
+  /// Takes the titles from a fresh list read. A chat the list shows as archived drops out. One the
+  /// list leaves out keeps what was known (the list is a window, not every chat), unless the read
+  /// holds all of its bot's chats (`totals`, the Mac's count per bot): then it was archived or
+  /// deleted on the Mac.
+  public func refreshingTitles(
+    from rows: [SessionSummary], botTitles: [String: String] = [:], totals: [String: Int] = [:]
+  ) -> RecentChats {
     var byID: [String: SessionSummary] = [:]
-    for row in rows { byID[row.id] = row }
+    var listed: [String: Int] = [:]
+    for row in rows {
+      byID[row.id] = row
+      listed[row.profile, default: 0] += 1
+    }
     var out: [Entry] = []
     for var entry in entries {
       if let row = byID[entry.storedID] {
         if row.archived { continue }
         entry.title = row.baseTitle
+      } else if let total = totals[entry.profile], listed[entry.profile, default: 0] >= total {
+        continue
       }
       if let bot = botTitles[entry.profile], !bot.isEmpty { entry.botTitle = bot }
       out.append(entry)

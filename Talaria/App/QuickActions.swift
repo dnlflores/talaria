@@ -18,7 +18,7 @@ final class QuickActionSceneDelegate: NSObject, UIWindowSceneDelegate {
 
   @discardableResult
   private static func perform(_ item: UIApplicationShortcutItem) -> Bool {
-    guard let action = QuickAction(type: item.type, userInfo: item.userInfo as? [String: Any]) else { return false }
+    guard let action = QuickAction(type: item.type, userInfo: item.userInfo) else { return false }
     PushCenter.shared.perform(action)
     return true
   }
@@ -66,7 +66,8 @@ extension AppModel {
   func refreshRecentChats(from rows: [SessionSummary]) {
     var bots: [String: String] = [:]
     for profile in profiles { bots[profile.name] = profile.title }
-    preferences.recentChats = preferences.recentChats.refreshingTitles(from: rows, botTitles: bots)
+    preferences.recentChats = preferences.recentChats.refreshingTitles(
+      from: rows, botTitles: bots, totals: agentTotals)
     updateQuickActions()
   }
 

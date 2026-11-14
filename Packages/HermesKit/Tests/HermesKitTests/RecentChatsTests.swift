@@ -53,6 +53,15 @@ struct RecentChatsTests {
     #expect(recent.entries.map(\.botTitle) == ["Ada Lovelace", "Ada Lovelace"])
   }
 
+  @Test func aChatMissingFromAReadWithAllItsBotsChatsDropsOut() {
+    // "ada" has two chats on the Mac and both are in this read, so "c" was archived or deleted there.
+    // "default" has more chats than the read holds: "b" may just be older, and stays.
+    let rows = [row("a", title: "First"), row("x", title: "Other")]
+    let recent = three.refreshingTitles(from: rows, totals: ["ada": 2, "default": 40])
+    #expect(recent.entries.map(\.storedID) == ["b", "a"])
+    #expect(three.refreshingTitles(from: rows).entries.map(\.storedID) == ["c", "b", "a"])
+  }
+
   @Test func itSurvivesARoundTripThroughJSON() throws {
     let data = try JSONEncoder().encode(three)
     #expect(try JSONDecoder().decode(RecentChats.self, from: data) == three)
