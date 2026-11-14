@@ -114,6 +114,16 @@ extension Palette {
   var successSurface: Color { success.opacity(0.14) }
   var diffAdded: Color { Color(.sRGB, red: 0.06, green: 0.69, blue: 0.45, opacity: 0.16) }
   var diffRemoved: Color { Color(.sRGB, red: 0.94, green: 0.27, blue: 0.27, opacity: 0.16) }
+  /// The "+12" of an edit's count: `success` darkened on light screens so small text stays readable.
+  var diffAddedText: Color {
+    Color(uiColor: UIColor { traits in
+      traits.userInterfaceStyle == .dark
+        ? UIColor(red: 0.20, green: 0.80, blue: 0.55, alpha: 1)
+        : UIColor(red: 0.0, green: 0.50, blue: 0.31, alpha: 1)
+    })
+  }
+  /// The "-3" of an edit's count.
+  var diffRemovedText: Color { dangerForeground }
 }
 
 /// Resolves the palette from the user's family and the effective color scheme, and applies

@@ -160,6 +160,12 @@ final class ChatModel: Identifiable {
       }
     }
     chat.state.items.append(.user("Inspect the latest change.", timestamp: 20))
+    if ProcessInfo.processInfo.arguments.contains("--edited-files") {
+      chat.state.items.append(contentsOf: editedFilesPreview())
+      chat.state.items.append(TranscriptItem(kind: .assistant, text: "Updated the greeting in two places and wrote the notes."))
+      chat.isLoading = false
+      return chat
+    }
     if ProcessInfo.processInfo.arguments.contains("--many-tools") {
       for index in 1...45 {
         chat.state.items.append(.tool(ToolCall(
@@ -171,6 +177,49 @@ final class ChatModel: Identifiable {
     chat.state.items.append(TranscriptItem(kind: .assistant, text: "Latest reply. Everything is up to date."))
     chat.isLoading = false
     return chat
+  }
+
+  /// `--edited-files`: two edits to one file and a new file, each with an `inline_diff` in the
+  /// shape Hermes sends (colored, under its "review diff" heading).
+  private static func editedFilesPreview() -> [TranscriptItem] {
+    func rendered(_ file: String, _ lines: [String]) -> String {
+      let esc = "\u{1B}"
+      let body = lines.map { line -> String in
+        let code = line.hasPrefix("@@") ? "38;2;139;134;130"
+          : line.hasPrefix("+") ? "38;2;255;255;255;48;2;19;87;20"
+          : line.hasPrefix("-") ? "38;2;255;255;255;48;2;120;20;20" : "38;2;150;150;150"
+        return "\(esc)[\(code)m\(line)\(esc)[0m"
+      }
+      return (["  ┊ review diff", "\(esc)[38;2;218;165;32ma/\(file) → b/\(file)\(esc)[0m"] + body).joined(separator: "\n")
+    }
+    func call(_ id: String, _ name: String, _ args: JSONValue, result: String, diff: String) -> TranscriptItem {
+      var tool = ToolCall(callID: id, name: name, args: args, isDone: true)
+      tool.result = result
+      tool.inlineDiff = diff
+      tool.duration = 0.2
+      return .tool(tool, timestamp: 21)
+    }
+    let swift = "/Users/me/talaria/Sources/App/Greeting.swift"
+    let notes = "/Users/me/talaria/docs/notes.md"
+    return [
+      call("edit-1", "patch", ["mode": "replace", "path": .string(swift)], result: #"{"success": true}"#,
+        diff: rendered("Sources/App/Greeting.swift", [
+          "@@ -1,6 +1,7 @@", " import Foundation", " ", "-func greet(_ name: String) -> String {",
+          #"-  "Hello, \(name)""#, "+func greet(_ name: String, excited: Bool = false) -> String {",
+          #"+  let mark = excited ? "!" : ".""#, #"+  return "Hello, \(name)\(mark)""#, " }",
+        ])),
+      call("edit-2", "patch", ["mode": "replace", "path": .string(swift)], result: #"{"success": true}"#,
+        diff: rendered("Sources/App/Greeting.swift", [
+          "@@ -12,3 +13,4 @@", " struct Banner {", "   let title: String", "+  let subtitle: String", " }",
+        ])),
+      call("write-1", "write_file", ["path": .string(notes)], result: #"{"bytes_written": 240, "resolved_path": "\#(notes)"}"#,
+        diff: rendered("docs/notes.md", [
+          "@@ -0,0 +1,4 @@", "+# Notes", "+",
+          "+The Changes view wraps a long line like this one instead of scrolling sideways, so the whole edit stays"
+            + " readable on a phone held upright, even when one sentence runs on for a long time without a break.",
+          "+Greeting takes an excited flag now.",
+        ])),
+    ]
   }
 
   /// Offline: plays running turns through the real event handling, so scroll tests can watch the
@@ -251,15 +300,12 @@ final class ChatModel: Identifiable {
   var turnStartedAt: Double? {
     state.turnStartedAt ?? (isRunningElsewhere ? TurnActivity.turnStart(in: state.items) : nil)
   }
-  /// Every file the finished turns wrote, edited or delivered, once each.
+  /// Every file the finished turns wrote, edited or delivered, once each, with every turn's diffs.
   var files: [FileReference] {
-    var seen = Set<String>()
-    var out: [FileReference] = []
-    for row in rows {
-      guard case .files(let turn) = row else { continue }
-      for file in turn.files where seen.insert(file.path).inserted { out.append(file) }
-    }
-    return out
+    TurnFiles.combined(rows.compactMap { row in
+      if case .files(let turn) = row { return turn }
+      return nil
+    })
   }
   var info: SessionInfo { state.info }
   /// A reply is running or a message is on its way, so what is sent now waits in the queue.

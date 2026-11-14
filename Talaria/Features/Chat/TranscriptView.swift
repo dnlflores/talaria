@@ -676,8 +676,8 @@ private struct ToolDetailSheet: View {
           }
           if let args = argumentsText { section("Input", args) }
           if !tool.result.isEmpty { section("Output", ToolDetailSheet.clip(tool.result)) }
-          if !tool.inlineDiff.isEmpty { section("Diff", ToolDetailSheet.clip(ToolDetailSheet.stripANSI(tool.inlineDiff))) }
-          if argumentsText == nil, tool.result.isEmpty, tool.inlineDiff.isEmpty {
+          if !diff.isEmpty { diffSection }
+          if argumentsText == nil, tool.result.isEmpty, diff.isEmpty {
             Text(tool.isDone ? "Nothing was recorded for this step." : "Still running.")
               .font(AppFont.footnote)
               .foregroundStyle(palette.foregroundMuted)
@@ -694,6 +694,23 @@ private struct ToolDetailSheet: View {
           Button("Done") { dismiss() }
         }
       }
+    }
+  }
+
+  private var diff: EditDiff { EditDiff(tool.inlineDiff) }
+
+  private var diffSection: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(spacing: 8) {
+        Text("DIFF")
+          .font(AppFont.sans(11, .semibold))
+          .kerning(0.6)
+          .foregroundStyle(palette.foregroundMuted)
+        DiffCounts(added: diff.added, removed: diff.removed)
+        Spacer()
+        CopyButton(text: diff.text, size: 12)
+      }
+      DiffView(lines: diff.lines)
     }
   }
 
@@ -732,10 +749,6 @@ private struct ToolDetailSheet: View {
   /// Tool output can run to megabytes; the sheet shows the head and says so.
   static func clip(_ text: String, limit: Int = 12_000) -> String {
     text.count > limit ? String(text.prefix(limit)) + "\n… (\(text.count - limit) more characters)" : text
-  }
-
-  static func stripANSI(_ text: String) -> String {
-    text.replacing(/\u{1B}\[[0-9;]*m/, with: "")
   }
 }
 
