@@ -104,10 +104,12 @@ struct AgentHeadRow: View {
 struct AgentChildRow: View {
   let session: SessionSummary
   let isLast: Bool
+  @Environment(AppModel.self) private var app
   @Environment(\.palette) private var palette
 
   var body: some View {
     HStack(spacing: 8) {
+      OriginBadge(tag: app.origin(of: session))
       Text(SessionRow.title(of: session))
         .font(session.unread ? AppFont.bodySemibold : AppFont.body)
         .foregroundStyle(palette.foreground)
@@ -231,6 +233,12 @@ struct AgentSessionsView: View {
   var body: some View {
     let shown = visible
     List {
+      if app.originFilter != .all {
+        OriginFilterBanner(showsCount: false)
+          .listRowInsets(EdgeInsets(top: 6, leading: Metrics.screenPadding, bottom: 4, trailing: Metrics.screenPadding))
+          .listRowSeparator(.hidden)
+          .listRowBackground(Color.clear)
+      }
       if shown.isEmpty && isLoading {
         ForEach(0..<6, id: \.self) { _ in
           RowPlaceholder()
@@ -316,7 +324,9 @@ struct AgentSessionsView: View {
   /// One row per conversation (versions folded), pinned first, then newest.
   private var visible: [SessionSummary] {
     let families = SessionGrouping.families(rows)
-    return SessionGrouping.sorted(SessionGrouping.collapse(rows, families: families)).filter { $0.matches(query) }
+    let filter = app.originFilter
+    return SessionGrouping.sorted(SessionGrouping.collapse(rows, families: families))
+      .filter { $0.matches(query) && filter.includes(app.origin(of: $0).origin) }
   }
 
   private func reload() async {

@@ -19,6 +19,10 @@ final class Preferences {
   var liveActivities: Bool { didSet { defaults.set(liveActivities, forKey: Key.liveActivities) } }
   /// Which chats notify: `all`, or `phone` (chats this phone sent to). See `PushRegistration.Scope`.
   var notifyScope: String { didSet { defaults.set(notifyScope, forKey: Key.notifyScope) } }
+  /// Prototype: which chats the inbox shows by where they started (`ChatOriginFilter.storage`).
+  var originFilter: String { didSet { defaults.set(originFilter, forKey: Key.originFilter) } }
+  /// Prototype: chats this phone created, so they read as Talaria before the Mac's backfill runs.
+  private(set) var startedHere: Set<String>
   private var drafts: [String: String]
 
   private enum Key {
@@ -35,6 +39,8 @@ final class Preferences {
     static let notifyFinished = "push.notifyFinished"
     static let liveActivities = "push.liveActivities"
     static let notifyScope = "push.scope"
+    static let originFilter = "home.originFilter"
+    static let startedHere = "origins.startedHere"
   }
 
   init(defaults: UserDefaults = .standard) {
@@ -56,6 +62,13 @@ final class Preferences {
     notifyFinished = defaults.object(forKey: Key.notifyFinished) as? Bool ?? true
     liveActivities = defaults.object(forKey: Key.liveActivities) as? Bool ?? true
     notifyScope = defaults.string(forKey: Key.notifyScope) ?? "all"
+    originFilter = defaults.string(forKey: Key.originFilter) ?? "all"
+    startedHere = Set(defaults.stringArray(forKey: Key.startedHere) ?? [])
+  }
+
+  func noteStartedHere(_ storedID: String) {
+    guard !storedID.isEmpty, startedHere.insert(storedID).inserted else { return }
+    defaults.set(Array(startedHere), forKey: Key.startedHere)
   }
 
   /// The address baked in at build time from the untracked `Config/Local.xcconfig`, if any.
