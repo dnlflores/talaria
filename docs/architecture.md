@@ -34,6 +34,7 @@ HermesKit (Swift package, no UI)
   ChatState       transcript + live status, advanced by gateway events
   TranscriptLayout  rows the transcript view draws
   FileExtraction  the files a turn wrote, edited or delivered
+  DiffLines       an edit's `inline_diff`: colors stripped, lines typed, +/- counted
   PromptQueue     messages waiting for the running reply
   PushRegistration  what the phone tells the Mac's push plugin; SigningFacts
   ComposerKey     what a hardware key does in the composer
@@ -393,6 +394,25 @@ the Mac: `GET /api/fs/read-text` for text, `GET /api/fs/download` for the
 bytes (Quick Look and the share sheet), both with the chat's `profile` and
 stored `session_id` so relative paths resolve against its working folder.
 
+Edits carry what they changed. Hermes attaches a rendered diff to each
+`write_file` and `patch` (`inline_diff` on `tool.complete`,
+`tool_result_metadata.inline_diff` in a stored row's `display_metadata`):
+ANSI colors, a "review diff" heading, then one `a/x → b/x` line per file in
+place of `---`/`+++`, capped at 80 lines. `EditDiff` (`DiffLines`) strips the
+colors and heading, types each line (added, removed, hunk, file header,
+context) and counts like the desktop app's `countDiffLineStats` (`+` but not
+`+++` is added, `-` but not `---` removed). `FileExtraction` gives each
+`FileReference` the diffs of the calls that wrote or edited it, so a chip shows
+the turn's summed `+N -M` and the chat's Files list sums every turn
+(`TurnFiles.combined`). A patch over several files is cut at its file headers
+when each names exactly one of the call's files (an exact path first, then the
+only file whose path ends the same way, so `app.swift` and `lib/app.swift`
+keep their own parts); otherwise the whole diff counts for the call's first
+path. A failed call has no diff. When one file is named two ways (`~/x` and
+its full path), its edits are merged back in transcript order. The file sheet
+opens on Changes (one block per edit) with File beside it; the tool details
+sheet uses the same `DiffView`.
+
 ## One owner per conversation
 
 Hermes lets one process hold a conversation at a time. The gateway is one
@@ -608,5 +628,5 @@ Kanban rows switch to those areas instead (Cron filtered to the bot through
 ## What is deliberately not here yet
 
 - Slash commands typed into the composer are sent as plain text.
-- Diff review and the working-folder picker.
+- Rolling an edit back (`rollback.*`) and the working-folder picker.
 - Actions on notifications (approve, answer, reply from the banner).

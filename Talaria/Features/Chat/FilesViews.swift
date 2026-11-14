@@ -59,7 +59,8 @@ struct TurnFilesView: View {
   }
 }
 
-/// One file as a compact chip: its type, its name, and where it lives.
+/// One file as a compact chip: its type, its name, where it lives, and the lines its edits
+/// added and removed when Hermes sent their diffs.
 struct FileChip: View {
   let file: FileReference
   @Environment(\.palette) private var palette
@@ -80,6 +81,7 @@ struct FileChip: View {
           .truncationMode(.middle)
       }
       Spacer(minLength: 6)
+      if file.hasChanges { DiffCounts(added: file.added, removed: file.removed) }
       Image(systemName: "chevron.right")
         .font(.system(size: 10, weight: .semibold))
         .foregroundStyle(palette.chevron)
@@ -91,7 +93,7 @@ struct FileChip: View {
     .background(palette.groupedCard, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     .accessibilityElement(children: .ignore)
-    .accessibilityLabel("\(file.name), \(FileWords.origin(file.origin))")
+    .accessibilityLabel(FileWords.label(file))
     .accessibilityHint("Opens the file")
   }
 }
@@ -126,6 +128,13 @@ enum FileWords {
     case .document: return "doc"
     case .other: return "doc"
     }
+  }
+
+  /// "app.swift, Edited, 12 lines added, 3 removed".
+  static func label(_ file: FileReference) -> String {
+    var parts = [file.name, origin(file.origin)]
+    if file.hasChanges { parts.append(changes(added: file.added, removed: file.removed)) }
+    return parts.joined(separator: ", ")
   }
 
   static func origin(_ origin: FileReference.Origin) -> String {
@@ -229,9 +238,12 @@ struct ChatFilesSheet: View {
       }
       Spacer(minLength: 8)
       VStack(alignment: .trailing, spacing: 2) {
-        Text(FileWords.origin(file.origin))
-          .font(AppFont.label)
-          .foregroundStyle(file.origin == .mentioned ? palette.foregroundMuted : palette.foregroundSecondary)
+        HStack(spacing: 6) {
+          if file.hasChanges { DiffCounts(added: file.added, removed: file.removed) }
+          Text(FileWords.origin(file.origin))
+            .font(AppFont.label)
+            .foregroundStyle(file.origin == .mentioned ? palette.foregroundMuted : palette.foregroundSecondary)
+        }
         if let timestamp = file.timestamp {
           Text(Format.ago(timestamp)).font(AppFont.caption).foregroundStyle(palette.foregroundMuted)
         }
@@ -248,6 +260,7 @@ struct ChatFilesSheet: View {
 
 /// Shows a file from the Mac: text and code as wrapped text, everything else through Quick Look.
 /// Share hands the downloaded file to the system sheet (Save to Files, AirDrop, another app).
+/// A file the chat edited opens on what the edits changed, with a switch to the file itself.
 struct FilePreviewSheet: View {
   let file: FileReference
   let profile: String
@@ -268,26 +281,33 @@ struct FilePreviewSheet: View {
   @State private var isDownloading = false
   @State private var shareURL: ShareItem?
   @State private var showsSource = false
+  /// Picked by the switch; until then Changes when there are any.
+  @State private var pickedMode: Mode?
+
+  private enum Mode: Hashable {
+    case changes, file
+  }
+
+  private var mode: Mode { pickedMode ?? (file.hasChanges ? .changes : .file) }
 
   var body: some View {
     NavigationStack {
-      Group {
-        switch content {
-        case .loading:
-          VStack(spacing: 12) {
-            ProgressView()
-            Text("Opening \(file.name)").font(AppFont.label).foregroundStyle(palette.foregroundMuted)
+      VStack(spacing: 0) {
+        if file.hasChanges {
+          Picker("Show", selection: Binding(get: { mode }, set: { pickedMode = $0 })) {
+            Text("Changes").tag(Mode.changes)
+            Text("File").tag(Mode.file)
           }
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
-        case .text(let preview):
-          textBody(preview)
-        case .local(let url):
-          QuickLookView(url: url)
-            .ignoresSafeArea(edges: .bottom)
-        case .failed(let message):
-          ScrollView {
-            EmptyStateView(symbol: "exclamationmark.triangle", title: "Can't open this file", text: message)
-          }
+          .pickerStyle(.segmented)
+          .frame(maxWidth: 360)
+          .padding(.horizontal, Metrics.screenPadding)
+          .padding(.vertical, 8)
+          .accessibilityIdentifier("file.mode")
+        }
+        if mode == .changes {
+          changesBody
+        } else {
+          fileBody
         }
       }
       .background(palette.sheetSolid.ignoresSafeArea())
@@ -313,7 +333,9 @@ struct FilePreviewSheet: View {
           Button("Done") { dismiss() }
         }
         ToolbarItemGroup(placement: .topBarTrailing) {
-          if case .text(let preview) = content, file.fileExtension == "md" || file.fileExtension == "markdown", !preview.isBinary {
+          if mode == .file, case .text(let preview) = content, file.fileExtension == "md" || file.fileExtension == "markdown",
+            !preview.isBinary
+          {
             Button {
               withAnimation(.easeInOut(duration: 0.2)) { showsSource.toggle() }
             } label: {
@@ -354,6 +376,37 @@ struct FilePreviewSheet: View {
     var parts = [FileWords.place(file)]
     if case .text(let preview) = content, preview.byteSize > 0 { parts.append(Format.bytes(preview.byteSize)) }
     return parts.joined(separator: " · ")
+  }
+
+  private var changesBody: some View {
+    ScrollView {
+      FileChangesView(diffs: file.diffs)
+        .padding(Metrics.screenPadding)
+        .frame(maxWidth: Metrics.readableWidth, alignment: .leading)
+        .frame(maxWidth: .infinity)
+    }
+    .accessibilityIdentifier("file.changes")
+  }
+
+  @ViewBuilder
+  private var fileBody: some View {
+    switch content {
+    case .loading:
+      VStack(spacing: 12) {
+        ProgressView()
+        Text("Opening \(file.name)").font(AppFont.label).foregroundStyle(palette.foregroundMuted)
+      }
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+    case .text(let preview):
+      textBody(preview)
+    case .local(let url):
+      QuickLookView(url: url)
+        .ignoresSafeArea(edges: .bottom)
+    case .failed(let message):
+      ScrollView {
+        EmptyStateView(symbol: "exclamationmark.triangle", title: "Can't open this file", text: message)
+      }
+    }
   }
 
   @ViewBuilder

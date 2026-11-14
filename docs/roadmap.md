@@ -47,6 +47,9 @@ yet.
   in tool results, `MEDIA:` lines and paths in answers. Previews through
   `GET /api/fs/read-text`, downloads through `GET /api/fs/download`
   (`path`, `profile`, `session_id`).
+- What each edit changed: the `inline_diff` Hermes sends with `tool.complete`
+  (and stores in `display_metadata`) counted per file on the chips and the
+  Files list, and shown in green and red when a file or a tool's details open.
 - iPad: a side dock, the list and the open item; iPhone Duo: the side dock unfolded,
   the iPhone dock folded. Both docks hold Chats and Agents only.
 
@@ -90,8 +93,8 @@ yet.
 
 ## Then: workspace panes
 
-- Diff review: the inline diff that arrives with `tool.complete` for the
-  files the chat already lists, plus `rollback.list`, `rollback.diff`,
+- Diff review: the inline diff per edit is done (see "Done: connection,
+  inbox, chat"); still to map: `rollback.list`, `rollback.diff`,
   `rollback.restore`.
 - Working folder and project picker: `session.cwd.set`, `complete.path`,
   `projects.*`.
