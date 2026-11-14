@@ -26,12 +26,20 @@ public struct FileReference: Identifiable, Sendable, Hashable {
   public var origin: Origin
   /// When the chat last touched it, seconds since 1970.
   public var timestamp: Double?
+  /// What each edit or write did to it, in order, when Hermes sent a diff.
+  public var diffs: [EditDiff]
 
-  public init(path: String, origin: Origin, timestamp: Double? = nil) {
+  public init(path: String, origin: Origin, timestamp: Double? = nil, diffs: [EditDiff] = []) {
     self.path = path
     self.origin = origin
     self.timestamp = timestamp
+    self.diffs = diffs
   }
+
+  /// Lines added and removed over every edit with a diff.
+  public var added: Int { diffs.reduce(0) { $0 + $1.added } }
+  public var removed: Int { diffs.reduce(0) { $0 + $1.removed } }
+  public var hasChanges: Bool { diffs.contains { !$0.isEmpty } }
 
   public var name: String {
     let trimmed = path.hasSuffix("/") ? String(path.dropLast()) : path
@@ -86,31 +94,39 @@ public enum FileExtraction {
   public static func files(in items: [TranscriptItem]) -> [FileReference] {
     var order: [String] = []
     var found: [String: FileReference] = [:]
+    // Where in the transcript each file's diffs came from, in step with its `diffs`.
+    var diffPlaces: [String: [Int]] = [:]
+    var place = 0
 
-    func add(_ raw: String, _ origin: FileReference.Origin, _ timestamp: Double?) {
+    func add(_ raw: String, _ origin: FileReference.Origin, _ timestamp: Double?, _ diff: EditDiff? = nil) {
       guard let path = normalize(raw) else { return }
+      if diff != nil { diffPlaces[path, default: []].append(place) }
       if var existing = found[path] {
         existing.origin = max(existing.origin, origin)
         if let timestamp { existing.timestamp = max(existing.timestamp ?? 0, timestamp) }
+        if let diff { existing.diffs.append(diff) }
         found[path] = existing
       } else {
         order.append(path)
-        found[path] = FileReference(path: path, origin: origin, timestamp: timestamp)
+        found[path] = FileReference(path: path, origin: origin, timestamp: timestamp, diffs: diff.map { [$0] } ?? [])
       }
     }
 
     for item in items {
+      place += 1
       switch item.kind {
       case .tool:
         guard let tool = item.tool else { continue }
-        for (path, origin) in toolFiles(tool) { add(path, origin, item.timestamp) }
+        let files = toolFiles(tool)
+        var diffs = editDiffs(tool, paths: files.filter { $0.1 >= .edited }.map(\.0))
+        for (path, origin) in files { add(path, origin, item.timestamp, diffs.removeValue(forKey: path)) }
       case .assistant:
         for (path, explicit) in textFiles(item.text) { add(path, explicit ? .delivered : .mentioned, item.timestamp) }
       case .user, .system:
         continue
       }
     }
-    return mergingHomeShorthand(order.compactMap { found[$0] })
+    return mergingHomeShorthand(order.compactMap { found[$0] }, diffPlaces: diffPlaces)
   }
 
   /// An answer without its `MEDIA:` lines, which the app shows as file chips under it instead.
@@ -132,15 +148,30 @@ public enum FileExtraction {
   /// - an answer says `~/x/y.md` where a tool reported `/Users/me/x/y.md`;
   /// - an answer says `/tmp/a.txt` where a tool resolved it to `/private/tmp/a.txt`
   ///   (on macOS `/tmp`, `/var` and `/etc` are links into `/private`).
-  /// When both appear, keep the path the tool reported once, with the stronger origin.
-  static func mergingHomeShorthand(_ files: [FileReference]) -> [FileReference] {
+  /// When both appear, keep the path the tool reported once, with the stronger origin. Their
+  /// diffs are put back in transcript order (`diffPlaces`: where each path's diffs came from), so
+  /// "Edit 1" stays the first edit whichever name each edit used.
+  static func mergingHomeShorthand(_ files: [FileReference], diffPlaces: [String: [Int]] = [:]) -> [FileReference] {
     var out = files
-    for (index, file) in files.enumerated() {
-      guard let target = out.indices.first(where: { $0 != index && !out[$0].path.isEmpty && isAlias(file.path, of: out[$0].path) })
+    var places = files.map { file in
+      let known = diffPlaces[file.path] ?? []
+      return known.count == file.diffs.count ? known : Array(repeating: 0, count: file.diffs.count)
+    }
+    for index in files.indices {
+      let file = out[index]
+      guard !file.path.isEmpty,
+        let target = out.indices.first(where: { $0 != index && !out[$0].path.isEmpty && isAlias(file.path, of: out[$0].path) })
       else { continue }
       out[target].origin = max(out[target].origin, file.origin)
       if let stamp = file.timestamp { out[target].timestamp = max(out[target].timestamp ?? 0, stamp) }
+      let merged = (Array(zip(places[target], out[target].diffs)) + Array(zip(places[index], file.diffs)))
+        .enumerated()
+        .sorted { ($0.element.0, $0.offset) < ($1.element.0, $1.offset) }
+        .map(\.element)
+      out[target].diffs = merged.map(\.1)
+      places[target] = merged.map(\.0)
       out[index] = FileReference(path: "", origin: .mentioned)
+      places[index] = []
     }
     return out.filter { !$0.path.isEmpty }
   }
@@ -209,6 +240,28 @@ public enum FileExtraction {
       || name == "text_to_speech"
     collect(result, producer: producer) { out.append(($0, .delivered)) }
     return out
+  }
+
+  /// Hands an edit call's diff to the files it changed. A `write_file` diff belongs to its one
+  /// file. A `patch` that changed several files sends one diff with a header per file: it is cut
+  /// there when every part names exactly one of the call's files. When it cannot be split that way
+  /// (no headers, or a header naming none of them or several), the whole diff goes to the call's
+  /// first path, so its lines are still counted once rather than lost or counted for every file.
+  static func editDiffs(_ tool: ToolCall, paths: [String]) -> [String: EditDiff] {
+    guard !tool.isError, let first = paths.first else { return [:] }
+    let diff = EditDiff(tool.inlineDiff)
+    guard !diff.isEmpty else { return [:] }
+    var unique: [String] = []
+    for path in paths where !unique.contains(path) { unique.append(path) }
+    guard unique.count > 1 else { return [first: diff] }
+
+    let parts = DiffLines.sections(diff.text)
+    var split: [String: [String]] = [:]
+    for part in parts {
+      guard let path = DiffLines.file(namedBy: part.path, among: unique) else { return [first: diff] }
+      split[path, default: []].append(part.text)
+    }
+    return split.mapValues { EditDiff($0.joined(separator: "\n")) }
   }
 
   private static func collect(_ value: JSONValue, producer: Bool, key: String = "", _ emit: (String) -> Void) {

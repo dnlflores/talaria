@@ -63,6 +63,11 @@ T3 Tools.
   are listed under its answer and in the chat's Files list. Text and code open
   in the app; images, PDFs, audio and documents open in Quick Look; Share saves
   any of them to Files or sends them elsewhere.
+- **What each edit changed:** a file a reply edited or wrote shows the lines
+  it added and removed (`+12 -3`) on its chip and in the Files list. Opening it
+  starts on Changes: the diff with added lines in green and removed lines in
+  red, one block per edit, wrapped to the screen. A tool's details color its
+  diff the same way.
 - **Questions and approvals:** questions the agent asks are answered inline in
   the transcript; command approvals and sudo or secret prompts arrive as sheets.
 - **Model and thinking effort** per conversation, from the Mac's own catalog,

@@ -51,6 +51,24 @@ public struct WorkLog: Identifiable, Sendable, Equatable {
 public struct TurnFiles: Identifiable, Sendable, Equatable {
   public let id: UUID
   public var files: [FileReference]
+
+  /// Every file across a chat's turns, once each, in the order first seen. A file several turns
+  /// edited keeps all their diffs, so its counts cover the whole chat.
+  public static func combined(_ turns: [TurnFiles]) -> [FileReference] {
+    var index: [String: Int] = [:]
+    var out: [FileReference] = []
+    for turn in turns {
+      for file in turn.files {
+        if let at = index[file.path] {
+          out[at].diffs.append(contentsOf: file.diffs)
+        } else {
+          index[file.path] = out.count
+          out.append(file)
+        }
+      }
+    }
+    return out
+  }
 }
 
 /// What the transcript view draws, top to bottom.
