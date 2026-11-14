@@ -117,6 +117,8 @@ final class AppModel {
   /// The latest reply of each bot's lead conversation, by stored id.
   private(set) var headPreviews: [String: String] = [:]
   @ObservationIgnored private var headPreviewStamps: [String: Double] = [:]
+  /// The single-chat reads for recent chats a list read left out (`checkUnlistedRecentChats`).
+  @ObservationIgnored var recentChatsCheck: Task<Void, Never>?
   /// When a chat started working, for chats seen going from idle to working. A chat already
   /// working when the app first looked has no entry: its start is not known.
   private(set) var workingSince: [String: Double] = [:]
@@ -373,6 +375,7 @@ final class AppModel {
     // A turn that starts while the app is away would look as if it started on return.
     workingSnapshot = nil
     workingSince = [:]
+    updateQuickActions()
   }
 
   // MARK: Turns other Hermes processes run
@@ -581,6 +584,7 @@ final class AppModel {
       sessionsError = nil
       hasLoadedSessions = true
       if let chat = openChat, let row = rows.first(where: { $0.id == chat.storedID }) { chat.rowChanged(row) }
+      refreshRecentChats(from: rows)
       trackWorking()
       PushCenter.shared.reconcile { [unowned self] id in self.isWorking(id) || self.needsYou(id) }
     } catch HermesError.loginRequired {
@@ -777,6 +781,7 @@ final class AppModel {
     let added = Set(list.map(\.name)) != Set(profiles.map(\.name))
     let renamed = list.map(\.title) != profiles.map(\.title)
     profiles = list
+    updateQuickActions()
     // Pushes name the bot: the Mac learns the names with the registration.
     if added || renamed { PushCenter.shared.settingsChanged() }
     // Counts and the per-bot top-up are read per bot, so a changed bot list needs a reload.
@@ -846,6 +851,7 @@ final class AppModel {
 
   func archive(_ session: SessionSummary) {
     archiving.insert(session.id)
+    forgetRecentChat(session.id)
     sessions.removeAll { $0.id == session.id }
     families = SessionGrouping.families(sessions)
     mutate(session, failure: "Could not archive the chat") { client in
@@ -949,6 +955,7 @@ final class AppModel {
       let options = NewSessionOptions(model: bot?.model, provider: bot?.provider)
       let live = try await client.create(profile: profile, options: options)
       preferences.lastProfile = profile
+      updateQuickActions()
       chatCache[live.storedID] = ChatModel(app: self, profile: profile, storedID: live.storedID, row: nil, live: live)
       // From the agent hub on iPhone the chat stacks over the hub; anywhere else it opens in Chats.
       if tab != .bots || usesSplitLayout { tab = .chats }
@@ -986,6 +993,7 @@ final class AppModel {
   func chatAppeared(_ chat: ChatModel) {
     openChat = chat
     PushCenter.shared.chatOpened(storedID: chat.storedID)
+    recordOpened(chat)
   }
 
   func chatDisappeared(_ chat: ChatModel) {

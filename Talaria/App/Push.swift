@@ -50,6 +50,17 @@ final class AppDelegate: NSObject, UIApplicationDelegate, @preconcurrency UNUser
     return true
   }
 
+  /// The app icon's quick actions reach the app through its scene: SwiftUI still draws the window,
+  /// `QuickActionSceneDelegate` only takes the action.
+  func application(
+    _ application: UIApplication, configurationForConnecting connectingSceneSession: UISceneSession,
+    options: UIScene.ConnectionOptions
+  ) -> UISceneConfiguration {
+    let configuration = UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)
+    configuration.delegateClass = QuickActionSceneDelegate.self
+    return configuration
+  }
+
   /// The finished and needs-you notifications wake the app (`content-available`) with the chat's
   /// new Live Activity state.
   func application(
@@ -101,7 +112,12 @@ final class PushCenter {
   @ObservationIgnored private var sendingTokens: Set<String> = []
   @ObservationIgnored private var registerTask: Task<Void, Never>?
   @ObservationIgnored private var lastRegistered: (PushRegistration, Date)?
-  @ObservationIgnored private var pendingOpen: ChatRef?
+  /// What a tap before the app was ready asked for.
+  private enum Pending {
+    case chat(ChatRef)
+    case newChat(profile: String)
+  }
+  @ObservationIgnored private var pendingOpen: Pending?
   @ObservationIgnored private let defaults = UserDefaults.standard
 
   private init() {}
@@ -473,21 +489,55 @@ final class PushCenter {
     return app?.openChat?.storedID == chat.sessionID
   }
 
-  /// A notification or Live Activity was tapped.
+  /// A notification, Live Activity or the app icon's quick action was tapped.
   func open(_ chat: ChatRef) {
+    traceOpen("chat \(chat.profile)/\(chat.sessionID)")
     guard let app, app.phase == .ready else {
-      pendingOpen = chat
+      pendingOpen = .chat(chat)
       return
     }
     if app.openChat?.storedID == chat.sessionID { return }
     app.openChat(profile: chat.profile, storedID: chat.sessionID)
   }
 
-  /// A tap that launched the app opens its chat once the app is ready.
+  /// The app icon's New chat: a chat with this bot, as the dock's New chat starts one.
+  func startChat(profile: String) {
+    traceOpen("new chat \(profile)")
+    guard let app, app.phase == .ready else {
+      pendingOpen = .newChat(profile: profile)
+      return
+    }
+    Task { await app.startChat(profile: profile) }
+  }
+
+  /// What the app icon asked for. Waits for sign-in like a tapped notification does.
+  func perform(_ action: QuickAction) {
+    switch action {
+    case .chat(let profile, let storedID): open(ChatRef(profile: profile, sessionID: storedID))
+    case .newChat(let profile): startChat(profile: profile)
+    }
+  }
+
+  /// A tap that launched the app (or came before sign-in) runs once the app is ready.
   func openPending() {
-    guard let chat = pendingOpen else { return }
+    guard let pending = pendingOpen else { return }
     pendingOpen = nil
-    open(chat)
+    switch pending {
+    case .chat(let chat): open(chat)
+    case .newChat(let profile): startChat(profile: profile)
+    }
+  }
+
+  #if DEBUG
+    /// The last chat a tap asked for and whether it waits for sign-in, shown on screen for
+    /// `QuickActionTests` (`--seed-recents`).
+    private(set) var openTrace = ""
+  #endif
+
+  private func traceOpen(_ what: String) {
+    #if DEBUG
+      openTrace = what + (app?.phase == .ready ? "" : " (waiting for sign-in)")
+    #endif
   }
 
   #if DEBUG

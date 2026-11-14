@@ -73,6 +73,9 @@ T3 Tools.
   doing ("Editing a file: ChatView.swift"); a question shows as "Needs you" and
   the end as "Done in 4m" with the start of the answer. Commands and code never
   show there.
+- **Home screen shortcuts:** press and hold the Talaria icon for New chat with
+  the bot you used last, or one of the last three chats you opened on the
+  phone.
 - **Keyboard:** with a hardware keyboard, Return sends and Shift-Return adds a
   line. The on-screen keyboard's Return still adds a line.
 - **Composer:** a card with the text on top and, under it, attach, the model
@@ -237,6 +240,8 @@ throwaway job you name in `TEST_RUNNER_TALARIA_UITEST_CRON_JOB`;
 turn from either the phone or the desktop app reaches the other, questions
 included. `ActivityLookTests` (`TEST_RUNNER_TALARIA_UITEST_ACTIVITY_LOOK=1`)
 screenshots the Live Activity in each phase with no Mac;
+`QuickActionTests` presses the app icon on the home screen and taps its
+shortcuts, with made-up chats and no Mac;
 `NotificationSettingsTests` (`TEST_RUNNER_TALARIA_UITEST_PUSH=1`) allows
 notifications and shows what the Mac said; the push plugin has its own tests
 (`python -m unittest discover -s mac/talaria-push/tests` with Hermes' Python).

@@ -39,6 +39,7 @@ struct TalariaApp: App {
       #if DEBUG
         PushCenter.shared.startDemoActivityIfAsked()
         PushCenter.shared.scheduleTestNotificationIfAsked()
+        app.seedRecentChatsIfAsked()
       #endif
       await app.launch()
     }
@@ -76,6 +77,16 @@ struct RootView: View {
     .background(palette.screen.ignoresSafeArea())
     .animation(.easeInOut(duration: 0.25), value: app.phase)
     .overlay { ToastOverlay() }
+    #if DEBUG
+      .overlay(alignment: .bottom) {
+        if AppModel.seedsRecentChats {
+          Text(PushCenter.shared.openTrace.isEmpty ? "Nothing opened yet" : PushCenter.shared.openTrace)
+            .font(.caption.monospaced())
+            .padding(8)
+            .accessibilityIdentifier("debug.openTrace")
+        }
+      }
+    #endif
     .sheet(item: Binding(get: { app.prompts.first }, set: { _ in })) { request in
       ServerPromptSheet(request: request)
         .interactiveDismissDisabled()

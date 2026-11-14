@@ -1,4 +1,5 @@
 import Foundation
+import HermesKit
 import Observation
 
 /// Settings kept on the phone. Nothing here is a credential: the session cookie lives in the Keychain.
@@ -19,6 +20,13 @@ final class Preferences {
   var liveActivities: Bool { didSet { defaults.set(liveActivities, forKey: Key.liveActivities) } }
   /// Which chats notify: `all`, or `phone` (chats this phone sent to). See `PushRegistration.Scope`.
   var notifyScope: String { didSet { defaults.set(notifyScope, forKey: Key.notifyScope) } }
+  /// The chats opened last on this phone, for the app icon's quick actions.
+  var recentChats: RecentChats {
+    didSet {
+      guard recentChats != oldValue else { return }
+      defaults.set(try? JSONEncoder().encode(recentChats), forKey: Key.recentChats)
+    }
+  }
   private var drafts: [String: String]
 
   private enum Key {
@@ -35,6 +43,7 @@ final class Preferences {
     static let notifyFinished = "push.notifyFinished"
     static let liveActivities = "push.liveActivities"
     static let notifyScope = "push.scope"
+    static let recentChats = "chat.recent"
   }
 
   init(defaults: UserDefaults = .standard) {
@@ -56,6 +65,8 @@ final class Preferences {
     notifyFinished = defaults.object(forKey: Key.notifyFinished) as? Bool ?? true
     liveActivities = defaults.object(forKey: Key.liveActivities) as? Bool ?? true
     notifyScope = defaults.string(forKey: Key.notifyScope) ?? "all"
+    recentChats = defaults.data(forKey: Key.recentChats).flatMap { try? JSONDecoder().decode(RecentChats.self, from: $0) }
+      ?? RecentChats()
   }
 
   /// The address baked in at build time from the untracked `Config/Local.xcconfig`, if any.
