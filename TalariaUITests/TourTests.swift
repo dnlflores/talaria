@@ -39,43 +39,55 @@ final class TourTests: XCTestCase {
     }
   }
 
-  /// An area: the side dock (iPad, an unfolded iPhone Duo), the iPhone dock (Chats, Agents,
-  /// Settings), or on iPhone the inbox's More menu, which holds Kanban and Cron.
+  /// An area. Chats and Agents are in the side dock (iPad, an unfolded iPhone Duo) or the iPhone
+  /// dock; Settings is in the inbox's corner; Kanban and Cron are rows of the agent hub.
   private func open(tab title: String) {
+    switch title {
+    case "Chats", "Agents": openDocked(title)
+    case "Settings":
+      openDocked("Chats")
+      let settings = app.buttons["home.settings"]
+      XCTAssertTrue(settings.waitForExistence(timeout: 5), "no Settings in the inbox's corner")
+      settings.tap()
+    default:
+      openDocked("Agents")
+      if UIDevice.current.userInterfaceIdiom == .pad, !app.buttons["hub.model"].waitForExistence(timeout: 3) {
+        _ = tapFirst("bot.row", timeout: 5)
+      }
+      let row = app.buttons["hub.\(title.lowercased())"]
+      XCTAssertTrue(row.waitForExistence(timeout: 5), "no \(title) row in the hub")
+      for _ in 0..<4 where !(row.isHittable && app.frame.contains(row.frame)) { app.swipeUp() }
+      row.tap()
+    }
+  }
+
+  /// Chats or Agents from whichever dock shows, back on the area's first screen.
+  private func openDocked(_ title: String) {
     let area = app.buttons["area.\(title.lowercased())"]
     if area.waitForExistence(timeout: 2) && area.isHittable {
+      // In one stack a tap on another area only switches to it: a second goes back to its first screen.
+      let wasOn = area.isSelected
       area.tap()
+      if !wasOn {
+        sleep(1)
+        area.tap()
+      }
       return
     }
-    // The dock shows on an area's first screen only: step back to it.
+    // The bottom dock shows on an area's first screen only: step back to it.
     let dockChats = app.buttons["dock.chats"]
-    if UIDevice.current.userInterfaceIdiom == .phone {
-      for _ in 0..<5 where !dockChats.exists {
-        guard goBack() else { break }
-        sleep(1)
-      }
+    for _ in 0..<5 where !dockChats.exists {
+      guard goBack() else { break }
+      sleep(1)
     }
     let dock = app.buttons["dock.\(title.lowercased())"]
-    if dock.exists && dock.isHittable {
-      dock.tap()
-      return
+    XCTAssertTrue(dock.waitForExistence(timeout: 3), "no \(title) in the dock")
+    dock.tap()
+    // The area may still have a page open, which hides the dock.
+    for _ in 0..<5 where !dockChats.exists {
+      guard goBack() else { break }
+      sleep(1)
     }
-    let chats = app.buttons["area.chats"]
-    if chats.exists { chats.tap() } else { dockChats.tap() }
-    let more = app.buttons["home.more"]
-    for _ in 0..<4 where !more.exists {
-      let back = app.buttons["BackButton"].firstMatch
-      guard back.exists else { break }
-      back.tap()
-    }
-    guard more.waitForExistence(timeout: 3) else {
-      XCTFail("no way to reach \(title)")
-      return
-    }
-    more.tap()
-    let item = app.buttons[title].firstMatch
-    XCTAssertTrue(item.waitForExistence(timeout: 3), "\(title) is not in the More menu")
-    item.tap()
   }
 
   /// The back button of the page on top. On iPad the first bar button is the sidebar toggle, so
@@ -96,25 +108,28 @@ final class TourTests: XCTestCase {
     return true
   }
 
-  /// The iPhone dock holds Chats and Agents, then New chat and Settings; the side dock (iPad, an
-  /// unfolded iPhone Duo) has Chats, Agents, Kanban, New chat and Settings. Cron is in the More
-  /// menu on both.
+  /// Both docks hold Chats and Agents and nothing else; the filter and Settings are in the inbox's corner.
   private func checkDock() {
+    let others = ["kanban", "cron", "new", "settings"]
     if app.buttons["area.chats"].waitForExistence(timeout: 5) {
-      for id in ["area.chats", "area.agents", "area.kanban", "area.new", "area.settings"] {
+      for id in ["area.chats", "area.agents"] {
         XCTAssertTrue(app.buttons[id].exists, "\(id) is not in the side dock")
       }
-      XCTAssertFalse(app.buttons["area.cron"].exists, "Cron is in the side dock")
+      for id in others { XCTAssertFalse(app.buttons["area.\(id)"].exists, "area.\(id) is in the side dock") }
       XCTAssertFalse(app.buttons["dock.chats"].exists, "the bottom dock shows beside the side dock")
     } else if UIDevice.current.userInterfaceIdiom == .phone {
-      for id in ["dock.chats", "dock.agents", "dock.new", "dock.settings"] {
+      for id in ["dock.chats", "dock.agents"] {
         XCTAssertTrue(app.buttons[id].exists, "\(id) is not in the dock")
       }
+      for id in others { XCTAssertFalse(app.buttons["dock.\(id)"].exists, "dock.\(id) is in the dock") }
       let systemTab = app.tabBars.buttons.firstMatch
       XCTAssertFalse(systemTab.exists && systemTab.isHittable, "the system tab bar shows")
     } else {
       XCTFail("no dock on iPad")
     }
+    XCTAssertTrue(app.buttons["home.settings"].exists, "no Settings in the inbox's corner")
+    XCTAssertTrue(app.buttons["home.originFilter"].exists, "no filter in the inbox's corner")
+    XCTAssertFalse(app.buttons["home.more"].exists, "the inbox still has a More menu")
   }
 
   /// The first such row that is not working: opening a chat that another client is running can
@@ -128,7 +143,7 @@ final class TourTests: XCTestCase {
   }
 
   func testTour() throws {
-    XCTAssertTrue(app.buttons["New chat"].waitForExistence(timeout: 30), "home did not load")
+    XCTAssertTrue(app.waitForHome(), "home did not load")
     checkDock()
     sleep(3)
     shoot("01-chats")
@@ -153,7 +168,9 @@ final class TourTests: XCTestCase {
         files.tap()
         sleep(3)
         shoot("02b-file")
-        app.buttons["Done"].firstMatch.tap()
+        // A file no longer on the Mac opens nothing.
+        let done = app.buttons["Done"].firstMatch
+        if done.waitForExistence(timeout: 3) { done.tap() }
       }
       // The model chooser opens from the composer: the model in use and favourites, then every
       // model. Nothing is switched. Not there in a chat that cannot reply here (a terminal holds it).

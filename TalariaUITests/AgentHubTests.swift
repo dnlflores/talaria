@@ -50,34 +50,10 @@ final class AgentHubTests: XCTestCase {
     }
   }
 
-  /// The split view (a full-size iPad) lists the bots; one stack shows the hub with a switcher.
-  private var isSplit: Bool {
-    UIDevice.current.userInterfaceIdiom == .pad && app.frame.width >= 800
-  }
-
   /// The bot's hub: the switcher in one stack, its row in the Agents list in the split view.
   private func openHub() {
-    XCTAssertTrue(app.buttons["New chat"].waitForExistence(timeout: 30), "home did not load")
-    // The side dock (iPad, an unfolded iPhone Duo) or the iPhone dock.
-    let sideDock = app.buttons["area.agents"]
-    if sideDock.exists { sideDock.tap() } else { app.buttons["dock.agents"].tap() }
-    if isSplit {
-      let row = app.buttons.matching(NSPredicate(format: "identifier == 'bot.row' AND label BEGINSWITH %@", bot)).firstMatch
-      XCTAssertTrue(row.waitForExistence(timeout: 10), "\(bot) is not in the Agents list")
-      row.tap()
-    } else {
-      let avatar = app.buttons.matching(NSPredicate(format: "identifier == 'agent.switch' AND label == %@", bot)).firstMatch
-      XCTAssertTrue(avatar.waitForExistence(timeout: 10), "\(bot) is not in the switcher")
-      // Bots beyond the screen's edge are a swipe away.
-      for _ in 0..<8 where !app.frame.insetBy(dx: 20, dy: 0).contains(avatar.frame) {
-        let picked = app.buttons.matching(NSPredicate(format: "identifier == 'agent.switch' AND isSelected == true")).firstMatch
-        if avatar.frame.midX < app.frame.midX { picked.swipeRight(velocity: .slow) } else { picked.swipeLeft(velocity: .slow) }
-        sleep(1)
-      }
-      avatar.tap()
-      XCTAssertTrue(app.staticTexts[bot].waitForExistence(timeout: 5), "the hub does not show \(bot)")
-    }
-    XCTAssertTrue(app.buttons["hub.model"].waitForExistence(timeout: 10), "the hub did not open")
+    XCTAssertTrue(app.waitForHome(), "home did not load")
+    app.openHub(bot)
     sleep(1)
   }
 

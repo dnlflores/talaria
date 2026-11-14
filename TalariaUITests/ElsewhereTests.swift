@@ -44,7 +44,7 @@ final class ElsewhereTests: XCTestCase {
   }
 
   func testAChatRunningElsewhereSaysItIsWorking() throws {
-    XCTAssertTrue(app.buttons["New chat"].waitForExistence(timeout: 30), "home did not load")
+    XCTAssertTrue(app.waitForHome(), "home did not load")
     let row = app.buttons.matching(NSPredicate(format: "identifier == 'session.row' AND label CONTAINS %@", title)).firstMatch
     XCTAssertTrue(row.waitForExistence(timeout: 30), "the chat is not in the inbox")
     let saysWorking = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS 'Working'"), object: row)

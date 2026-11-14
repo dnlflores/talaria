@@ -326,7 +326,6 @@ struct HubDestination: View {
     case .cron(let profile): CronPage(profile: profile)
     case .chats(let profile): AgentSessionsView(profile: profile)
     case .kanban: KanbanPage()
-    case .settings: SettingsView()
     case .chat(let profile, let storedID):
       ChatRouteView(profile: profile, storedID: storedID)
         .id(storedID)

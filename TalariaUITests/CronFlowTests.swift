@@ -6,6 +6,7 @@ import XCTest
 ///   TEST_RUNNER_TALARIA_UITEST_SERVER=http://127.0.0.1:9120 \
 ///   TEST_RUNNER_TALARIA_UITEST_SIGNIN=<tokens file from scripts/sign-in.py> \
 ///   TEST_RUNNER_TALARIA_UITEST_CRON_JOB="Talaria test job" \
+///   TEST_RUNNER_TALARIA_UITEST_CRON_BOT=<title of the bot that owns the job> \
 ///   xcodebuild test-without-building ... -only-testing:TalariaUITests/CronFlowTests
 ///
 /// It never runs the job.
@@ -13,16 +14,19 @@ import XCTest
 final class CronFlowTests: XCTestCase {
   private var app: XCUIApplication!
   private var jobName = ""
+  private var bot = ""
   private var shots: String?
 
   override func setUp() async throws {
     let environment = ProcessInfo.processInfo.environment
     guard let server = environment["TALARIA_UITEST_SERVER"], !server.isEmpty,
-      let job = environment["TALARIA_UITEST_CRON_JOB"], !job.isEmpty
+      let job = environment["TALARIA_UITEST_CRON_JOB"], !job.isEmpty,
+      let owner = environment["TALARIA_UITEST_CRON_BOT"] ?? environment["TALARIA_UITEST_BOT"], !owner.isEmpty
     else {
-      throw XCTSkip("Set TEST_RUNNER_TALARIA_UITEST_SERVER and TEST_RUNNER_TALARIA_UITEST_CRON_JOB to run the cron flow.")
+      throw XCTSkip("Set TEST_RUNNER_TALARIA_UITEST_SERVER, _CRON_JOB and _CRON_BOT to run the cron flow.")
     }
     jobName = job
+    bot = owner
     shots = environment["TALARIA_UITEST_SHOTS"]
     continueAfterFailure = false
     app = XCUIApplication()
@@ -44,11 +48,11 @@ final class CronFlowTests: XCTestCase {
   }
 
   func testPauseAndResume() throws {
-    XCTAssertTrue(app.buttons["New chat"].waitForExistence(timeout: 30), "home did not load")
-    // Cron is not in the dock: it opens from the inbox's More menu.
-    app.buttons["home.more"].tap()
-    let cron = app.buttons["Cron"].firstMatch
-    XCTAssertTrue(cron.waitForExistence(timeout: 5), "Cron is not in the More menu")
+    XCTAssertTrue(app.waitForHome(), "home did not load")
+    // Cron is not in the dock: it opens from the bot's hub.
+    app.openHub(bot)
+    let cron = app.buttons["hub.cron"]
+    for _ in 0..<4 where !(cron.exists && cron.isHittable) { app.swipeUp() }
     cron.tap()
 
     let row = app.buttons.matching(NSPredicate(format: "identifier == 'cron.row' AND label CONTAINS %@", jobName)).firstMatch

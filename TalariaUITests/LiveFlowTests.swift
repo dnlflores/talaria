@@ -70,18 +70,12 @@ final class LiveFlowTests: XCTestCase {
 
   func testNewChatStreamsToolsQuestionsAndArchives() throws {
     // Home lists conversations from the backend.
-    let compose = app.buttons["New chat"]
-    XCTAssertTrue(compose.waitForExistence(timeout: 30), "home did not load")
+    XCTAssertTrue(app.waitForHome(), "home did not load")
     XCTAssertTrue(app.staticTexts["Talaria"].exists || app.otherElements["Talaria"].exists)
     shoot("01-home")
 
-    // New chat with the chosen bot.
-    compose.tap()
-    let botRow = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", bot)).firstMatch
-    if botRow.waitForExistence(timeout: 10) {
-      shoot("02-bot-picker")
-      botRow.tap()
-    }
+    // New chat with the chosen bot, from its row's menu.
+    app.startNewChat(with: bot)
 
     // 1. A plain turn streams an answer, and says it is working until the answer is in.
     let marker = "talaria-\(Int(Date().timeIntervalSince1970) % 100_000)"

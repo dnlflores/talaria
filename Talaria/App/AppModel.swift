@@ -7,8 +7,8 @@ enum Route: Hashable {
   case chat(profile: String, storedID: String)
   /// Every conversation of one bot (iPhone; iPad shows it in the list column).
   case agent(profile: String)
-  /// Areas with no place in the dock, opened from the inbox's More menu onto the Chats stack
-  /// (iPhone). On iPad Kanban and Settings are in the sidebar and Cron replaces the list column.
+  /// Areas with no place in the dock, stacked on Chats in one stack: Settings from the inbox's
+  /// corner (Kanban and Cron open from the agent hub). In the split view they replace the list column.
   case kanban
   case cron
   case settings
@@ -36,23 +36,13 @@ enum HubRoute: Hashable {
   case cron(profile: String)
   case chats(profile: String)
   case kanban
-  case settings
   case chat(profile: String, storedID: String)
 }
 
-/// The top-level areas. The iPhone dock holds Chats and Agents (with New chat and Settings beside
-/// them); the side dock (iPad, unfolded iPhone Duo) adds Kanban. Cron opens from the inbox's More
-/// menu and from the agent hub.
+/// The top-level areas. Both docks hold Chats and Agents only. Settings opens from the inbox's
+/// corner; New chat, Cron and Kanban open per bot from the agent hub.
 enum AppTab: String, Hashable, CaseIterable, Identifiable {
   case chats, bots, kanban, cron, settings
-
-  /// The areas in the side dock, top to bottom (New chat sits between Kanban and Settings).
-  static let sidebar: [AppTab] = [.chats, .bots, .kanban, .settings]
-
-  /// The areas in the inbox's More menu: those not in the dock in use (Settings is in both).
-  static func moreMenu(sideDock: Bool) -> [AppTab] {
-    sideDock ? allCases.filter { !sidebar.contains($0) } : [.kanban, .cron]
-  }
 
   var id: String { rawValue }
 
@@ -958,7 +948,7 @@ final class AppModel {
     }
   }
 
-  /// Opens an area that has no tab of its own on iPhone; on iPad, selects it in the sidebar.
+  /// Opens an area that has no dock item: a page on the Chats stack, or the list column in the split view.
   func openArea(_ area: AppTab) {
     if area == .cron { areas.cronProfile = nil }
     guard !usesSplitLayout, let route = Route.area(area) else {

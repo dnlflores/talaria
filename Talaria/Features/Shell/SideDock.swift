@@ -19,9 +19,8 @@ extension View {
   }
 }
 
-/// The side dock (iPad, an unfolded iPhone Duo): the areas stacked in one tall pill of glass on
-/// the left, like Instagram's on iPad. The picked area sits on a soft pill with a filled symbol;
-/// New chat and Settings close the column.
+/// The side dock (iPad, an unfolded iPhone Duo): Chats and Agents stacked in one pill of glass on
+/// the left, like Instagram's on iPad. The picked area sits on a soft pill with a filled symbol.
 struct SideDock: View {
   /// The dock's width.
   static let width: CGFloat = 68
@@ -33,25 +32,16 @@ struct SideDock: View {
   let isSplit: Bool
   @Environment(AppModel.self) private var app
   @Environment(\.palette) private var palette
-  @State private var showsBotPicker = false
-  @State private var isStartingChat = false
 
   var body: some View {
     VStack(spacing: 6) {
       area(.chats, symbol: "message", selectedSymbol: "message.fill")
       area(.bots, symbol: "circle.grid.cross", selectedSymbol: "circle.grid.cross.fill")
-      area(.kanban, symbol: "rectangle.split.3x1", selectedSymbol: "rectangle.split.3x1.fill")
-      newChatButton
-      area(.settings, symbol: "gearshape", selectedSymbol: "gearshape.fill")
     }
     .padding(.vertical, 8)
     .frame(width: Self.width)
     .glassEffect(.regular.interactive(), in: .capsule)
     .padding(.leading, Self.margin)
-    .sheet(isPresented: $showsBotPicker) {
-      BotPickerSheet { profile in start(profile) }
-        .presentationDetents([.medium, .large])
-    }
   }
 
   // MARK: Items
@@ -76,25 +66,6 @@ struct SideDock: View {
     .accessibilityIdentifier("area.\(tab.title.lowercased())")
   }
 
-  private var newChatButton: some View {
-    Button(action: newChat) {
-      Group {
-        if isStartingChat {
-          ProgressView()
-        } else {
-          Image(systemName: "plus").font(.system(size: 24, weight: .regular))
-        }
-      }
-      .foregroundStyle(palette.foreground)
-      .frame(width: 54, height: 50)
-      .contentShape(Capsule())
-    }
-    .buttonStyle(.plain)
-    .disabled(isStartingChat)
-    .accessibilityLabel("New chat")
-    .accessibilityIdentifier("area.new")
-  }
-
   /// A red count on Chats when chats there wait on an answer from you.
   @ViewBuilder
   private func badge(for tab: AppTab) -> some View {
@@ -113,17 +84,11 @@ struct SideDock: View {
 
   // MARK: Where you are
 
-  /// The area marked as open. In one stack Kanban and Settings are pages on the Chats stack, so
-  /// the stack's first page says which is open.
+  /// The area marked as open. Kanban, Cron and Settings have no item: in one stack they are pages
+  /// on Chats (or Agents), and in the split view nothing is marked while one fills the list.
   private var selected: AppTab? {
-    if isSplit { return app.tab == .cron ? nil : app.tab }
-    if app.tab == .bots { return .bots }
-    switch app.path.first {
-    case .kanban: return .kanban
-    case .settings: return .settings
-    case .cron: return nil
-    default: return .chats
-    }
+    if isSplit { return [.chats, .bots].contains(app.tab) ? app.tab : nil }
+    return app.tab == .bots ? .bots : .chats
   }
 
   private func open(_ tab: AppTab) {
@@ -135,42 +100,10 @@ struct SideDock: View {
       app.tab = tab
       return
     }
-    switch tab {
-    case .bots:
-      if isOn { app.hubPath = [] } else { app.tab = .bots }
-    case .chats:
-      // Back to the inbox when already there, or when Kanban or Settings covers it.
-      if isOn || [Route.kanban, .settings, .cron].contains(where: { $0 == app.path.first }) {
-        app.path = []
-      }
-      app.tab = .chats
-    default:
-      guard let route = Route.area(tab) else { return }
-      app.tab = .chats
-      app.path = [route]
+    // The area already open: back to its first screen.
+    if isOn {
+      if tab == .bots { app.hubPath = [] } else { app.path = [] }
     }
-  }
-
-  // MARK: New chat
-
-  /// In Agents, a chat with the bot on screen; elsewhere with the one picked (or the only one).
-  private func newChat() {
-    if app.tab == .bots {
-      start(isSplit ? (app.areas.bot ?? app.currentHubProfile) : app.currentHubProfile)
-    } else if app.profiles.count <= 1 {
-      start(app.profiles.first?.name ?? "default")
-    } else {
-      showsBotPicker = true
-    }
-  }
-
-  private func start(_ profile: String) {
-    showsBotPicker = false
-    guard !isStartingChat else { return }
-    isStartingChat = true
-    Task {
-      await app.startChat(profile: profile)
-      isStartingChat = false
-    }
+    app.tab = tab
   }
 }

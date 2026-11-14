@@ -109,11 +109,8 @@ final class ComposerKeyboardTests: XCTestCase {
   }
 
   func testOnScreenReturnAddsALineAndTheDraftSendsWhole() throws {
-    let compose = app.buttons["New chat"]
-    XCTAssertTrue(compose.waitForExistence(timeout: 30), "home did not load")
-    compose.tap()
-    let botRow = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", bot)).firstMatch
-    if botRow.waitForExistence(timeout: 10) { botRow.tap() }
+    XCTAssertTrue(app.waitForHome(), "home did not load")
+    app.startNewChat(with: bot)
 
     let marker = "kbd-\(Int(Date().timeIntervalSince1970) % 100_000)"
     XCTAssertTrue(input.waitForExistence(timeout: 20), "the composer is not a text view")
@@ -194,9 +191,9 @@ final class NotificationSettingsTests: XCTestCase {
     let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
     let allow = springboard.buttons["Allow"]
     if allow.waitForExistence(timeout: 8) { allow.tap() }
-    XCTAssertTrue(app.buttons["New chat"].waitForExistence(timeout: 30), "home did not load")
-    // Settings is in the side dock (iPad, an unfolded iPhone Duo) or the iPhone dock.
-    let settings = app.buttons["area.settings"].exists ? app.buttons["area.settings"] : app.buttons["dock.settings"]
+    XCTAssertTrue(app.waitForHome(), "home did not load")
+    // Settings is in the inbox's corner.
+    let settings = app.homeSettings
     XCTAssertTrue(settings.waitForExistence(timeout: 5))
     settings.tap()
     let mac = app.descendants(matching: .any)["push.mac"]
@@ -271,7 +268,7 @@ final class NotificationTapTests: XCTestCase {
     app.launch()
     let allow = springboard.buttons["Allow"]
     if allow.waitForExistence(timeout: 4) { allow.tap() }
-    XCTAssertTrue(app.buttons["New chat"].waitForExistence(timeout: 30), "home did not load")
+    XCTAssertTrue(app.waitForHome(), "home did not load")
     return app
   }
 

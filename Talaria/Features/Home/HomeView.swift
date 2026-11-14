@@ -69,26 +69,20 @@ struct HomeView: View {
       }
       .sharedBackgroundVisibility(.hidden)
 
-      // Show chats by where they started.
+      // The corner holds just two buttons: the filter by where chats started, and Settings
+      // (the docks hold Chats and Agents only).
       ToolbarItem(placement: .topBarTrailing) {
         OriginFilterMenu()
       }
 
-      // Areas that are not in the dock are one menu away here.
       ToolbarItem(placement: .topBarTrailing) {
-        Menu {
-          ForEach(AppTab.moreMenu(sideDock: app.showsSideDock)) { area in
-            Button {
-              app.openArea(area)
-            } label: {
-              Label(area.title, systemImage: area.symbol)
-            }
-          }
+        Button {
+          app.openArea(.settings)
         } label: {
-          Image(systemName: "ellipsis")
+          Image(systemName: "gearshape")
         }
-        .accessibilityLabel("More")
-        .accessibilityIdentifier("home.more")
+        .accessibilityLabel("Settings")
+        .accessibilityIdentifier("home.settings")
       }
     }
     .sheet(isPresented: $showsBotPicker) {

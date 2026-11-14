@@ -108,8 +108,8 @@ private struct TabShell: View {
   var body: some View {
     @Bindable var app = app
     @Bindable var areas = app.areas
-    // The system tab bar stays hidden: the dock below draws Chats and Agents, with New chat and
-    // Settings in a group of their own. The TabView still keeps each area's place.
+    // The system tab bar stays hidden: the dock below draws Chats and Agents. The TabView still
+    // keeps each area's place.
     TabView(selection: $app.tab) {
       Tab(AppTab.chats.title, systemImage: AppTab.chats.symbol, value: AppTab.chats) {
         NavigationStack(path: $app.path) {
@@ -127,13 +127,11 @@ private struct TabShell: View {
                   .navigationDestination(item: $areas.kanbanCard) { id in
                     KanbanTaskView(model: areas.kanban, taskID: id, select: { areas.kanbanCard = $0 })
                   }
-                  .opensFromSideDock(sideDock)
               case .cron:
                 CronList(model: areas.cron, selection: $areas.cronJob)
                   .navigationDestination(item: $areas.cronJob) { id in CronDetailView(model: areas.cron, jobID: id) }
               case .settings:
                 SettingsView()
-                  .opensFromSideDock(sideDock)
               }
             }
         }
@@ -167,12 +165,6 @@ private struct TabShell: View {
 }
 
 extension View {
-  /// Kanban and Settings are pages on the Chats stack, but beside the side dock they are areas
-  /// of their own, so they get no back button (Chats in the dock goes back to the inbox).
-  fileprivate func opensFromSideDock(_ isOn: Bool) -> some View {
-    navigationBarBackButtonHidden(isOn)
-  }
-
   /// Room at the bottom of an area's first screen so its last row clears the dock.
   @ViewBuilder
   fileprivate func dockSpace(_ isOn: Bool) -> some View {
@@ -184,41 +176,21 @@ extension View {
   }
 }
 
-/// The iPhone dock: Chats and Agents in one pill of glass, New chat and Settings in another.
+/// The iPhone dock: Chats and Agents in one pill of glass.
 private struct Dock: View {
   static let height: CGFloat = 62
   @Environment(AppModel.self) private var app
   @Environment(\.palette) private var palette
-  @State private var showsBotPicker = false
-  @State private var isStartingChat = false
 
   var body: some View {
-    GlassEffectContainer(spacing: 14) {
-      HStack(alignment: .bottom) {
-        HStack(spacing: 2) {
-          area(.chats, symbol: "message", selectedSymbol: "message.fill")
-          area(.bots, symbol: "circle.grid.cross", selectedSymbol: "circle.grid.cross.fill")
-        }
-        .padding(4)
-        .glassEffect(.regular.interactive(), in: .capsule)
-
-        Spacer(minLength: 12)
-
-        HStack(spacing: 2) {
-          action(symbol: "plus", label: "New chat", id: "dock.new", isWorking: isStartingChat, perform: newChat)
-          action(symbol: "gearshape", label: "Settings", id: "dock.settings", perform: openSettings)
-        }
-        .padding(4)
-        .glassEffect(.regular.interactive(), in: .capsule)
-      }
+    HStack(spacing: 2) {
+      area(.chats, symbol: "message", selectedSymbol: "message.fill")
+      area(.bots, symbol: "circle.grid.cross", selectedSymbol: "circle.grid.cross.fill")
     }
-    .padding(.horizontal, 24)
+    .padding(4)
+    .glassEffect(.regular.interactive(), in: .capsule)
     .padding(.bottom, 4)
     .ignoresSafeArea(.keyboard)
-    .sheet(isPresented: $showsBotPicker) {
-      BotPickerSheet { profile in start(profile) }
-        .presentationDetents([.medium, .large])
-    }
   }
 
   private func area(_ tab: AppTab, symbol: String, selectedSymbol: String) -> some View {
@@ -243,52 +215,6 @@ private struct Dock: View {
     .accessibilityLabel(tab.title)
     .accessibilityAddTraits(isOn ? .isSelected : [])
     .accessibilityIdentifier("dock.\(tab.title.lowercased())")
-  }
-
-  private func action(
-    symbol: String, label: String, id: String, isWorking: Bool = false, perform: @escaping () -> Void
-  ) -> some View {
-    Button(action: perform) {
-      Group {
-        if isWorking {
-          ProgressView()
-        } else {
-          Image(systemName: symbol).font(.system(size: 21, weight: .medium))
-        }
-      }
-      .foregroundStyle(palette.foreground)
-      .frame(width: 52, height: 48)
-      .contentShape(Capsule())
-    }
-    .buttonStyle(.plain)
-    .disabled(isWorking)
-    .accessibilityLabel(label)
-    .accessibilityIdentifier(id)
-  }
-
-  /// In Agents, a chat with the bot on screen; in Chats, with the one picked (or the only one).
-  private func newChat() {
-    if app.tab == .bots {
-      start(app.currentHubProfile)
-    } else if app.profiles.count <= 1 {
-      start(app.profiles.first?.name ?? "default")
-    } else {
-      showsBotPicker = true
-    }
-  }
-
-  private func start(_ profile: String) {
-    showsBotPicker = false
-    guard !isStartingChat else { return }
-    isStartingChat = true
-    Task {
-      await app.startChat(profile: profile)
-      isStartingChat = false
-    }
-  }
-
-  private func openSettings() {
-    if app.tab == .bots { app.hubPath.append(.settings) } else { app.path.append(.settings) }
   }
 }
 
@@ -346,28 +272,25 @@ private struct SidebarShell: View {
           HomeView()
         }
       case .bots: BotsList(selection: $areas.bot)
-      case .kanban: KanbanBoardView(model: areas.kanban, selection: $areas.kanbanCard)
+      // No dock item: Kanban and Cron open from a bot's hub and go back to it, Settings from the
+      // inbox's corner and goes back to Chats.
+      case .kanban:
+        KanbanBoardView(model: areas.kanban, selection: $areas.kanbanCard)
+          .backButton("Agents") { app.tab = .bots }
       case .cron:
-        // Not in the side dock: opened from the inbox's More menu or a bot's hub, with a way back.
         CronList(model: areas.cron, selection: $areas.cronJob, profile: areas.cronProfile)
-          .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-              Button {
-                if let bot = areas.cronProfile {
-                  areas.cronProfile = nil
-                  app.areas.bot = bot
-                  app.tab = .bots
-                } else {
-                  app.tab = .chats
-                }
-              } label: {
-                Image(systemName: "chevron.left")
-              }
-              .accessibilityLabel("Chats")
-              .accessibilityIdentifier("BackButton")
+          .backButton(areas.cronProfile == nil ? "Chats" : "Agents") {
+            if let bot = areas.cronProfile {
+              areas.cronProfile = nil
+              app.areas.bot = bot
+              app.tab = .bots
+            } else {
+              app.tab = .chats
             }
           }
-      case .settings: SettingsView()
+      case .settings:
+        SettingsView()
+          .backButton("Chats") { app.tab = .chats }
       }
     }
   }
@@ -414,6 +337,21 @@ private struct SidebarShell: View {
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       .screenBackground()
+    }
+  }
+}
+
+extension View {
+  /// A back button for a list column with no dock item to leave it by (the split view).
+  fileprivate func backButton(_ label: String, action: @escaping () -> Void) -> some View {
+    toolbar {
+      ToolbarItem(placement: .topBarLeading) {
+        Button(action: action) {
+          Image(systemName: "chevron.left")
+        }
+        .accessibilityLabel(label)
+        .accessibilityIdentifier("BackButton")
+      }
     }
   }
 }

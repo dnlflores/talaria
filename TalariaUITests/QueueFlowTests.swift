@@ -71,11 +71,8 @@ final class QueueFlowTests: XCTestCase {
   }
 
   func testQueuedMessagesWaitAndSendNowJoinsTheReply() throws {
-    let compose = app.buttons["New chat"]
-    XCTAssertTrue(compose.waitForExistence(timeout: 30), "home did not load")
-    compose.tap()
-    let botRow = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", bot)).firstMatch
-    if botRow.waitForExistence(timeout: 10) { botRow.tap() }
+    XCTAssertTrue(app.waitForHome(), "home did not load")
+    app.startNewChat(with: bot)
 
     // A reply that takes a while: a slow command.
     let marker = "queue-\(Int(Date().timeIntervalSince1970) % 100_000)"
@@ -137,11 +134,8 @@ final class QueueFlowTests: XCTestCase {
   }
 
   func testQueueGoesToTheMacWhenThePhoneSleeps() throws {
-    let compose = app.buttons["New chat"]
-    XCTAssertTrue(compose.waitForExistence(timeout: 30), "home did not load")
-    compose.tap()
-    let botRow = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", bot)).firstMatch
-    if botRow.waitForExistence(timeout: 10) { botRow.tap() }
+    XCTAssertTrue(app.waitForHome(), "home did not load")
+    app.startNewChat(with: bot)
     let running = app.descendants(matching: .any).matching(
       NSPredicate(format: "identifier == 'transcript.working' AND label CONTAINS 'Running a command'")).firstMatch
     let onMac = app.descendants(matching: .any).matching(identifier: "queue.onMac")

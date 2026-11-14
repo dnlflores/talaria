@@ -48,7 +48,7 @@ yet.
   `GET /api/fs/read-text`, downloads through `GET /api/fs/download`
   (`path`, `profile`, `session_id`).
 - iPad: a side dock, the list and the open item; iPhone Duo: the side dock unfolded,
-  the iPhone dock folded.
+  the iPhone dock folded. Both docks hold Chats and Agents only.
 
 ## Done: notifications, Live Activities, keyboard
 
