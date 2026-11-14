@@ -35,6 +35,9 @@ HermesKit (Swift package, no UI)
   PromptQueue     messages waiting for the running reply
   PushRegistration  what the phone tells the Mac's push plugin; SigningFacts
   ComposerKey     what a hardware key does in the composer
+  SlashCommands   `/command` parsing, the `/` menu's rows, which commands stay on the Mac,
+                  and SlashRunner, which turns `slash.exec` / `command.dispatch` answers
+                  into a turn, a composer prefill or a notice
   RecentChats     the last three chats opened on the phone, and the app icon's
                   shortcuts made from them (QuickAction)
   UserContent     a user message's words and its `@image:` pictures
@@ -357,6 +360,42 @@ on the phone (`PromptQueue`, HermesKit, unit-tested):
   back in the queue (held) whatever the Mac dropped, for a stopped reply clears
   its queue.
 
+## Slash commands
+
+A message that starts with `/name` (a bare name, then a space or the end; `/usr/local` is
+words) is a command, run the way the desktop app runs one
+(`apps/desktop/src/app/session/hooks/use-prompt-actions/slash.ts`), never sent to the model as
+words:
+
+- **The menu:** while the composer holds just `/` and one word, `complete.slash {text,
+  session_id | profile}` fills a list above the composer card, 150 ms after the last
+  keystroke, stale answers dropped and each answer kept for the chat. A chat attached here
+  names its session (project skills follow its folder); a new chat nothing was sent in yet
+  names its bot. Rows carry the item's `kind` (skill or command); an answer completing an
+  argument (`replace_from` past the slash) gives no rows. Tapping one leaves `/name ` in the
+  composer.
+- **Running one:** `slash.exec {session_id, command}` first; when it refuses (skills and
+  bundles are refused on purpose), `command.dispatch {session_id, name, arg}`. A `skill` or
+  `send` directive's `message` goes out with `prompt.submit` like any turn, and the bubble
+  shows `display` (else the invocation read from the expanded skill, else what was typed):
+  the expanded skill is never shown, and the bubble is matched against the Mac's copy by
+  that invocation, which the Mac's history shows too. `prefill` fills the composer (`/undo`,
+  after which the chat re-reads the Mac's copy). `alias` runs its target. Plain `output`
+  (with `warning`) and every error become a notice card under the command, in this app only
+  (`TranscriptItem.isLocal`): not sent, not stored, gone on the next full reload.
+- **Desktop-owned commands:** the commands the desktop app handles itself (a new chat, the
+  theme, pickers, its own dedicated calls) and those Hermes gives no app surface are left off
+  the menu, and sending one says to run it on the Mac (`SlashPolicy`).
+- **While a reply runs** a command waits in the phone's queue and runs when it reaches the
+  front. "Send now" cannot put a command into the running reply, so it stops the reply and
+  runs the command next; handing the queue to the Mac stops at a command, which waits for the
+  phone.
+
+`SlashCommandTests` (HermesKit) covers parsing, every directive, plain output, errors, and the
+rule that no answer turns the typed command into a message; the UI test of the same name runs
+the production composer and transcript against canned answers (`--scroll-preview
+--slash-preview`).
+
 ## Pictures
 
 Hermes stores a picture sent with a message as an `@image:<path>` line in the
@@ -579,6 +618,7 @@ Kanban rows switch to those areas instead (Cron filtered to the bot through
 
 ## What is deliberately not here yet
 
-- Slash commands typed into the composer are sent as plain text.
+- Argument menus for commands (`/personality <name>`), `@` file references, and the slash
+  commands the desktop app handles itself.
 - Diff review and the working-folder picker.
 - Actions on notifications (approve, answer, reply from the banner).

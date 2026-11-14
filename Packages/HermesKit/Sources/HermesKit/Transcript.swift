@@ -178,6 +178,8 @@ public struct TranscriptItem: Identifiable, Sendable, Equatable {
   public var hasLanded = false
   /// Shown only in this app (the output of a command, for example); never part of the stored transcript.
   public var isLocal = false
+  /// The `/command` a local notice answers (`/usage`).
+  public var command = ""
   public var tool: ToolCall?
   public var attachments: [AttachmentChip] = []
   /// Pictures the message carries, as paths on the Mac (`@image:` lines, lifted out of `text`).

@@ -268,7 +268,11 @@ struct TranscriptView: View {
         chat.answer(requestID: requestID, values: values)
       }
     case .system(let item):
-      SystemNote(text: item.text)
+      if item.isLocal {
+        SlashNoticeCard(item: item)
+      } else {
+        SystemNote(text: item.text)
+      }
     case .files(let turn):
       TurnFilesView(turn: turn, chat: chat)
     }

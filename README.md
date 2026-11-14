@@ -83,6 +83,15 @@ T3 Tools.
   phone.
 - **Keyboard:** with a hardware keyboard, Return sends and Shift-Return adds a
   line. The on-screen keyboard's Return still adds a line.
+- **Skills and slash commands:** type `/` in a chat (or a new chat) for a list
+  of the bot's skills and commands, each with a line about it and a Skill or
+  Command tag; it narrows as you type, and tapping one puts it in the
+  composer. Sending `/work fix the leak` starts the turn with the skill loaded,
+  as the desktop app does, and your message shows what you typed. A command
+  that answers in words shows them in a card under it, only on the phone;
+  `/undo` puts the message back in the composer to edit. Commands the desktop
+  app handles itself (`/skin`, `/new`, ...) say to run them on the Mac. Sent
+  while a reply runs, a command waits in the queue like any message.
 - **Composer:** a card with the text on top and, under it, attach, the model
   in use with its logo and thinking effort ("GPT-6.1 Sol 900K • High", tap to
   change either), dictation and send. Dictation uses Apple's speech
@@ -247,6 +256,8 @@ included. `ActivityLookTests` (`TEST_RUNNER_TALARIA_UITEST_ACTIVITY_LOOK=1`)
 screenshots the Live Activity in each phase with no Mac;
 `QuickActionTests` presses the app icon on the home screen and taps its
 shortcuts, with made-up chats and no Mac;
+`SlashCommandTests` opens the `/` menu, picks from it and sends a skill and a
+command against canned answers, with no Mac;
 `NotificationSettingsTests` (`TEST_RUNNER_TALARIA_UITEST_PUSH=1`) allows
 notifications and shows what the Mac said; the push plugin has its own tests
 (`python -m unittest discover -s mac/talaria-push/tests` with Hermes' Python).
