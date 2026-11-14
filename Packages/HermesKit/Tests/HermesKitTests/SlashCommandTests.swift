@@ -157,8 +157,13 @@ struct SlashCommandTests {
   @Test func sendSubmitsItsMessageAfterItsNotice() async {
     let gateway = FakeGateway()
     gateway.execAnswer = .success(["type": "send", "message": "Ship the release notes", "notice": "⊙ Goal set"])
+    // The bubble shows what was typed, not the words the command composed.
     #expect(await gateway.run("/goal Ship the release notes")
-      == SlashResult(notice: "⊙ Goal set", .submit(message: "Ship the release notes", display: "Ship the release notes")))
+      == SlashResult(notice: "⊙ Goal set", .submit(message: "Ship the release notes", display: "/goal Ship the release notes")))
+    gateway.execAnswer = .success(["type": "send", "message": "Ship notes"])
+    #expect(await gateway.run("/goal   Ship notes") == SlashResult(.submit(message: "Ship notes", display: "/goal   Ship notes")))
+    gateway.execAnswer = .success(["type": "send", "message": "Ship notes", "display": "/goal Ship notes"])
+    #expect(await gateway.run("/g Ship notes") == SlashResult(.submit(message: "Ship notes", display: "/goal Ship notes")))
     gateway.execAnswer = .success(["type": "send", "message": "   "])
     #expect(await gateway.run("/prompt") == SlashResult(.failure("/prompt: empty message")))
   }
@@ -271,5 +276,56 @@ struct SlashCommandTests {
     #expect(state.items.filter { $0.kind == .user }.map(\.text) == ["earlier", "/work fix the leak"])
     #expect(state.items.last?.text == "On it.")
     #expect(state.items.contains { $0.isLocal && $0.command == "/usage" }, "the notice stays on the phone")
+  }
+
+  /// A sent message is recognised in the Mac's history by what was sent, apart from what its bubble
+  /// shows: a send directive's composed words with a staged file, and a skill typed through an
+  /// alias whose bubble differs from the invocation the Mac's history reads back.
+  @Test(arguments: [
+    (sent: "Ship notes\n\n@file:/fixture/notes.txt", shown: "/goal Ship notes"),
+    (sent: "Ship notes", shown: "/goal Ship notes"),
+    (sent: workScaffold, shown: "/w fix the leak"),
+    (sent: workScaffold + "\n\n@file:/fixture/leak.log", shown: "/work fix the leak"),
+  ])
+  func aSentMessageLandsAgainstItsStoredCopy(sent: String, shown: String) {
+    let stored: [JSONValue] = [
+      ["id": 1, "role": "user", "content": "earlier"], ["id": 2, "role": "assistant", "content": "ok"],
+      ["id": 3, "role": "user", "content": .string(sent)],
+    ]
+    let fresh = TranscriptItem.items(fromStoredRows: stored)
+    func sending() -> (ChatState, UUID) {
+      var state = ChatState()
+      state.items = Array(TranscriptItem.items(fromStoredRows: Array(stored.prefix(2))))
+      // As `ChatModel.deliver` builds it: the bubble first, then the exact text once files are staged.
+      var bubble = TranscriptItem.outgoing("Ship notes", shown: shown, timestamp: 2)
+      bubble.submitted(sent)
+      state.items.append(bubble)
+      return (state, bubble.id)
+    }
+    // Accepted, acknowledgement lost: the newest page shows it landed, so it is not sent again.
+    var (tail, id) = sending()
+    let lined = tail.reconcileTail(fresh: fresh, inflight: .null, now: 3)
+    #expect(lined)
+    #expect(tail.items.first { $0.id == id }?.hasLanded == true)
+    #expect(tail.items.filter { $0.kind == .user }.count == 2)
+    #expect(tail.items.last?.text == shown, "the bubble keeps showing what was typed")
+    // A whole reload finds it too.
+    var (whole, wholeID) = sending()
+    whole.reconcile(fresh: fresh, inflight: .null, now: 3)
+    #expect(whole.items.first { $0.id == wholeID }?.hasLanded == true)
+    #expect(whole.items.filter { $0.kind == .user }.count == 2)
+    // Once sent it stays matched against the stored copy, so the next reload adds nothing.
+    var settled = tail
+    if let index = settled.items.firstIndex(where: { $0.id == id }) { settled.items[index].isPending = false }
+    settled.reconcile(fresh: fresh, inflight: .null, now: 4)
+    #expect(settled.items.filter { $0.kind == .user }.count == 2)
+    #expect(settled.items.contains { $0.id == id })
+  }
+
+  @Test func storedTextIsHowTheHistoryReadsBack() {
+    #expect(TranscriptItem.storedText(submitted: workScaffold) == "/work fix the leak")
+    #expect(TranscriptItem.storedText(submitted: "plain words\n\n@file:a.txt") == "plain words\n\n@file:a.txt")
+    let read = TranscriptItem.items(fromStoredRows: [["role": "user", "content": .string(workScaffold)]])
+    #expect(read.first?.text == TranscriptItem.storedText(submitted: workScaffold))
   }
 }

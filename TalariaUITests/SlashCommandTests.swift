@@ -78,6 +78,13 @@ final class SlashCommandTests: XCTestCase {
     input.typeText("/us")
     XCTAssertTrue(row("/usage").waitForExistence(timeout: 5))
     input.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 3))
+    // A busy simulator can drop a key press: delete whatever is left, so the `/` is really gone.
+    for _ in 0..<3 {
+      let left = (input.value as? String ?? "").count
+      if left == 0 { break }
+      input.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: left))
+    }
+    XCTAssertEqual(input.value as? String ?? "", "")
     let hidden = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: menu)
     wait(for: [hidden], timeout: 5)
   }

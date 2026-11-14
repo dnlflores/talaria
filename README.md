@@ -258,6 +258,9 @@ screenshots the Live Activity in each phase with no Mac;
 shortcuts, with made-up chats and no Mac;
 `SlashCommandTests` opens the `/` menu, picks from it and sends a skill and a
 command against canned answers, with no Mac;
+`SlashDeliveryTests` (the `TalariaTests` target, `-only-testing:TalariaTests`)
+runs the app's own chat model against a stand-in gateway on loopback: leaving
+or going to sleep while a command is worked out, with no Mac;
 `NotificationSettingsTests` (`TEST_RUNNER_TALARIA_UITEST_PUSH=1`) allows
 notifications and shows what the Mac said; the push plugin has its own tests
 (`python -m unittest discover -s mac/talaria-push/tests` with Hermes' Python).
@@ -276,6 +279,8 @@ Talaria/                   the app
                            Cron, Settings
 Shared/                    the Live Activity's attributes (app and widget)
 TalariaActivity/           the Live Activity: Lock Screen and Dynamic Island
+TalariaTests/              the app's chat model against a loopback stand-in gateway
+TalariaUITests/            UI tests in the simulator
 mac/talaria-push/          Hermes plugin on the Mac that sends the pushes
 scripts/                   palette generator, icon, sign-in for tests, push plugin install,
                            gateway-call.mjs (call the backend as the app does),

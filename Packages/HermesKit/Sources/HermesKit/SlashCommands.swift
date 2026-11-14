@@ -283,9 +283,10 @@ public enum SlashRunner {
     guard !words.isEmpty else {
       return SlashResult(notice: notice, .failure("/\(invocation.name): \(isSkill ? "the skill came back empty" : "empty message")"))
     }
-    // The bubble shows the invocation the gateway projected, else one read from the expanded skill,
-    // else what was typed. A plain composed message shows as itself: that is what the Mac stores.
-    let shown = clean(display) ?? SkillInvocation.text(words) ?? (isSkill ? invocation.typed : words)
+    // The bubble shows the invocation the gateway projected, else what was typed: never the
+    // expanded skill or the words a command composed. Matching the Mac's stored copy goes by what
+    // is sent (`TranscriptItem.storedText(submitted:)`), not by this.
+    let shown = clean(display) ?? invocation.typed
     return SlashResult(notice: notice, .submit(message: words, display: shown))
   }
 
@@ -309,11 +310,25 @@ extension TranscriptItem {
   }
 
   /// The person's bubble for a turn being sent. A skill turn sends the expanded skill but shows
-  /// the invocation (`shown`), and is matched against the Mac's copy by it: the Mac's history
-  /// shows a skill turn as its invocation too (`SkillInvocation`).
+  /// the invocation (`shown`). What it is matched against the Mac's copy by is kept apart from
+  /// that, in `sentText`: call `submitted(_:)` with the exact text once it is known.
   public static func outgoing(_ sent: String, shown: String?, timestamp: Double?) -> TranscriptItem {
     var item = TranscriptItem(kind: .user, text: shown ?? sent, timestamp: timestamp)
     item.isPending = true
+    item.submitted(sent)
     return item
+  }
+
+  /// How the Mac's stored copy of `submitted` reads once the history is read back here: a skill
+  /// turn as its invocation (`SkillInvocation`), anything else as sent. Matching a message sent
+  /// from here against that copy goes by this, whatever its bubble shows.
+  public static func storedText(submitted: String) -> String {
+    SkillInvocation.text(submitted) ?? submitted
+  }
+
+  /// Records the exact text that went to the Mac (file references included), so the message is
+  /// recognised in the Mac's history after a lost acknowledgement or a reload.
+  public mutating func submitted(_ full: String) {
+    sentText = Self.storedText(submitted: full)
   }
 }

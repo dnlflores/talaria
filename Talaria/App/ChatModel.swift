@@ -86,6 +86,8 @@ final class ChatModel: Identifiable {
   @ObservationIgnored private var slashTask: Task<Void, Never>?
   /// Menu rows already read for this chat, by query.
   @ObservationIgnored private var slashCache: [String: [SlashCompletion]] = [:]
+  /// The `/command` being worked out or sent, which the queue's hand-off to the Mac waits for.
+  @ObservationIgnored private var slashRun: (id: UUID, task: Task<Void, Never>)?
   #if DEBUG
   /// `--slash-preview`: the `/` menu and commands answer from canned data, with no Mac.
   @ObservationIgnored private(set) var isSlashPreview = false
@@ -806,7 +808,7 @@ final class ChatModel: Identifiable {
       // A command the phone leaves to the Mac is answered here, without making a new version.
       if let command = SlashInvocation(draft), command.name.isEmpty || SlashPolicy.isMacOnly(command.name) {
         draft = ""
-        await runSlash(command, picked: [], origin: .composer)
+        await startSlash(command, picked: [], origin: .composer).value
         return
       }
       if canSend, !isSending { await continueAsNewVersion(send: true) }
@@ -834,7 +836,7 @@ final class ChatModel: Identifiable {
   /// A `/command` runs as a command; anything else starts a turn with these words.
   private func goOut(text: String, picked: [ComposerAttachment], origin: Origin) async {
     if let command = SlashInvocation(text) {
-      await runSlash(command, picked: picked, origin: origin)
+      await startSlash(command, picked: picked, origin: origin).value
     } else {
       await deliver(text: text, picked: picked, origin: origin)
     }
@@ -842,14 +844,19 @@ final class ChatModel: Identifiable {
 
   /// Starts a turn with this message: shows it as sending, uploads what was picked, submits.
   /// `display` is what the bubble shows when that differs from what is sent (a skill sends the
-  /// expanded skill and shows the invocation that was typed).
-  private func deliver(text: String, display: String? = nil, picked: [ComposerAttachment], origin: Origin) async {
+  /// expanded skill and shows the invocation that was typed); `typed` is what goes back to the
+  /// composer if it fails. The Mac's copy is recognised by what was sent, whatever the bubble shows.
+  private func deliver(
+    text: String, display: String? = nil, typed: String? = nil, picked: [ComposerAttachment], origin: Origin
+  ) async {
+    let typed = typed ?? display ?? text
     #if DEBUG
     if isSlashPreview {
       var item = TranscriptItem.outgoing(text, shown: display, timestamp: now)
       item.isPending = false
       state.items.append(item)
       scrollToEnd += 1
+      isSending = false
       return
     }
     #endif
@@ -881,8 +888,10 @@ final class ChatModel: Identifiable {
           guard let liveID else { throw HermesError.notConnected }
           let staged = try await stage(picked, liveID: liveID, client: client)
           let full = ([text] + staged.references).filter { !$0.isEmpty }.joined(separator: "\n\n")
-          // A skill turn is matched against the Mac's copy by its invocation, which the Mac shows too.
-          if display == nil { update(itemID) { $0.sentText = full } }
+          // Kept apart from what the bubble shows, so the Mac's copy is recognised after a lost
+          // acknowledgement (below) or a reload: a skill by the invocation the Mac's history reads
+          // back, a composed message and its files as sent.
+          update(itemID) { $0.submitted(full) }
           state.beginTurn(now: now)
           // A queued message must never cut into a reply the Mac is still wrapping up.
           status = try await client.submit(
@@ -923,17 +932,22 @@ final class ChatModel: Identifiable {
         // Open on the Mac: nothing was sent. Keep the words and the attachments, and explain.
         state.items.removeAll { $0.id == itemID }
         attachments = picked + attachments
-        await refused(message: wrapped.localizedDescription, text: display ?? text)
+        await refused(message: wrapped.localizedDescription, text: typed)
         return
       }
       update(itemID) {
         $0.isPending = false
         $0.isFailed = true
       }
+      if isClosed {
+        // Nobody sees this chat any more: what was typed becomes its saved draft.
+        keepAsDraft(typed)
+        return
+      }
       switch origin {
       case .composer:
         // What was typed goes back, never an expanded skill.
-        if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { draft = display ?? text }
+        if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { draft = typed }
         attachments = picked + attachments
         app?.show("Not sent: \(wrapped.localizedDescription)", kind: .failure, seconds: 6)
       case .queue(let entry):
@@ -998,6 +1012,20 @@ final class ChatModel: Identifiable {
 
   // MARK: Slash commands
 
+  /// Starts a `/command`. Until it has run, or the turn it starts has been taken, it holds back
+  /// the queue's hand-off to the Mac (`handOffQueue`), so nothing queued after it reaches the Mac
+  /// first. It runs to the end even if the chat closes meanwhile.
+  @discardableResult
+  private func startSlash(_ command: SlashInvocation, picked: [ComposerAttachment], origin: Origin) -> Task<Void, Never> {
+    let id = UUID()
+    let task = Task {
+      await self.runSlash(command, picked: picked, origin: origin)
+      if self.slashRun?.id == id { self.slashRun = nil }
+    }
+    slashRun = (id, task)
+    return task
+  }
+
   /// Runs a `/command` the way the desktop app does (`SlashRunner`). A skill, or a message the
   /// command composed, starts a turn whose bubble shows what was typed; words to edit go back into
   /// the composer; anything else is a notice in the chat that only this phone shows. The command
@@ -1014,17 +1042,31 @@ final class ChatModel: Identifiable {
     #else
     result = await runOnMac(command)
     #endif
+    if case .submit(let message, let display) = result.outcome {
+      if !isClosed, let notice = result.notice { addNotice(notice, for: command) }
+      // Sent even if the chat closed meanwhile, as a message sent just before leaving is.
+      // `deliver` drains the queue when it is done.
+      await deliver(text: message, display: display, typed: command.typed, picked: picked, origin: origin)
+      return
+    }
     isSending = false
-    if isClosed { return }
+    if isClosed {
+      // Nobody sees this chat any more. Words to edit, or a command that did not run, become its
+      // saved draft (ahead of anything queued after it), so nothing typed is lost; an answer
+      // has nowhere to show.
+      switch result.outcome {
+      case .prefill(let words): keepAsDraft(words)
+      case .failure: keepAsDraft(command.typed)
+      case .submit, .output, .macOnly: break
+      }
+      return
+    }
     if let notice = result.notice { addNotice(notice, for: command) }
     switch result.outcome {
-    case .submit(let message, let display):
-      // `deliver` drains the queue when it is done.
-      await deliver(text: message, display: display, picked: picked, origin: origin)
+    case .submit:
       return
     case .prefill(let words):
-      let current = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-      draft = current.isEmpty ? words : words + "\n\n" + current
+      keepAsDraft(words)
       // `/undo` took turns off the Mac's copy: show the chat as it is now.
       if !command.name.isEmpty, liveID != nil { try? await reattach() }
     case .output(let text):
@@ -1037,6 +1079,12 @@ final class ChatModel: Identifiable {
     // Nothing was sent: what was picked goes back to the composer.
     attachments = picked + attachments
     drainQueue()
+  }
+
+  /// Puts `words` in the composer ahead of whatever is there.
+  private func keepAsDraft(_ words: String) {
+    let current = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    draft = [words, current].filter { !$0.isEmpty }.joined(separator: "\n\n")
   }
 
   private func runOnMac(_ command: SlashInvocation) async -> SlashResult {
@@ -1179,7 +1227,12 @@ final class ChatModel: Identifiable {
   private func drainQueue() {
     guard !isClosed, !isLoading, !isReadOnly, !continuesAsNewVersion, let entry = queue.next(isBusy: isBusy) else { return }
     queue.remove(entry.id)
-    Task { await goOut(text: entry.text, picked: entry.attachments, origin: .queue(entry)) }
+    if let command = SlashInvocation(entry.text) {
+      // Started right here, so the hand-off to the Mac already waits for it.
+      startSlash(command, picked: entry.attachments, origin: .queue(entry))
+    } else {
+      Task { await deliver(text: entry.text, picked: entry.attachments, origin: .queue(entry)) }
+    }
   }
 
   /// "Send now": the running reply takes this message in and answers it. Words go straight into
@@ -1267,6 +1320,9 @@ final class ChatModel: Identifiable {
   /// still running. Hand them to the Mac, which runs them after the reply with this app suspended
   /// (`prompt.submit` with `queued`). A paused queue stays here: the person stopped the agent.
   func handOffQueue() async {
+    // A command that left the queue is still being worked out: what was queued after it waits
+    // until its turn has been taken, or it would reach the Mac first.
+    while let running = slashRun?.task { await running.value }
     guard !queue.isEmpty, !queue.isPaused, isBusy, !continuesAsNewVersion, let client, let liveID else { return }
     for entry in queue.entries {
       // The Mac's queue takes words only; a command and what follows it wait here for the phone.

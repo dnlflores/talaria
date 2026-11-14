@@ -377,24 +377,34 @@ words:
 - **Running one:** `slash.exec {session_id, command}` first; when it refuses (skills and
   bundles are refused on purpose), `command.dispatch {session_id, name, arg}`. A `skill` or
   `send` directive's `message` goes out with `prompt.submit` like any turn, and the bubble
-  shows `display` (else the invocation read from the expanded skill, else what was typed):
-  the expanded skill is never shown, and the bubble is matched against the Mac's copy by
-  that invocation, which the Mac's history shows too. `prefill` fills the composer (`/undo`,
+  shows `display`, else what was typed: never the expanded skill or the words a command
+  composed. What it is matched against the Mac's copy by is kept apart from what it shows:
+  `sentText` is how the Mac's history reads the exact text sent back (a skill turn as its
+  invocation, anything else with its `@file:` references), so a lost acknowledgement or a
+  reload finds it rather than adding a second copy. `prefill` fills the composer (`/undo`,
   after which the chat re-reads the Mac's copy). `alias` runs its target. Plain `output`
   (with `warning`) and every error become a notice card under the command, in this app only
   (`TranscriptItem.isLocal`): not sent, not stored, gone on the next full reload.
+- **Leaving while one is worked out:** a skill or send directive still goes out, as a message
+  sent just before leaving does; words to edit, or a command that failed, become the chat's
+  saved draft, ahead of anything queued after it.
 - **Desktop-owned commands:** the commands the desktop app handles itself (a new chat, the
   theme, pickers, its own dedicated calls) and those Hermes gives no app surface are left off
   the menu, and sending one says to run it on the Mac (`SlashPolicy`).
 - **While a reply runs** a command waits in the phone's queue and runs when it reaches the
   front. "Send now" cannot put a command into the running reply, so it stops the reply and
   runs the command next; handing the queue to the Mac stops at a command, which waits for the
-  phone.
+  phone, and waits for a command that already left the queue until its turn has been taken,
+  so nothing queued after it reaches the Mac first.
 
-`SlashCommandTests` (HermesKit) covers parsing, every directive, plain output, errors, and the
-rule that no answer turns the typed command into a message; the UI test of the same name runs
-the production composer and transcript against canned answers (`--scroll-preview
---slash-preview`).
+`SlashCommandTests` (HermesKit) covers parsing, every directive, plain output, errors, the
+rule that no answer turns the typed command into a message, and matching a sent skill or
+composed message (files included) against the Mac's stored copy; the UI test of the same name
+runs the production composer and transcript against canned answers (`--scroll-preview
+--slash-preview`). `SlashDeliveryTests` (the hosted `TalariaTests` target) drives the
+production `ChatModel` and `HermesClient` against `GatewayFixture`, a loopback stand-in for the
+gateway: leaving or going to sleep while a command is worked out, and finding a sent command
+again on reload.
 
 ## Pictures
 
