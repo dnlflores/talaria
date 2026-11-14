@@ -390,10 +390,13 @@ context) and counts like the desktop app's `countDiffLineStats` (`+` but not
 `FileReference` the diffs of the calls that wrote or edited it, so a chip shows
 the turn's summed `+N -M` and the chat's Files list sums every turn
 (`TurnFiles.combined`). A patch over several files is cut at its file headers
-when each names one of the call's files; otherwise the whole diff counts for
-the call's first path. A failed call has no diff. The file sheet opens on
-Changes (one block per edit) with File beside it; the tool details sheet uses
-the same `DiffView`.
+when each names exactly one of the call's files (an exact path first, then the
+only file whose path ends the same way, so `app.swift` and `lib/app.swift`
+keep their own parts); otherwise the whole diff counts for the call's first
+path. A failed call has no diff. When one file is named two ways (`~/x` and
+its full path), its edits are merged back in transcript order. The file sheet
+opens on Changes (one block per edit) with File beside it; the tool details
+sheet uses the same `DiffView`.
 
 ## One owner per conversation
 
