@@ -13,7 +13,10 @@ Talaria (SwiftUI app)
   ChatModel       one open conversation and its composer
   AreaState       what Agents, Kanban and Cron have open (CronModel, KanbanModel)
   PushCenter      notification permission, APNs and Live Activity tokens, registers
-                  them with the Mac; opens the chat a notification or activity names
+                  them with the Mac; opens the chat a notification, activity or the
+                  app icon names, once signed in
+  QuickActions    the app icon's shortcuts: a scene delegate takes them, AppModel
+                  keeps them in step with RecentChats
   Views           Shell (iPhone: a hidden-bar TabView of Chats and Agents under a
                   floating glass dock that adds New chat and Settings; Kanban and Cron in
                   the inbox's More menu and the hub. iPad: sidebar split without Cron),
@@ -32,6 +35,8 @@ HermesKit (Swift package, no UI)
   PromptQueue     messages waiting for the running reply
   PushRegistration  what the phone tells the Mac's push plugin; SigningFacts
   ComposerKey     what a hardware key does in the composer
+  RecentChats     the last three chats opened on the phone, and the app icon's
+                  shortcuts made from them (QuickAction)
   UserContent     a user message's words and its `@image:` pictures
   Workspace       cron, kanban and file calls and their models
   AgentSettings   favourite models (the desktop app's shared UI preference), a bot's
@@ -462,6 +467,25 @@ Talaria ── POST /api/plugins/talaria-push/devices ──▶ plugin routes (g
   `onSubmit`, no `onKeyPress`), while a text view's `pressesBegan` sees it
   before text input does. The on-screen keyboard's Return never goes through
   `pressesBegan`, so it still types a new line.
+
+## Home screen shortcuts
+
+Pressing and holding the app icon offers New chat with the bot a chat was last
+started with (`preferences.lastProfile`, else the first bot) and the last three
+chats opened on the phone. `RecentChats` (HermesKit) keeps them, newest first,
+in `UserDefaults` only: a chat goes in when it comes on screen (a new chat at
+its first message, since the Mac stores nothing before), takes its title from
+each inbox load, and leaves when it is archived here or the list shows it
+archived. `AppModel.updateQuickActions` sets `UIApplication.shortcutItems`
+after each change and on going to the background.
+
+The SwiftUI app has no scene delegate of its own, so `AppDelegate` names
+`QuickActionSceneDelegate` for its scene; SwiftUI still draws the window and
+`onOpenURL` still gets Live Activity links. The delegate reads the action at
+launch (`connectionOptions.shortcutItem`) and while running
+(`performActionFor`) and hands it to `PushCenter`: a chat opens like a tapped
+notification, New chat runs `AppModel.startChat`. Before sign-in either waits
+in `PushCenter`'s pending slot and runs when the app is ready.
 
 ## The look and the agent hub
 

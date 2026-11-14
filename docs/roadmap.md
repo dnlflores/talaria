@@ -122,6 +122,8 @@ mobile app: Connections, Plugins, MCP).
 
 ## Then: what only a phone can do
 
+- Done: home screen shortcuts. Holding the app icon offers New chat with the
+  bot used last and the last three chats opened on the phone.
 - Actions on notifications (approve, answer, reply): the sender exists
   (`mac/talaria-push`); this needs notification categories and a route back
   to `clarify.respond` / `approval.respond`.

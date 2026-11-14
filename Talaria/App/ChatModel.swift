@@ -81,6 +81,8 @@ final class ChatModel: Identifiable {
   private var hasOpened = false
   private var isClosed = false
   private var hasSpoken = false
+  /// Made here (a new chat) rather than opened from the Mac's list.
+  private let madeHere: Bool
   private var isWatching = false
   private var watchTask: Task<Void, Never>?
   private var reattachTask: Task<Void, any Error>?
@@ -109,6 +111,7 @@ final class ChatModel: Identifiable {
     self.storedID = storedID
     section = row?.section ?? .chats
     prepared = live
+    madeHere = live != nil && row == nil
     draft = app.preferences.draft(for: storedID)
     state.title = row?.title ?? ""
     state.info.model = row?.model ?? ""
@@ -205,6 +208,10 @@ final class ChatModel: Identifiable {
     let base = SessionSummary.baseTitle(state.title)
     return base.isEmpty ? "New chat" : base
   }
+  /// The title as stored, empty when the chat has none yet.
+  var savedTitle: String { SessionSummary.baseTitle(state.title) }
+  /// A chat made here that nothing was sent in yet: the Mac has not stored it.
+  var isUnsaved: Bool { madeHere && !hasSpoken }
   var isStreaming: Bool { state.isStreaming }
   var status: String { state.status }
   /// What the running turn is doing, in words for the transcript and the title bar.
@@ -855,6 +862,7 @@ final class ChatModel: Identifiable {
       if status == "queued", !fromQueue { app?.show("Queued. It goes out after the current reply.") }
       if state.title.isEmpty { state.title = String((text.isEmpty ? picked.first?.name ?? "" : text).prefix(60)) }
       PushCenter.shared.noteSent(profile: profile, storedID: storedID, title: title)
+      app?.recordSent(self)
       app?.scheduleReload(after: 2.5)
     } catch {
       state.isStreaming = false
