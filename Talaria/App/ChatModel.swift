@@ -658,6 +658,7 @@ final class ChatModel: Identifiable {
         let options = NewSessionOptions(
           model: self.preferredModel, provider: self.preferredProvider, reasoningEffort: self.preferredEffort)
         live = try await client.create(profile: self.profile, options: options)
+        self.app?.preferences.noteStartedHere(live.storedID)
         let words = self.draft
         self.app?.preferences.setDraft("", for: self.storedID)
         self.storedID = live.storedID

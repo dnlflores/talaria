@@ -26,6 +26,12 @@ T3 Tools.
   active in the last day, up to three), and "N more sessions" opening that
   bot's full list: chats, messaging threads (Slack and others) and runs.
   Search bots and chats, pin, mark unread, archive.
+- **Where each chat started:** a filter in the inbox's top bar shows only
+  chats started from one place (the Hermes app, this phone, a terminal,
+  Workdash, Slack, automations), and rows carry a small icon for it. Tags come
+  from an optional file the Mac keeps
+  (`~/.hermes/plugin-data/chat-origins/origins.json`); without it, a chat's
+  stored source decides. Chats made on this phone always read as Talaria.
 - **A living background:** every screen sits on a sky of scattered particles
   drifting like water, with broad soft waves rolling through and patches that
   shimmer, like stars moving through the Milky Way. Tilt the phone and held

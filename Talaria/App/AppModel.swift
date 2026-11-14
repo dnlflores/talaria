@@ -116,6 +116,9 @@ final class AppModel {
   private(set) var agentTotals: [String: Int] = [:]
   /// The latest reply of each bot's lead conversation, by stored id.
   private(set) var headPreviews: [String: String] = [:]
+  /// Where each chat started, backfilled on the Mac.
+  private(set) var chatOrigins = ChatOriginMap.empty
+  @ObservationIgnored private var chatOriginsReadAt: Date?
   @ObservationIgnored private var headPreviewStamps: [String: Double] = [:]
   /// The single-chat reads for recent chats a list read left out (`checkUnlistedRecentChats`).
   @ObservationIgnored var recentChatsCheck: Task<Void, Never>?
@@ -583,6 +586,7 @@ final class AppModel {
         families = SessionGrouping.families(rows)
       }
       setOwners(currentOwners)
+      Task { await refreshChatOrigins(client) }
       sessionsError = nil
       hasLoadedSessions = true
       if let chat = openChat, let row = rows.first(where: { $0.id == chat.storedID }) { chat.rowChanged(row) }
@@ -663,9 +667,42 @@ final class AppModel {
     var live = workingIDs()
     live.formUnion(waitingOnYou)
     live.formUnion(liveStatuses.filter { $0.value == "waiting" }.map(\.key))
+    let filter = originFilter
+    let shown = filter == .all ? sessions : sessions.filter { filter.includes(origin(of: $0).origin) }
+    // Totals count every chat on the Mac, so under a filter "N more" counts only loaded matches.
     return AgentGrouping.groups(
-      sessions: sessions, profiles: orderedProfileNames, families: families, totals: agentTotals,
+      sessions: shown, profiles: filter == .all ? orderedProfileNames : [], families: families,
+      totals: filter == .all ? agentTotals : [:],
       titles: titles, query: query, isLive: { live.contains($0) }, now: Date().timeIntervalSince1970)
+  }
+
+  // MARK: Chat origins
+
+  var originFilter: ChatOriginFilter {
+    get { ChatOriginFilter(storage: preferences.originFilter) }
+    set { preferences.originFilter = newValue.storage }
+  }
+
+  func origin(of session: SessionSummary) -> ChatOriginTag {
+    chatOrigins.tag(for: session, startedHere: preferences.startedHere)
+  }
+
+  /// How many loaded chats (one per conversation) each filter would show.
+  func originCounts() -> [ChatOriginFilter: Int] {
+    let rows = SessionGrouping.collapse(sessions, families: families)
+    var counts: [ChatOriginFilter: Int] = [:]
+    for filter in ChatOriginFilter.menu {
+      counts[filter] = filter == .all ? rows.count : rows.filter { filter.includes(origin(of: $0).origin) }.count
+    }
+    return counts
+  }
+
+  /// Reads the Mac's origins file at most once a minute (the Mac rewrites it every five).
+  func refreshChatOrigins(_ client: HermesClient, force: Bool = false) async {
+    if !force, let last = chatOriginsReadAt, Date().timeIntervalSince(last) < 60 { return }
+    chatOriginsReadAt = Date()
+    guard let map = try? await client.chatOrigins(), !map.tags.isEmpty else { return }
+    if map != chatOrigins { chatOrigins = map }
   }
 
   /// Every chat with a reply running now: the same rule as `isWorking`, for all rows at once.
@@ -958,6 +995,7 @@ final class AppModel {
       let live = try await client.create(profile: profile, options: options)
       preferences.lastProfile = profile
       updateQuickActions()
+      preferences.noteStartedHere(live.storedID)
       chatCache[live.storedID] = ChatModel(app: self, profile: profile, storedID: live.storedID, row: nil, live: live)
       // From the agent hub on iPhone the chat stacks over the hub; anywhere else it opens in Chats.
       if tab != .bots || usesSplitLayout { tab = .chats }

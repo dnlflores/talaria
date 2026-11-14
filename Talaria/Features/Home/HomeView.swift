@@ -21,6 +21,13 @@ struct HomeView: View {
           .listRowBackground(Color.clear)
       }
 
+      if app.originFilter != .all, app.hasLoadedSessions {
+        OriginFilterBanner()
+          .listRowInsets(EdgeInsets(top: 4, leading: Metrics.screenPadding, bottom: 4, trailing: Metrics.screenPadding))
+          .listRowSeparator(.hidden)
+          .listRowBackground(Color.clear)
+      }
+
       if !app.hasLoadedSessions {
         ForEach(0..<5, id: \.self) { _ in
           AgentRowPlaceholder().treeRow()
@@ -61,6 +68,11 @@ struct HomeView: View {
         .fixedSize()
       }
       .sharedBackgroundVisibility(.hidden)
+
+      // Show chats by where they started.
+      ToolbarItem(placement: .topBarTrailing) {
+        OriginFilterMenu()
+      }
 
       // Areas that are not in the dock are one menu away here.
       ToolbarItem(placement: .topBarTrailing) {
@@ -312,6 +324,8 @@ struct SessionRow: View {
   }
 
   private var sourceName: String {
+    let origin = app.origin(of: session)
+    if origin.origin != .unknown { return OriginBadge.words(origin) }
     switch session.section {
     case .chats:
       switch session.createdSource {
@@ -324,6 +338,8 @@ struct SessionRow: View {
   }
 
   private var sourceSymbol: String {
+    let origin = app.origin(of: session).origin
+    if origin != .unknown { return origin.symbol }
     switch session.section {
     case .platform: return "number"
     case .api: return "curlybraces"

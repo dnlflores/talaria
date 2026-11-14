@@ -27,6 +27,10 @@ final class Preferences {
       defaults.set(try? JSONEncoder().encode(recentChats), forKey: Key.recentChats)
     }
   }
+  /// Which chats the inbox shows by where they started (`ChatOriginFilter.storage`).
+  var originFilter: String { didSet { defaults.set(originFilter, forKey: Key.originFilter) } }
+  /// Chats this phone created, so they read as Talaria before the Mac's backfill runs.
+  private(set) var startedHere: Set<String>
   private var drafts: [String: String]
 
   private enum Key {
@@ -44,6 +48,8 @@ final class Preferences {
     static let liveActivities = "push.liveActivities"
     static let notifyScope = "push.scope"
     static let recentChats = "chat.recent"
+    static let originFilter = "home.originFilter"
+    static let startedHere = "origins.startedHere"
   }
 
   init(defaults: UserDefaults = .standard) {
@@ -67,6 +73,13 @@ final class Preferences {
     notifyScope = defaults.string(forKey: Key.notifyScope) ?? "all"
     recentChats = defaults.data(forKey: Key.recentChats).flatMap { try? JSONDecoder().decode(RecentChats.self, from: $0) }
       ?? RecentChats()
+    originFilter = defaults.string(forKey: Key.originFilter) ?? "all"
+    startedHere = Set(defaults.stringArray(forKey: Key.startedHere) ?? [])
+  }
+
+  func noteStartedHere(_ storedID: String) {
+    guard !storedID.isEmpty, startedHere.insert(storedID).inserted else { return }
+    defaults.set(Array(startedHere), forKey: Key.startedHere)
   }
 
   /// The address baked in at build time from the untracked `Config/Local.xcconfig`, if any.

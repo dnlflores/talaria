@@ -330,6 +330,19 @@ now), bots with no chats last.
   not a `NavigationSplitView` column: the split view hid columns when its
   roots swapped and overlaid the list beside the side dock in portrait).
 
+## Where a chat started
+
+Hermes cannot say which app started a chat: the desktop app, the browser Web Access app and
+Talaria all create with `source: gui`. `ChatOrigin` (HermesKit) resolves an origin per row in
+this order: chats this phone created (`Preferences.startedHere`, noted on `session.create`
+and when a reaped empty chat is minted again), then the Mac's tag file
+`~/.hermes/plugin-data/chat-origins/origins.json` (read over `/api/fs/read-text`, kept small
+for its 512 KB preview cap; a backfill outside this repo writes it), then the parent chat's
+tag, then the row's own source (Slack, cron, kanban, terminal and the like do tell). The
+inbox's `OriginFilterMenu` filters by it (default All, so the inbox is unchanged until one
+is picked) and rows show its icon. `OriginFilterTests` (`TEST_RUNNER_TALARIA_UITEST_ORIGINS=1`)
+walks it read-only.
+
 ## Sending while a reply runs
 
 The backend's own answer to a message sent mid-turn is `display.busy_input_mode`,

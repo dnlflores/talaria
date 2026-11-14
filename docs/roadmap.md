@@ -13,6 +13,9 @@ yet.
   chats under it, "N more sessions" to the bot's full list), versions folded,
   search, pin, unread, archive, and "Working 3m" on chats whose reply is
   running.
+- Inbox filter by where a chat started (Hermes app, this phone, terminal,
+  Workdash, Slack, automations) with an icon on each row, from the Mac's
+  optional `chat-origins` tag file, else the row's stored source.
 - Chat: streaming, Markdown, work log, tool detail, inline questions,
   approvals, sudo and secret prompts, model (provider, then model) and effort,
   photo and file attachments, rename, read-along for chats held elsewhere,
