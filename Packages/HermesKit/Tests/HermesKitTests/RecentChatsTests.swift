@@ -53,18 +53,98 @@ struct RecentChatsTests {
     #expect(recent.entries.map(\.botTitle) == ["Ada Lovelace", "Ada Lovelace"])
   }
 
-  @Test func aChatMissingFromAReadWithAllItsBotsChatsDropsOut() {
-    // "ada" has two chats on the Mac and both are in this read, so "c" was archived or deleted there.
-    // "default" has more chats than the read holds: "b" may just be older, and stays.
-    let rows = [row("a", title: "First"), row("x", title: "Other")]
-    let recent = three.refreshingTitles(from: rows, totals: ["ada": 2, "default": 40])
-    #expect(recent.entries.map(\.storedID) == ["b", "a"])
-    #expect(three.refreshingTitles(from: rows).entries.map(\.storedID) == ["c", "b", "a"])
+  @Test func aChatMadeHereStaysOffTheIconUntilItIsSaved() {
+    let recent = three.opened(profile: "ada", storedID: "n", title: "", botTitle: "Ada", saved: false)
+    #expect(recent.entries.map(\.storedID) == ["n", "c", "b", "a"])
+    #expect(recent.shown.map(\.storedID) == ["c", "b", "a"])
+    #expect(recent.quickActions(newChat: nil).count == 3)
+    let saved = recent.saving("n", title: "Hello")
+    #expect(saved.shown.map(\.storedID) == ["n", "c", "b"])
+    #expect(saved.shown.first?.title == "Hello")
+    // Reopening a saved chat never makes it unsaved again.
+    #expect(saved.opened(profile: "ada", storedID: "n", title: "", botTitle: "", saved: false).shown.first?.storedID == "n")
+  }
+
+  @Test func aSendFinishingAfterOtherChatsOpenedKeepsTheOpeningOrder() {
+    // A send started in "a", then "b", "c" and "d" were opened before it landed.
+    let later = three.opened(profile: "ada", storedID: "d", title: "Fourth", botTitle: "Ada")
+    #expect(later.saving("a", title: "First").shown.map(\.storedID) == ["d", "c", "b"])
+    // Still in the list: it keeps its place and takes the title.
+    #expect(three.saving("a", title: "First, longer").shown.map(\.storedID) == ["c", "b", "a"])
+    #expect(three.saving("a", title: "First, longer").shown.last?.title == "First, longer")
+    // A new chat made here, then "b" opened before its first message landed: it lands behind "b".
+    let made = three.opened(profile: "ada", storedID: "n", title: "", botTitle: "Ada", saved: false)
+      .opened(profile: "default", storedID: "b", title: "Second", botTitle: "Hermes")
+    #expect(made.saving("n", title: "Hello").shown.map(\.storedID) == ["b", "n", "c"])
+  }
+
+  @Test func aSendFinishingAfterArchivingHereDoesNotBringTheChatBack() {
+    #expect(three.removing("a").saving("a", title: "First").shown.map(\.storedID) == ["c", "b"])
+    let made = three.opened(profile: "ada", storedID: "n", title: "", botTitle: "Ada", saved: false)
+    #expect(made.removing("n").saving("n", title: "Hello").shown.map(\.storedID) == ["c", "b", "a"])
+  }
+
+  @Test func chatsMadeHereNeverCrowdOutSavedOnes() {
+    var recent = three
+    for id in ["n1", "n2", "n3", "n4"] {
+      recent = recent.opened(profile: "ada", storedID: id, title: "", botTitle: "Ada", saved: false)
+    }
+    #expect(recent.entries.map(\.storedID) == ["n4", "n3", "n2", "c", "b", "a"])
+    #expect(recent.shown.map(\.storedID) == ["c", "b", "a"])
+  }
+
+  /// The inbox read is a window (200 of a bot's 400 chats, say): a recent chat it leaves out is read
+  /// on its own. Archived or deleted on the Mac drops out; an older chat stays; a failed read keeps it.
+  @Test func chatsAPartialListLeavesOutAreReadOneByOne() async {
+    let window = (0..<200).map { row("other-\($0)", title: "Other \($0)") }
+    let refreshed = three.refreshingTitles(from: window)
+    #expect(refreshed == three)
+    let unlisted = refreshed.unlisted(in: window)
+    #expect(unlisted.map(\.storedID) == ["c", "b", "a"])
+    let lookups = await RecentChats.lookUp(unlisted) { entry in
+      switch entry.storedID {
+      case "c": return SessionSummary(
+          json: .object(["id": .string("c"), "profile": .string("ada"), "title": .string("Third"), "archived": .number(1)]))
+      case "b": return SessionSummary(
+          json: .object(["id": .string("b"), "profile": .string("default"), "title": .string("Second, renamed")]))
+      default: throw HermesError.http(status: 404, message: "Session not found")
+      }
+    }
+    #expect(lookups["a"] == .gone)
+    let recent = refreshed.reconciling(lookups)
+    #expect(recent.entries.map(\.storedID) == ["b"])
+    #expect(recent.entries.first?.title == "Second, renamed")
+  }
+
+  @Test func aFailedReadKeepsTheChat() async {
+    let lookups = await RecentChats.lookUp(three.entries) { entry in
+      switch entry.storedID {
+      case "c": throw HermesError.timedOut("The request")
+      case "b": throw HermesError.http(status: 503, message: "Session store is corrupt")
+      default: throw HermesError.loginRequired
+      }
+    }
+    #expect(Set(lookups.values) == [.unknown])
+    #expect(three.reconciling(lookups) == three)
+  }
+
+  @Test func readsThatFinishLateDoNotBringBackARemovedChat() {
+    let row = SessionSummary(json: .object(["id": .string("b"), "profile": .string("default"), "title": .string("Second")]))
+    #expect(three.removing("b").reconciling(["b": .found(row)]).entries.map(\.storedID) == ["c", "a"])
+  }
+
+  @Test func unsavedChatsAreNeverReadOnTheirOwn() {
+    let recent = three.opened(profile: "ada", storedID: "n", title: "", botTitle: "Ada", saved: false)
+    #expect(recent.unlisted(in: [row("c", title: "Third")]).map(\.storedID) == ["b", "a"])
   }
 
   @Test func itSurvivesARoundTripThroughJSON() throws {
-    let data = try JSONEncoder().encode(three)
-    #expect(try JSONDecoder().decode(RecentChats.self, from: data) == three)
+    let recent = three.opened(profile: "ada", storedID: "n", title: "", botTitle: "Ada", saved: false)
+    let data = try JSONEncoder().encode(recent)
+    #expect(try JSONDecoder().decode(RecentChats.self, from: data) == recent)
+    // Saved before entries carried `saved`: every one of them was saved.
+    let older = Data(#"{"entries":[{"profile":"ada","storedID":"a","title":"First","botTitle":"Ada"}]}"#.utf8)
+    #expect(try JSONDecoder().decode(RecentChats.self, from: older).shown.map(\.storedID) == ["a"])
   }
 
   @Test func theIconOffersANewChatThenTheRecentChats() {

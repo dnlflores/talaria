@@ -473,10 +473,14 @@ Talaria ── POST /api/plugins/talaria-push/devices ──▶ plugin routes (g
 Pressing and holding the app icon offers New chat with the bot a chat was last
 started with (`preferences.lastProfile`, else the first bot) and the last three
 chats opened on the phone. `RecentChats` (HermesKit) keeps them, newest first,
-in `UserDefaults` only: a chat goes in when it comes on screen (a new chat at
-its first message, since the Mac stores nothing before), takes its title from
-each inbox load, and leaves when it is archived here, or when a load holds all
-of its bot's chats (the Mac's count) and not this one.
+in `UserDefaults` only: a chat goes to the front when it comes on screen. A new
+chat holds its place but stays off the icon until its first message lands,
+since the Mac stores nothing before; a send that lands later only marks it
+saved, so it never reorders the list or brings back a chat archived meanwhile.
+Each inbox load refreshes titles. The load is a window, so a recent chat it
+leaves out is read on its own (`GET /api/sessions/<id>`, at most three, one
+round at a time): archived or not found on the Mac drops it, an older chat
+stays, and a failed read changes nothing. Archiving it here drops it too.
 `AppModel.updateQuickActions` sets `UIApplication.shortcutItems`
 after each change and on going to the background.
 

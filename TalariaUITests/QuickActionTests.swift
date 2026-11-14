@@ -143,7 +143,8 @@ final class QuickActionTests: XCTestCase {
     shoot("\(device)-notification-waiting")
     let banner = springboard.descendants(matching: .any)
       .matching(NSPredicate(format: "label CONTAINS %@", marker)).firstMatch
-    if !banner.waitForExistence(timeout: 20) {
+    // SpringBoard holds a banner about 10 s past its time while it waits on its own inference.
+    if !banner.waitForExistence(timeout: 45) {
       shoot("\(device)-notification-missing")
       XCTFail("no notification banner")
     }

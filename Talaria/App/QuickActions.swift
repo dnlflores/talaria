@@ -40,20 +40,21 @@ extension AppModel {
     return orderedProfiles.first?.name
   }
 
-  /// A chat came on screen. One just made here and not spoken in yet is left out until its first
-  /// message (`recordSent`): until then the Mac has no such chat to open.
+  /// A chat came on screen and moves to the front. One just made here and not spoken in yet holds
+  /// its place but stays off the icon until its first message lands (`recordSent`): until then the
+  /// Mac has no such chat to open.
   func recordOpened(_ chat: ChatModel) {
-    guard !chat.isUnsaved else { return }
     let chatTitle = row(chat.storedID)?.baseTitle ?? chat.savedTitle
     preferences.recentChats = preferences.recentChats.opened(
-      profile: chat.profile, storedID: chat.storedID, title: chatTitle, botTitle: knownBotTitle(chat.profile))
+      profile: chat.profile, storedID: chat.storedID, title: chatTitle, botTitle: knownBotTitle(chat.profile),
+      saved: !chat.isUnsaved)
     updateQuickActions()
   }
 
-  /// A message went out from this phone: the chat exists on the Mac now, and is the latest one.
+  /// A message from this phone landed: the chat exists on the Mac now. Only marks it saved: the send
+  /// may finish after other chats were opened, or after the chat was archived here.
   func recordSent(_ chat: ChatModel) {
-    preferences.recentChats = preferences.recentChats.opened(
-      profile: chat.profile, storedID: chat.storedID, title: chat.savedTitle, botTitle: knownBotTitle(chat.profile))
+    preferences.recentChats = preferences.recentChats.saving(chat.storedID, title: chat.savedTitle)
     updateQuickActions()
   }
 
@@ -62,13 +63,33 @@ extension AppModel {
     profiles.isEmpty ? "" : title(forProfile: name)
   }
 
-  /// A fresh list read: titles may have changed, and chats archived on the Mac drop out.
+  /// A fresh list read: titles may have changed, and chats archived on the Mac drop out. The list
+  /// is a window, so recent chats it leaves out are read one by one.
   func refreshRecentChats(from rows: [SessionSummary]) {
     var bots: [String: String] = [:]
     for profile in profiles { bots[profile.name] = profile.title }
-    preferences.recentChats = preferences.recentChats.refreshingTitles(
-      from: rows, botTitles: bots, totals: agentTotals)
+    preferences.recentChats = preferences.recentChats.refreshingTitles(from: rows, botTitles: bots)
     updateQuickActions()
+    checkUnlistedRecentChats(rows)
+  }
+
+  /// Reads each recent chat the list left out (at most three): archived or deleted on the Mac drops
+  /// it, an older chat keeps it, and a failed read changes nothing. One round at a time.
+  private func checkUnlistedRecentChats(_ rows: [SessionSummary]) {
+    guard recentChatsCheck == nil, let client else { return }
+    let unlisted = preferences.recentChats.unlisted(in: rows)
+    guard !unlisted.isEmpty else { return }
+    recentChatsCheck = Task { [weak self] in
+      let lookups = await RecentChats.lookUp(unlisted) { entry in
+        try await client.session(storedID: entry.storedID, profile: entry.profile)
+      }
+      guard let self else { return }
+      recentChatsCheck = nil
+      // Signed out or moved to another Mac meanwhile.
+      guard self.client === client else { return }
+      preferences.recentChats = preferences.recentChats.reconciling(lookups)
+      updateQuickActions()
+    }
   }
 
   func forgetRecentChat(_ storedID: String) {

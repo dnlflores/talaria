@@ -117,6 +117,8 @@ final class AppModel {
   /// The latest reply of each bot's lead conversation, by stored id.
   private(set) var headPreviews: [String: String] = [:]
   @ObservationIgnored private var headPreviewStamps: [String: Double] = [:]
+  /// The single-chat reads for recent chats a list read left out (`checkUnlistedRecentChats`).
+  @ObservationIgnored var recentChatsCheck: Task<Void, Never>?
   /// When a chat started working, for chats seen going from idle to working. A chat already
   /// working when the app first looked has no entry: its start is not known.
   private(set) var workingSince: [String: Double] = [:]
