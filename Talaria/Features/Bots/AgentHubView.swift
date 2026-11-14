@@ -23,7 +23,7 @@ struct AgentHubRoot: View {
       .frame(maxWidth: 680)
       .frame(maxWidth: .infinity)
     }
-    .background(palette.screen.ignoresSafeArea())
+    .screenBackground()
     .refreshable {
       await app.refreshProfilesNow()
       await app.loadDefaultCatalog(profile, force: true)
@@ -52,7 +52,7 @@ struct AgentHubPage: View {
       .frame(maxWidth: 680)
       .frame(maxWidth: .infinity)
     }
-    .background(palette.screen.ignoresSafeArea())
+    .screenBackground()
     .navigationTitle(app.title(forProfile: profile))
     .navigationBarTitleDisplayMode(.inline)
     .refreshable {
@@ -400,7 +400,7 @@ struct DefaultModelView: View {
       .frame(maxWidth: 680)
       .frame(maxWidth: .infinity)
     }
-    .background(palette.screen.ignoresSafeArea())
+    .screenBackground()
     .navigationTitle("Default Model")
     .navigationBarTitleDisplayMode(.inline)
     .navigationDestination(isPresented: $showsAll) {
@@ -498,7 +498,7 @@ struct SkillsView: View {
       .frame(maxWidth: 680)
       .frame(maxWidth: .infinity)
     }
-    .background(palette.screen.ignoresSafeArea())
+    .screenBackground()
     .searchable(text: $query, prompt: "Search skills")
     .navigationTitle("Skills")
     .navigationBarTitleDisplayMode(.inline)
@@ -558,7 +558,7 @@ struct SoulView: View {
       .frame(maxWidth: 680)
       .frame(maxWidth: .infinity)
     }
-    .background(palette.screen.ignoresSafeArea())
+    .screenBackground()
     .navigationTitle("Soul")
     .navigationBarTitleDisplayMode(.inline)
     .refreshable { await load() }

@@ -353,7 +353,7 @@ private struct SidebarShell: View {
           .foregroundStyle(palette.foregroundMuted)
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
-      .background(palette.screen.ignoresSafeArea())
+      .screenBackground()
     }
   }
 }
@@ -396,7 +396,7 @@ private struct AreaSidebar: View {
     }
     .listStyle(.plain)
     .scrollContentBackground(.hidden)
-    .background(palette.screen.ignoresSafeArea())
+    .screenBackground()
     .toolbar {
       ToolbarItem(placement: .topBarLeading) {
         HStack(spacing: 8) {
@@ -441,7 +441,7 @@ struct DetailPlaceholder: View {
       Text(text).font(AppFont.footnote).foregroundStyle(palette.foregroundMuted)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(palette.screen.ignoresSafeArea())
+    .screenBackground()
   }
 }
 

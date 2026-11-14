@@ -41,7 +41,7 @@ struct HomeView: View {
     }
     .listStyle(.plain)
     .scrollContentBackground(.hidden)
-    .background(palette.screen.ignoresSafeArea())
+    .screenBackground()
     .environment(\.defaultMinListRowHeight, 1)
     .refreshable { await app.refreshSessions() }
     .onAppear { Task { await app.refreshSessions(quiet: true) } }

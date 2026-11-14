@@ -102,7 +102,7 @@ struct ConnectView: View {
       .padding(.bottom, 32)
     }
     .scrollDismissesKeyboard(.interactively)
-    .background(palette.screen.ignoresSafeArea())
+    .screenBackground()
     .onAppear {
       if address.isEmpty {
         address = app.preferences.serverAddress.isEmpty ? Preferences.bundledServerAddress : app.preferences.serverAddress

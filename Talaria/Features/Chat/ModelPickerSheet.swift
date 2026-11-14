@@ -52,7 +52,7 @@ struct ModelPickerSheet: View {
         .padding(.top, 8)
         .padding(.bottom, 24)
       }
-      .background(palette.screen.ignoresSafeArea())
+      .screenBackground()
       .navigationTitle("Model")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {

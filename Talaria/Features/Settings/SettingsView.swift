@@ -80,7 +80,7 @@ struct SettingsView: View {
       .frame(maxWidth: 680)
       .frame(maxWidth: .infinity)
     }
-    .background(palette.screen.ignoresSafeArea())
+    .screenBackground()
     .navigationTitle("Settings")
     .navigationBarTitleDisplayMode(.inline)
     .confirmationDialog("Use a different Mac?", isPresented: $confirmsForget, titleVisibility: .visible) {

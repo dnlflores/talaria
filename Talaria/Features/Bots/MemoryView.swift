@@ -40,7 +40,7 @@ struct MemoryView: View {
       .frame(maxWidth: 680)
       .frame(maxWidth: .infinity)
     }
-    .background(palette.screen.ignoresSafeArea())
+    .screenBackground()
     .navigationTitle("Memory & Learning")
     .navigationBarTitleDisplayMode(.inline)
     .refreshable { await load() }
@@ -414,7 +414,7 @@ struct LearningNodeView: View {
       .frame(maxWidth: 680)
       .frame(maxWidth: .infinity)
     }
-    .background(palette.screen.ignoresSafeArea())
+    .screenBackground()
     .navigationTitle(title)
     .navigationBarTitleDisplayMode(.inline)
     .task { await load() }

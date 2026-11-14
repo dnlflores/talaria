@@ -284,7 +284,7 @@ struct AgentSessionsView: View {
     }
     .listStyle(.plain)
     .scrollContentBackground(.hidden)
-    .background(palette.screen.ignoresSafeArea())
+    .screenBackground()
     .environment(\.defaultMinListRowHeight, 10)
     .navigationTitle(title)
     .navigationBarTitleDisplayMode(.inline)

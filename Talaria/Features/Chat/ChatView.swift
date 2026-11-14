@@ -14,7 +14,7 @@ struct ChatRouteView: View {
       if let chat {
         ChatView(chat: chat)
       } else {
-        palette.screen.ignoresSafeArea()
+        ScreenBackground()
       }
     }
     .onAppear {
@@ -48,7 +48,7 @@ struct ChatView: View {
           if !chat.isReadOnly { ComposerView(chat: chat) { showsModels = true } }
         }
       }
-      .background(palette.screen.ignoresSafeArea())
+      .screenBackground()
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .principal) {

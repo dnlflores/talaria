@@ -26,6 +26,11 @@ T3 Tools.
   active in the last day, up to three), and "N more sessions" opening that
   bot's full list: chats, messaging threads (Slack and others) and runs.
   Search bots and chats, pin, mark unread, archive.
+- **A living background:** every screen sits on a sky of scattered particles
+  drifting like water, with broad soft waves rolling through and patches that
+  shimmer, like stars moving through the Milky Way. Tilt the phone and held
+  for a few seconds the waves lean that way; swipes nudge them too. It runs on
+  the GPU and holds still with Reduce Motion on.
 - **Chat** with streaming replies, Markdown (code, tables, task lists, quotes)
   and visible progress messages from the agent between steps. Only actual thinking
   and tool calls go in collapsed work logs. Opening a log shows the first 20

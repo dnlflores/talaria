@@ -126,6 +126,12 @@ final class ChatModel: Identifiable {
   static func scrollPreview(app: AppModel, short: Bool) -> ChatModel {
     let chat = ChatModel(app: app, profile: "preview", storedID: "scroll-preview", row: nil, live: nil)
     chat.state.title = "Scroll preview"
+    // `--empty-chat`: a new chat with nothing sent yet (the particle field behind it).
+    if ProcessInfo.processInfo.arguments.contains("--empty-chat") {
+      chat.state.title = "New chat"
+      chat.isLoading = false
+      return chat
+    }
     if !short {
       for turn in 1...8 {
         chat.state.items.append(.user("Earlier question \(turn)", timestamp: Double(turn)))

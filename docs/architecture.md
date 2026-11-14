@@ -503,6 +503,22 @@ and indigo edge when picked, derived from each palette's `primary`), `GlassSearc
 Real Liquid Glass (`glassEffect`) is kept for floating controls: the dock and capsule
 buttons.
 
+Every screen's background is `.screenBackground()` (`Components/Ripple/`): the palette's
+screen color plus `RippleField`: about 2,500 particles on a jittered grid (12 pt apart) that
+the water carries along and wraps, at three-ish depths (size, brightness and drift speed
+vary per particle), broad soft waves (430 pt) rolling through, and drifting noise patches
+where particles twinkle. Everything is computed in the vertex shader (`RippleField.metal`)
+from the particle's index and a few uniforms: no particle buffer (60 fps, `MTKView` point
+sprites, additive on dark screens). Each screen mounts its own copy only while it is on
+show (covered and other-tab screens cost nothing), and all copies share one clock
+(`RippleGPU`) and lay the ripple out in window space, so iPad columns and swapped screens
+show parts of one ripple. `RippleMotion` steers it: gravity from CoreMotion relative to a
+normal hold gives the heading ("downhill" on the screen), and a pan recognizer on the
+window that never cancels or delays touches adds the finger's direction, decaying over
+about a second. At rest the ripple runs up and to the right. Motion updates run only
+while a copy animates; Reduce Motion or an inactive scene holds one frame.
+`--scroll-preview --empty-chat` shows it offline.
+
 On iPhone the system tab bar is hidden and `Dock` floats over the first screen of
 Chats and Agents (`TabView` still keeps each area's place and appear/disappear). It
 hides once a page is stacked on top, so chats and pages get the whole screen. New chat

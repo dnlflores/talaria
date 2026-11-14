@@ -14,7 +14,8 @@ struct TranscriptScrollFixture: View {
   }
 
   var body: some View {
-    ThemedRoot(family: .hermes, appearance: .dark) {
+    let appearance = ProcessInfo.processInfo.environment["TALARIA_PREVIEW_APPEARANCE"]
+    ThemedRoot(family: .hermes, appearance: appearance.flatMap(AppearanceMode.init(rawValue:)) ?? .dark) {
       NavigationStack {
         ChatView(chat: chat)
       }

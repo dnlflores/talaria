@@ -261,7 +261,7 @@ struct AllModelsPage: View {
       .padding(.bottom, 28)
     }
     .scrollDismissesKeyboard(.immediately)
-    .background(palette.screen.ignoresSafeArea())
+    .screenBackground()
     .navigationTitle(title)
     .navigationBarTitleDisplayMode(.inline)
     .onAppear { pickDefault(choices) }

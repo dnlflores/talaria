@@ -120,7 +120,7 @@ struct CronList: View {
     }
     .listStyle(.plain)
     .scrollContentBackground(.hidden)
-    .background(palette.screen.ignoresSafeArea())
+    .screenBackground()
     .environment(\.defaultMinListRowHeight, 10)
     .navigationTitle(profile.map { "\(app.title(forProfile: $0)) · Cron" } ?? "Cron")
     .navigationBarTitleDisplayMode(.inline)
@@ -238,7 +238,7 @@ struct CronDetailView: View {
         EmptyStateView(symbol: "clock", title: "Job not found", text: "It may have been deleted on your Mac.")
       }
     }
-    .background(palette.screen.ignoresSafeArea())
+    .screenBackground()
     .navigationBarTitleDisplayMode(.inline)
   }
 

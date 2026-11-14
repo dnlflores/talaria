@@ -95,7 +95,7 @@ struct KanbanBoardView: View {
       .frame(maxWidth: 760)
       .frame(maxWidth: .infinity)
     }
-    .background(palette.screen.ignoresSafeArea())
+    .screenBackground()
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
       ToolbarItem(placement: .principal) { boardTitle }
@@ -367,7 +367,7 @@ struct KanbanTaskView: View {
         ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
       }
     }
-    .background(palette.screen.ignoresSafeArea())
+    .screenBackground()
     .navigationBarTitleDisplayMode(.inline)
     .task(id: "\(taskID)|\(model.board?.latestEventID ?? 0)") { await load() }
   }
