@@ -123,9 +123,23 @@ public enum DiffLines {
     return path
   }
 
-  /// Whether a header's path (often relative to the chat's folder) names `file`.
-  static func header(_ header: String, names file: String) -> Bool {
-    guard !header.isEmpty, header != "/dev/null" else { return false }
-    return file == header || file.hasSuffix("/" + header) || header.hasSuffix("/" + file)
+  /// The one file among `files` that a header's path (often relative to the chat's folder) names.
+  /// An exact match wins; otherwise the header and the file must end the same way, and only one
+  /// file may do so. With `app.swift` and `lib/app.swift` both edited, the header `lib/app.swift`
+  /// names the second file only, and a header that fits several files names none.
+  static func file(namedBy header: String, among files: [String]) -> String? {
+    let header = plain(header)
+    guard !header.isEmpty, header != "/dev/null" else { return nil }
+    if let exact = files.first(where: { plain($0) == header }) { return exact }
+    let endingAlike = files.filter {
+      let file = plain($0)
+      return file.hasSuffix("/" + header) || header.hasSuffix("/" + file)
+    }
+    return endingAlike.count == 1 ? endingAlike[0] : nil
+  }
+
+  /// A path without a leading `./`.
+  private static func plain(_ path: String) -> String {
+    path.hasPrefix("./") ? String(path.dropFirst(2)) : path
   }
 }

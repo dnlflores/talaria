@@ -94,9 +94,13 @@ public enum FileExtraction {
   public static func files(in items: [TranscriptItem]) -> [FileReference] {
     var order: [String] = []
     var found: [String: FileReference] = [:]
+    // Where in the transcript each file's diffs came from, in step with its `diffs`.
+    var diffPlaces: [String: [Int]] = [:]
+    var place = 0
 
     func add(_ raw: String, _ origin: FileReference.Origin, _ timestamp: Double?, _ diff: EditDiff? = nil) {
       guard let path = normalize(raw) else { return }
+      if diff != nil { diffPlaces[path, default: []].append(place) }
       if var existing = found[path] {
         existing.origin = max(existing.origin, origin)
         if let timestamp { existing.timestamp = max(existing.timestamp ?? 0, timestamp) }
@@ -109,6 +113,7 @@ public enum FileExtraction {
     }
 
     for item in items {
+      place += 1
       switch item.kind {
       case .tool:
         guard let tool = item.tool else { continue }
@@ -121,7 +126,7 @@ public enum FileExtraction {
         continue
       }
     }
-    return mergingHomeShorthand(order.compactMap { found[$0] })
+    return mergingHomeShorthand(order.compactMap { found[$0] }, diffPlaces: diffPlaces)
   }
 
   /// An answer without its `MEDIA:` lines, which the app shows as file chips under it instead.
@@ -143,16 +148,30 @@ public enum FileExtraction {
   /// - an answer says `~/x/y.md` where a tool reported `/Users/me/x/y.md`;
   /// - an answer says `/tmp/a.txt` where a tool resolved it to `/private/tmp/a.txt`
   ///   (on macOS `/tmp`, `/var` and `/etc` are links into `/private`).
-  /// When both appear, keep the path the tool reported once, with the stronger origin.
-  static func mergingHomeShorthand(_ files: [FileReference]) -> [FileReference] {
+  /// When both appear, keep the path the tool reported once, with the stronger origin. Their
+  /// diffs are put back in transcript order (`diffPlaces`: where each path's diffs came from), so
+  /// "Edit 1" stays the first edit whichever name each edit used.
+  static func mergingHomeShorthand(_ files: [FileReference], diffPlaces: [String: [Int]] = [:]) -> [FileReference] {
     var out = files
-    for (index, file) in files.enumerated() {
-      guard let target = out.indices.first(where: { $0 != index && !out[$0].path.isEmpty && isAlias(file.path, of: out[$0].path) })
+    var places = files.map { file in
+      let known = diffPlaces[file.path] ?? []
+      return known.count == file.diffs.count ? known : Array(repeating: 0, count: file.diffs.count)
+    }
+    for index in files.indices {
+      let file = out[index]
+      guard !file.path.isEmpty,
+        let target = out.indices.first(where: { $0 != index && !out[$0].path.isEmpty && isAlias(file.path, of: out[$0].path) })
       else { continue }
       out[target].origin = max(out[target].origin, file.origin)
       if let stamp = file.timestamp { out[target].timestamp = max(out[target].timestamp ?? 0, stamp) }
-      out[target].diffs.append(contentsOf: file.diffs)
+      let merged = (Array(zip(places[target], out[target].diffs)) + Array(zip(places[index], file.diffs)))
+        .enumerated()
+        .sorted { ($0.element.0, $0.offset) < ($1.element.0, $1.offset) }
+        .map(\.element)
+      out[target].diffs = merged.map(\.1)
+      places[target] = merged.map(\.0)
       out[index] = FileReference(path: "", origin: .mentioned)
+      places[index] = []
     }
     return out.filter { !$0.path.isEmpty }
   }
@@ -225,9 +244,9 @@ public enum FileExtraction {
 
   /// Hands an edit call's diff to the files it changed. A `write_file` diff belongs to its one
   /// file. A `patch` that changed several files sends one diff with a header per file: it is cut
-  /// there when every part names one of the call's files. When it cannot be split that way (no
-  /// headers, or a header naming none of them), the whole diff goes to the call's first path, so
-  /// its lines are still counted once rather than lost or counted for every file.
+  /// there when every part names exactly one of the call's files. When it cannot be split that way
+  /// (no headers, or a header naming none of them or several), the whole diff goes to the call's
+  /// first path, so its lines are still counted once rather than lost or counted for every file.
   static func editDiffs(_ tool: ToolCall, paths: [String]) -> [String: EditDiff] {
     guard !tool.isError, let first = paths.first else { return [:] }
     let diff = EditDiff(tool.inlineDiff)
@@ -239,7 +258,7 @@ public enum FileExtraction {
     let parts = DiffLines.sections(diff.text)
     var split: [String: [String]] = [:]
     for part in parts {
-      guard let path = unique.first(where: { DiffLines.header(part.path, names: $0) }) else { return [first: diff] }
+      guard let path = DiffLines.file(namedBy: part.path, among: unique) else { return [first: diff] }
       split[path, default: []].append(part.text)
     }
     return split.mapValues { EditDiff($0.joined(separator: "\n")) }
