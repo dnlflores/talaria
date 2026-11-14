@@ -195,8 +195,8 @@ final class NotificationSettingsTests: XCTestCase {
     let allow = springboard.buttons["Allow"]
     if allow.waitForExistence(timeout: 8) { allow.tap() }
     XCTAssertTrue(app.buttons["New chat"].waitForExistence(timeout: 30), "home did not load")
-    // Settings is in the dock on iPhone and in the sidebar on iPad.
-    let settings = UIDevice.current.userInterfaceIdiom == .pad ? app.buttons["area.settings"] : app.buttons["dock.settings"]
+    // Settings is in the side dock (iPad, an unfolded iPhone Duo) or the iPhone dock.
+    let settings = app.buttons["area.settings"].exists ? app.buttons["area.settings"] : app.buttons["dock.settings"]
     XCTAssertTrue(settings.waitForExistence(timeout: 5))
     settings.tap()
     let mac = app.descendants(matching: .any)["push.mac"]

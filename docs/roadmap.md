@@ -44,7 +44,8 @@ yet.
   in tool results, `MEDIA:` lines and paths in answers. Previews through
   `GET /api/fs/read-text`, downloads through `GET /api/fs/download`
   (`path`, `profile`, `session_id`).
-- iPad: a three-column split (areas, list, detail).
+- iPad: a side dock, the list and the open item; iPhone Duo: the side dock unfolded,
+  the iPhone dock folded.
 
 ## Done: notifications, Live Activities, keyboard
 

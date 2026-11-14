@@ -14,46 +14,85 @@ final class AreaState {
   let kanban = KanbanModel()
 }
 
-/// The app's shell: a floating dock on iPhone, a sidebar with the areas on iPad.
+/// Which dock the shell shows, from the window's size.
+enum ShellLayout: Equatable {
+  /// The bottom dock over one stack: iPhone, a folded iPhone Duo, a narrow iPad window.
+  case dock
+  /// The side dock beside one stack: an unfolded iPhone Duo, a half-screen iPad window.
+  case rail
+  /// The side dock beside the list and what is open, like Mail: a full-size iPad.
+  case split
+
+  /// The window must be tall enough for the side dock too: a phone on its side keeps the bottom
+  /// dock. Splitting needs room for a readable chat beside the list, and a regular width, without
+  /// which the split view folds itself into one stack anyway.
+  static func pick(size: CGSize, sizeClass: UserInterfaceSizeClass?) -> ShellLayout {
+    if sizeClass == .regular, size.width >= 800 { return .split }
+    if size.width >= 600, size.height >= 500 { return .rail }
+    return .dock
+  }
+}
+
+/// The app's shell: a floating dock at the bottom on iPhone, a floating side dock on iPad and on
+/// an unfolded iPhone Duo (beside the list and the open item when the window is wide enough).
 struct MainShell: View {
   @Environment(AppModel.self) private var app
   @Environment(\.horizontalSizeClass) private var sizeClass
+  @State private var size: CGSize = .zero
+
+  private var layout: ShellLayout { ShellLayout.pick(size: size, sizeClass: sizeClass) }
 
   var body: some View {
     Group {
-      if sizeClass == .regular {
+      if size == .zero {
+        Color.clear
+      } else if layout == .split {
         SidebarShell()
       } else {
-        TabShell()
+        TabShell(sideDock: layout == .rail)
       }
     }
-    .onAppear { app.usesSplitLayout = sizeClass == .regular }
-    .onChange(of: sizeClass) { _, size in
-      app.usesSplitLayout = size == .regular
-      // The hub shows one bot either way: the switcher's pick on iPhone, the list's on iPad.
-      if size == .regular {
-        if app.tab == .bots { app.areas.bot = app.currentHubProfile }
-        app.hubPath = []
-      } else if let bot = app.areas.bot {
-        app.hubProfile = bot
+    .onGeometryChange(for: CGSize.self) { proxy in
+      // The whole window: on a phone on its side the notch takes a safe area at the side.
+      CGSize(
+        width: proxy.size.width + proxy.safeAreaInsets.leading + proxy.safeAreaInsets.trailing,
+        height: proxy.size.height + proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom)
+    } action: { size = $0 }
+    .onChange(of: layout, initial: true) { old, new in
+      app.showsSideDock = new != .dock
+      let split = new == .split
+      guard app.usesSplitLayout != split else { return }
+      app.usesSplitLayout = split
+      reflow(toSplit: split)
+    }
+  }
+
+  /// Keeps your place when the window crosses between one stack and the split view (an iPad
+  /// window resized, an iPhone Duo folded or opened).
+  private func reflow(toSplit split: Bool) {
+    // The hub shows one bot either way: the switcher's pick in one stack, the list's in the split.
+    if split {
+      if app.tab == .bots { app.areas.bot = app.currentHubProfile }
+      app.hubPath = []
+    } else if let bot = app.areas.bot {
+      app.hubProfile = bot
+    }
+    if !split {
+      // Kanban, Cron and Settings have no tab of their own in one stack: they open on Chats.
+      if let route = Route.area(app.tab) {
+        app.tab = .chats
+        app.path = [route]
+      } else if app.path.count > 1, let last = app.path.last {
+        // Leaving the split keeps only the chat on screen, so back still lands on the inbox.
+        app.path = [last]
       }
-      if size != .regular {
-        // Kanban, Cron and Settings have no tab on iPhone: they open on the Chats stack.
-        if let route = Route.area(app.tab) {
-          app.tab = .chats
-          app.path = [route]
-        } else if app.path.count > 1, let last = app.path.last {
-          // Leaving the split keeps only the chat on screen, so back still lands on the inbox.
-          app.path = [last]
-        }
-      } else if let last = app.path.last {
-        switch last {
-        case .kanban: app.tab = .kanban; app.path = []
-        case .cron: app.tab = .cron; app.path = []
-        case .settings: app.tab = .settings; app.path = []
-        case .agent(let profile): app.splitAgent = profile; app.path = []
-        case .chat: break
-        }
+    } else if let last = app.path.last {
+      switch last {
+      case .kanban: app.tab = .kanban; app.path = []
+      case .cron: app.tab = .cron; app.path = []
+      case .settings: app.tab = .settings; app.path = []
+      case .agent(let profile): app.splitAgent = profile; app.path = []
+      case .chat: break
       }
     }
   }
@@ -62,6 +101,8 @@ struct MainShell: View {
 // MARK: - iPhone
 
 private struct TabShell: View {
+  /// The side dock on the left (unfolded iPhone Duo, half-screen iPad) instead of the bottom dock.
+  let sideDock: Bool
   @Environment(AppModel.self) private var app
 
   var body: some View {
@@ -73,7 +114,7 @@ private struct TabShell: View {
       Tab(AppTab.chats.title, systemImage: AppTab.chats.symbol, value: AppTab.chats) {
         NavigationStack(path: $app.path) {
           HomeView()
-            .dockSpace()
+            .dockSpace(!sideDock)
             .navigationDestination(for: Route.self) { route in
               switch route {
               case .chat(let profile, let storedID):
@@ -86,11 +127,13 @@ private struct TabShell: View {
                   .navigationDestination(item: $areas.kanbanCard) { id in
                     KanbanTaskView(model: areas.kanban, taskID: id, select: { areas.kanbanCard = $0 })
                   }
+                  .opensFromSideDock(sideDock)
               case .cron:
                 CronList(model: areas.cron, selection: $areas.cronJob)
                   .navigationDestination(item: $areas.cronJob) { id in CronDetailView(model: areas.cron, jobID: id) }
               case .settings:
                 SettingsView()
+                  .opensFromSideDock(sideDock)
               }
             }
         }
@@ -99,7 +142,7 @@ private struct TabShell: View {
       Tab(AppTab.bots.title, systemImage: AppTab.bots.symbol, value: AppTab.bots) {
         NavigationStack(path: $app.hubPath) {
           AgentHubRoot()
-            .dockSpace()
+            .dockSpace(!sideDock)
             .navigationDestination(for: HubRoute.self) { route in HubDestination(route: route) }
         }
         .toolbarVisibility(.hidden, for: .tabBar)
@@ -112,18 +155,32 @@ private struct TabShell: View {
       }
     }
     .animation(.snappy(duration: 0.28), value: showsDock)
+    .sideDock(sideDock, isSplit: false)
   }
 
-  /// The dock floats over the areas' first screens; a page stacked on top has the whole screen.
+  /// The bottom dock floats over the areas' first screens; a page stacked on top has the whole
+  /// screen. The side dock takes no height, so it stays on every page.
   private var showsDock: Bool {
-    app.tab == .bots ? app.hubPath.isEmpty : app.path.isEmpty
+    guard !sideDock else { return false }
+    return app.tab == .bots ? app.hubPath.isEmpty : app.path.isEmpty
   }
 }
 
 extension View {
+  /// Kanban and Settings are pages on the Chats stack, but beside the side dock they are areas
+  /// of their own, so they get no back button (Chats in the dock goes back to the inbox).
+  fileprivate func opensFromSideDock(_ isOn: Bool) -> some View {
+    navigationBarBackButtonHidden(isOn)
+  }
+
   /// Room at the bottom of an area's first screen so its last row clears the dock.
-  fileprivate func dockSpace() -> some View {
-    safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: Dock.height) }
+  @ViewBuilder
+  fileprivate func dockSpace(_ isOn: Bool) -> some View {
+    if isOn {
+      safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: Dock.height) }
+    } else {
+      self
+    }
   }
 }
 
@@ -237,56 +294,47 @@ private struct Dock: View {
 
 // MARK: - iPad
 
-/// Areas on the left, the area's list in the middle, what is open on the right, like Mail.
+/// The side dock on the left, the area's list beside it, what is open on the right, like Mail.
+///
+/// Two plain columns, not a `NavigationSplitView`: beside the side dock the split view showed its
+/// list over a dimmed detail in portrait, and swapping the list's root hid columns. Nothing pushes
+/// inside the list column, so each column is just a stack of its own.
 private struct SidebarShell: View {
+  static let listWidth: CGFloat = 330
   @Environment(AppModel.self) private var app
   @Environment(\.palette) private var palette
-  @State private var columns: NavigationSplitViewVisibility = .all
+  @Environment(\.displayScale) private var displayScale
 
   var body: some View {
+    HStack(spacing: 0) {
+      NavigationStack { list }
+        .frame(width: Self.listWidth)
+      Rectangle()
+        .fill(palette.separator)
+        .frame(width: 1 / displayScale)
+        .ignoresSafeArea()
+      detail
+        .frame(maxWidth: .infinity)
+    }
+    .sideDock(true, isSplit: true)
+  }
+
+  @ViewBuilder
+  private var list: some View {
     @Bindable var app = app
     @Bindable var areas = app.areas
-    NavigationSplitView(columnVisibility: $columns) {
-      AreaSidebar()
-        .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 280)
-    } content: {
-      Group {
-        switch app.tab {
-        case .chats:
-          // A bot's full list replaces the inbox in this column; the chat picked from it opens on
-          // the right. A stack nested in the column made the split view hide the areas column.
-          if let profile = app.splitAgent {
-            AgentSessionsView(profile: profile)
-              .id(profile)
-              .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                  Button {
-                    app.splitAgent = nil
-                  } label: {
-                    Image(systemName: "chevron.left")
-                  }
-                  .accessibilityLabel("Chats")
-                  .accessibilityIdentifier("BackButton")
-                }
-              }
-          } else {
-            HomeView()
-          }
-        case .bots: BotsList(selection: $areas.bot)
-        case .kanban: KanbanBoardView(model: areas.kanban, selection: $areas.kanbanCard)
-        case .cron:
-          // Not in the sidebar: opened from the inbox's More menu or a bot's hub, with a way back.
-          CronList(model: areas.cron, selection: $areas.cronJob, profile: areas.cronProfile)
+    Group {
+      switch app.tab {
+      case .chats:
+        // A bot's full list replaces the inbox in this column; the chat picked from it opens on
+        // the right.
+        if let profile = app.splitAgent {
+          AgentSessionsView(profile: profile)
+            .id(profile)
             .toolbar {
               ToolbarItem(placement: .topBarLeading) {
                 Button {
-                  if let bot = areas.cronProfile {
-                    areas.cronProfile = nil
-                    app.areas.bot = bot
-                    app.tab = .bots
-                  } else {
-                    app.tab = .chats
-                  }
+                  app.splitAgent = nil
                 } label: {
                   Image(systemName: "chevron.left")
                 }
@@ -294,21 +342,33 @@ private struct SidebarShell: View {
                 .accessibilityIdentifier("BackButton")
               }
             }
-        case .settings: SettingsView()
+        } else {
+          HomeView()
         }
+      case .bots: BotsList(selection: $areas.bot)
+      case .kanban: KanbanBoardView(model: areas.kanban, selection: $areas.kanbanCard)
+      case .cron:
+        // Not in the side dock: opened from the inbox's More menu or a bot's hub, with a way back.
+        CronList(model: areas.cron, selection: $areas.cronJob, profile: areas.cronProfile)
+          .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+              Button {
+                if let bot = areas.cronProfile {
+                  areas.cronProfile = nil
+                  app.areas.bot = bot
+                  app.tab = .bots
+                } else {
+                  app.tab = .chats
+                }
+              } label: {
+                Image(systemName: "chevron.left")
+              }
+              .accessibilityLabel("Chats")
+              .accessibilityIdentifier("BackButton")
+            }
+          }
+      case .settings: SettingsView()
       }
-      .navigationSplitViewColumnWidth(min: 320, ideal: 370, max: 440)
-    } detail: {
-      detail
-    }
-    .navigationSplitViewStyle(.balanced)
-    // Swapping the list column (a bot's full list in, back to the inbox) reads to the split
-    // view as navigation, and in portrait it then hides the areas column. Keep all three.
-    .onChange(of: app.splitAgent) { _, _ in
-      Task { @MainActor in columns = .all }
-    }
-    .onChange(of: app.tab) { _, _ in
-      Task { @MainActor in columns = .all }
     }
   }
 
@@ -354,73 +414,6 @@ private struct SidebarShell: View {
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       .screenBackground()
-    }
-  }
-}
-
-/// The left column on iPad: the wordmark and one row per area.
-private struct AreaSidebar: View {
-  @Environment(AppModel.self) private var app
-  @Environment(\.palette) private var palette
-
-  var body: some View {
-    List {
-      ForEach(AppTab.sidebar) { tab in
-        let isSelected = app.tab == tab
-        Button {
-          app.tab = tab
-        } label: {
-          HStack(spacing: 12) {
-            Image(systemName: tab.symbol)
-              .font(.system(size: 15, weight: .medium))
-              .foregroundStyle(isSelected ? palette.primaryText : palette.icon)
-              .frame(width: 22)
-            Text(tab.title)
-              .font(isSelected ? AppFont.bodySemibold : AppFont.body)
-              .foregroundStyle(isSelected ? palette.threadSelectedForeground : palette.foreground)
-            Spacer(minLength: 4)
-            badge(for: tab)
-          }
-          .padding(.horizontal, 12)
-          .padding(.vertical, 9)
-          .background(isSelected ? palette.threadSelected : Color.clear, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-          .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .listRowInsets(EdgeInsets(top: 1, leading: 10, bottom: 1, trailing: 10))
-        .listRowSeparator(.hidden)
-        .listRowBackground(Color.clear)
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
-        .accessibilityIdentifier("area.\(tab.title.lowercased())")
-      }
-    }
-    .listStyle(.plain)
-    .scrollContentBackground(.hidden)
-    .screenBackground()
-    .toolbar {
-      ToolbarItem(placement: .topBarLeading) {
-        HStack(spacing: 8) {
-          Wordmark()
-          if let tag = ConnectionTag.current(app.connection) { TagLabel(text: tag.text, tint: tag.tint(palette)) }
-        }
-        .fixedSize()
-      }
-      .sharedBackgroundVisibility(.hidden)
-    }
-    .navigationBarTitleDisplayMode(.inline)
-  }
-
-  /// A count next to Chats when something there needs an answer.
-  @ViewBuilder
-  private func badge(for tab: AppTab) -> some View {
-    if tab == .chats, !app.waitingOnYou.isEmpty {
-      Text("\(app.waitingOnYou.count)")
-        .font(AppFont.sans(11, .semibold))
-        .foregroundStyle(palette.warningForeground)
-        .padding(.horizontal, 6)
-        .padding(.vertical, 2)
-        .background(palette.warning, in: Capsule())
-        .accessibilityLabel("\(app.waitingOnYou.count) need you")
     }
   }
 }

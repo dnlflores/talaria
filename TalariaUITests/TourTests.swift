@@ -39,8 +39,8 @@ final class TourTests: XCTestCase {
     }
   }
 
-  /// An area: the iPad sidebar row, the iPhone dock (Chats, Agents, Settings), or on iPhone the
-  /// inbox's More menu, which holds Kanban and Cron.
+  /// An area: the side dock (iPad, an unfolded iPhone Duo), the iPhone dock (Chats, Agents,
+  /// Settings), or on iPhone the inbox's More menu, which holds Kanban and Cron.
   private func open(tab title: String) {
     let area = app.buttons["area.\(title.lowercased())"]
     if area.waitForExistence(timeout: 2) && area.isHittable {
@@ -82,8 +82,10 @@ final class TourTests: XCTestCase {
   /// only the system back button (`BackButton`) will do.
   @discardableResult
   private func goBack() -> Bool {
+    // A sheet that just closed can hide it for a moment. On a folded iPhone Duo the bar's
+    // buttons sit in a column beside the screen and are not under `navigationBars`.
     let back = app.buttons["BackButton"].firstMatch
-    if back.exists {
+    if back.waitForExistence(timeout: 3) {
       back.tap()
       return true
     }
@@ -94,19 +96,24 @@ final class TourTests: XCTestCase {
     return true
   }
 
-  /// The iPhone dock holds Chats and Agents, then New chat and Settings; the iPad sidebar has
-  /// Chats, Agents, Kanban and Settings. Cron is in the More menu on both.
+  /// The iPhone dock holds Chats and Agents, then New chat and Settings; the side dock (iPad, an
+  /// unfolded iPhone Duo) has Chats, Agents, Kanban, New chat and Settings. Cron is in the More
+  /// menu on both.
   private func checkDock() {
-    if UIDevice.current.userInterfaceIdiom == .phone {
+    if app.buttons["area.chats"].waitForExistence(timeout: 5) {
+      for id in ["area.chats", "area.agents", "area.kanban", "area.new", "area.settings"] {
+        XCTAssertTrue(app.buttons[id].exists, "\(id) is not in the side dock")
+      }
+      XCTAssertFalse(app.buttons["area.cron"].exists, "Cron is in the side dock")
+      XCTAssertFalse(app.buttons["dock.chats"].exists, "the bottom dock shows beside the side dock")
+    } else if UIDevice.current.userInterfaceIdiom == .phone {
       for id in ["dock.chats", "dock.agents", "dock.new", "dock.settings"] {
         XCTAssertTrue(app.buttons[id].exists, "\(id) is not in the dock")
       }
       let systemTab = app.tabBars.buttons.firstMatch
       XCTAssertFalse(systemTab.exists && systemTab.isHittable, "the system tab bar shows")
     } else {
-      XCTAssertTrue(app.buttons["area.agents"].waitForExistence(timeout: 5))
-      XCTAssertTrue(app.buttons["area.kanban"].waitForExistence(timeout: 5))
-      XCTAssertFalse(app.buttons["area.cron"].exists, "Cron is in the iPad sidebar")
+      XCTFail("no dock on iPad")
     }
   }
 
@@ -165,7 +172,7 @@ final class TourTests: XCTestCase {
         app.buttons["Done"].firstMatch.tap()
         sleep(1)
       }
-      if UIDevice.current.userInterfaceIdiom != .pad { app.navigationBars.buttons.element(boundBy: 0).tap() }
+      if UIDevice.current.userInterfaceIdiom != .pad { goBack() }
     }
 
     open(tab: "Agents")
@@ -230,7 +237,7 @@ final class TourTests: XCTestCase {
     if tapFirst("kanban.card") {
       sleep(3)
       shoot("06-card")
-      if UIDevice.current.userInterfaceIdiom != .pad { app.navigationBars.buttons.element(boundBy: 0).tap() }
+      if UIDevice.current.userInterfaceIdiom != .pad { goBack() }
     }
 
     open(tab: "Cron")
@@ -239,7 +246,7 @@ final class TourTests: XCTestCase {
     if tapFirst("cron.row") {
       sleep(3)
       shoot("08-job")
-      if UIDevice.current.userInterfaceIdiom != .pad { app.navigationBars.buttons.element(boundBy: 0).tap() }
+      if UIDevice.current.userInterfaceIdiom != .pad { goBack() }
     }
 
     open(tab: "Settings")

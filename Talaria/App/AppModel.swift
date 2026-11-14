@@ -41,17 +41,17 @@ enum HubRoute: Hashable {
 }
 
 /// The top-level areas. The iPhone dock holds Chats and Agents (with New chat and Settings beside
-/// them); the iPad sidebar adds Kanban and Settings. Cron opens from the inbox's More menu and from
-/// the agent hub.
+/// them); the side dock (iPad, unfolded iPhone Duo) adds Kanban. Cron opens from the inbox's More
+/// menu and from the agent hub.
 enum AppTab: String, Hashable, CaseIterable, Identifiable {
   case chats, bots, kanban, cron, settings
 
-  /// The areas in the iPad sidebar.
+  /// The areas in the side dock, top to bottom (New chat sits between Kanban and Settings).
   static let sidebar: [AppTab] = [.chats, .bots, .kanban, .settings]
 
-  /// The areas in the inbox's More menu: those not in the dock (Settings is in the iPhone dock).
-  static func moreMenu(splitLayout: Bool) -> [AppTab] {
-    splitLayout ? allCases.filter { !sidebar.contains($0) } : [.kanban, .cron]
+  /// The areas in the inbox's More menu: those not in the dock in use (Settings is in both).
+  static func moreMenu(sideDock: Bool) -> [AppTab] {
+    sideDock ? allCases.filter { !sidebar.contains($0) } : [.kanban, .cron]
   }
 
   var id: String { rawValue }
@@ -144,6 +144,8 @@ final class AppModel {
   var skillLists: [String: [SkillCategory]] = [:]
   /// The Chats area shows the inbox and a chat side by side (iPad, regular width).
   var usesSplitLayout = false
+  /// The areas are in the side dock (iPad, an unfolded iPhone Duo), not the bottom dock.
+  var showsSideDock = false
   /// What the Bots, Kanban and Cron areas have open.
   private(set) var areas = AreaState()
   /// Live session status by stored id (`working`, `waiting`, `idle`), from the backend's active list.

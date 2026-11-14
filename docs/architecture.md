@@ -17,9 +17,11 @@ Talaria (SwiftUI app)
                   app icon names, once signed in
   QuickActions    the app icon's shortcuts: a scene delegate takes them, AppModel
                   keeps them in step with RecentChats
-  Views           Shell (iPhone: a hidden-bar TabView of Chats and Agents under a
-                  floating glass dock that adds New chat and Settings; Kanban and Cron in
-                  the inbox's More menu and the hub. iPad: sidebar split without Cron),
+  Views           Shell (`ShellLayout` from the window size. iPhone, folded Duo: a
+                  hidden-bar TabView of Chats and Agents under a floating glass dock that
+                  adds New chat and Settings; Kanban and Cron in the inbox's More menu and
+                  the hub. Unfolded Duo, half-screen iPad: the same stacks beside the
+                  side dock. Full iPad: side dock, list column, detail),
                   Connect, Home, Chat, Models (model chooser parts), Bots (agent hub and
                   its pages), Kanban, Cron, Settings
 TalariaActivity   widget extension: the Live Activity (Lock Screen, Dynamic Island)
@@ -324,9 +326,9 @@ now), bots with no chats last.
   the app first looks shows "Working" with no time, since its start is not
   known.
 - A bot's full list pages through `/api/sessions?profile=<bot>&order=recent`.
-  On iPad it replaces the inbox in the list column; swapping that column
-  makes the split view hide the areas column in portrait, so the shell puts
-  all three back.
+  On iPad it replaces the inbox in the list column (a plain stack of its own,
+  not a `NavigationSplitView` column: the split view hid columns when its
+  roots swapped and overlaid the list beside the side dock in portrait).
 
 ## Sending while a reply runs
 
@@ -524,6 +526,18 @@ Chats and Agents (`TabView` still keeps each area's place and appear/disappear).
 hides once a page is stacked on top, so chats and pages get the whole screen. New chat
 starts with the hub's bot in Agents and asks which bot in Chats; Settings stacks on the
 area on screen.
+
+`ShellLayout.pick` chooses the shell from the window's size, not the device: under 600 pt
+wide (or under 500 pt tall, a phone on its side) the bottom dock; a regular width of
+800 pt or more the split (`SidebarShell`: side dock, a 330 pt list column, detail);
+anything between the side dock beside the same stacks the iPhone uses (`TabShell`
+with `sideDock`). So a folded iPhone Duo (466 x 678 pt) gets the bottom dock and an
+unfolded one (669 x 951 pt) the side dock, and folding keeps your place because both
+are the same `TabShell`. `SideDock` sits in a strip of its own (`room`, 88 pt) with its
+own background copy, since the split view ignored a leading safe area inset. In one
+stack it stays on every page (it takes no height); Kanban and Settings open as the
+Chats stack's first page and the dock marks them from `path.first`. Its ids are
+`area.chats|agents|kanban|new|settings` in both layouts.
 
 The Agents area (`AgentHubView.swift`) shows one bot: a switcher over every bot on
 iPhone, the bot list's pick on iPad. Its rows open pages on the hub's own stack

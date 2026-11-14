@@ -46,17 +46,16 @@ struct HomeView: View {
     .refreshable { await app.refreshSessions() }
     .onAppear { Task { await app.refreshSessions(quiet: true) } }
     .task(id: heads.map { "\($0.id)@\($0.recency)" }) { await app.loadHeadPreviews(heads) }
-    .searchable(text: $query, prompt: "Search agents and sessions")
+    // A stack on iPad would fold search into a toolbar button; keep the field.
+    .searchable(
+      text: $query, placement: app.showsSideDock ? .navigationBarDrawer(displayMode: .always) : .automatic,
+      prompt: "Search agents and sessions")
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
       ToolbarItem(placement: .topBarLeading) {
         HStack(spacing: 8) {
-          // On iPad the sidebar carries the wordmark; the inbox column is just "Chats".
-          if app.usesSplitLayout {
-            Text("Chats").font(AppFont.sans(17, .semibold)).foregroundStyle(palette.foreground)
-          } else {
-            Wordmark()
-          }
+          // Both docks are icons only, so the inbox carries the wordmark everywhere.
+          Wordmark()
           if let tag = ConnectionTag.current(app.connection) { TagLabel(text: tag.text, tint: tag.tint(palette)) }
         }
         .fixedSize()
@@ -66,7 +65,7 @@ struct HomeView: View {
       // Areas that are not in the dock are one menu away here.
       ToolbarItem(placement: .topBarTrailing) {
         Menu {
-          ForEach(AppTab.moreMenu(splitLayout: app.usesSplitLayout)) { area in
+          ForEach(AppTab.moreMenu(sideDock: app.showsSideDock)) { area in
             Button {
               app.openArea(area)
             } label: {
@@ -78,21 +77,6 @@ struct HomeView: View {
         }
         .accessibilityLabel("More")
         .accessibilityIdentifier("home.more")
-      }
-
-      // On iPhone the dock carries New chat.
-      if app.usesSplitLayout {
-        ToolbarItem(placement: .topBarTrailing) {
-          Button(action: beginNewChat) {
-            if isStartingChat {
-              ProgressView()
-            } else {
-              Image(systemName: "square.and.pencil")
-            }
-          }
-          .disabled(isStartingChat)
-          .accessibilityLabel("New chat")
-        }
       }
     }
     .sheet(isPresented: $showsBotPicker) {

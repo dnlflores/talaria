@@ -124,10 +124,14 @@ T3 Tools.
   offers Low through Max and no Off (it always thinks), Opus 4.6 has no Extra
   high, Opus 4.5 no Max. `scripts/record-effort-levels.py` checks those rules
   against the backend's own request builders.
-- **iPad:** a sidebar with Chats, Agents, Kanban and Settings, the list beside
-  it and the open chat or page on the right, in either orientation. On iPhone a
-  floating dock holds Chats and Agents, with New chat and Settings in a group
-  of their own; Kanban and Cron are in the inbox's ••• menu and the hub.
+- **iPad and iPhone Duo:** a floating side dock (one tall pill of glass, like
+  Instagram's on iPad) with Chats, Agents, Kanban, New chat and Settings, and a
+  red count on Chats when chats need you. A full-size iPad puts the list beside
+  it and the open chat or page on the right; an unfolded iPhone Duo or a
+  half-screen iPad window shows one page at a time beside the side dock, and a
+  folded Duo gets the iPhone dock. On iPhone a floating dock holds Chats and
+  Agents, with New chat and Settings in a group of their own; Kanban and Cron
+  are in the inbox's ••• menu and the hub.
 
 ## What is next
 

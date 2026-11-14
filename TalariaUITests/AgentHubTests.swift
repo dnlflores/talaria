@@ -50,18 +50,22 @@ final class AgentHubTests: XCTestCase {
     }
   }
 
-  private var isPad: Bool { UIDevice.current.userInterfaceIdiom == .pad }
+  /// The split view (a full-size iPad) lists the bots; one stack shows the hub with a switcher.
+  private var isSplit: Bool {
+    UIDevice.current.userInterfaceIdiom == .pad && app.frame.width >= 800
+  }
 
-  /// The bot's hub: the switcher on iPhone, its row in the Agents list on iPad.
+  /// The bot's hub: the switcher in one stack, its row in the Agents list in the split view.
   private func openHub() {
     XCTAssertTrue(app.buttons["New chat"].waitForExistence(timeout: 30), "home did not load")
-    if isPad {
-      app.buttons["area.agents"].tap()
+    // The side dock (iPad, an unfolded iPhone Duo) or the iPhone dock.
+    let sideDock = app.buttons["area.agents"]
+    if sideDock.exists { sideDock.tap() } else { app.buttons["dock.agents"].tap() }
+    if isSplit {
       let row = app.buttons.matching(NSPredicate(format: "identifier == 'bot.row' AND label BEGINSWITH %@", bot)).firstMatch
       XCTAssertTrue(row.waitForExistence(timeout: 10), "\(bot) is not in the Agents list")
       row.tap()
     } else {
-      app.buttons["dock.agents"].tap()
       let avatar = app.buttons.matching(NSPredicate(format: "identifier == 'agent.switch' AND label == %@", bot)).firstMatch
       XCTAssertTrue(avatar.waitForExistence(timeout: 10), "\(bot) is not in the switcher")
       // Bots beyond the screen's edge are a swipe away.

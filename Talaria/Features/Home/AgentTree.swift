@@ -288,7 +288,9 @@ struct AgentSessionsView: View {
     .environment(\.defaultMinListRowHeight, 10)
     .navigationTitle(title)
     .navigationBarTitleDisplayMode(.inline)
-    .searchable(text: $query, prompt: "Search \(title)'s sessions")
+    .searchable(
+      text: $query, placement: app.showsSideDock ? .navigationBarDrawer(displayMode: .always) : .automatic,
+      prompt: "Search \(title)'s sessions")
     .toolbar {
       ToolbarItem(placement: .topBarTrailing) {
         Button {
