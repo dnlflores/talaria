@@ -55,7 +55,9 @@ T3 Tools.
   queue above the composer instead of cutting in, and goes out as the next turn
   when the reply ends. "Send now" puts a queued message into the running reply,
   and the agent answers it right away. Tap a queued message to edit it; Stop
-  pauses the queue. If the phone sleeps first, the queue is handed to the Mac.
+  pauses the queue. If the phone sleeps first, the queue is handed to the Mac;
+  what the Mac cannot take is still queued, message by message, when the chat
+  opens again.
 - **Pictures:** pictures sent in a chat show as pictures, from any app (the
   desktop app, a terminal, the phone), and so do pictures a reply delivers or
   names by path. Tap one to see it full screen and share it.
@@ -265,7 +267,8 @@ shortcuts, with made-up chats and no Mac;
 command against canned answers, with no Mac;
 `SlashDeliveryTests` (the `TalariaTests` target, `-only-testing:TalariaTests`)
 runs the app's own chat model against a stand-in gateway on loopback: leaving
-or going to sleep while a command is worked out, with no Mac;
+or going to sleep while a command is worked out, and what comes back (words,
+files, queued messages) when the chat opens again, with no Mac;
 `NotificationSettingsTests` (`TEST_RUNNER_TALARIA_UITEST_PUSH=1`) allows
 notifications and shows what the Mac said; the push plugin has its own tests
 (`python -m unittest discover -s mac/talaria-push/tests` with Hermes' Python).

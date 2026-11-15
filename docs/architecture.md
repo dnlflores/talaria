@@ -351,7 +351,13 @@ on the phone (`PromptQueue`, HermesKit, unit-tested):
   goes to the front and the reply is stopped, so it goes out next.
 - Stop pauses the queue. Leaving the chat or the app going to the background
   hands the queue to the Mac (`queued: true`), which runs it after the reply
-  with the phone asleep; what cannot be handed over becomes the chat's draft.
+  with the phone asleep. What cannot be handed over (a paused queue, a
+  command and what follows it, a failed handover) stays queued for the next
+  time the chat opens, each message its own entry with its files
+  (`AppModel.leaveBehind`): it waits for a reply still running then, and is
+  held until sent by hand if none is. Picked files left in the composer come
+  back too. Queued words are saved on the phone and outlast the app; files
+  are kept only while it runs.
 - The Mac's queue merges text entries into one turn and writes each queued row
   into the history at once, right after the running turn's message, moving it
   to the end when its turn starts. So the visible queue stays on the phone, and
@@ -387,8 +393,11 @@ words:
   (with `warning`) and every error become a notice card under the command, in this app only
   (`TranscriptItem.isLocal`): not sent, not stored, gone on the next full reload.
 - **Leaving while one is worked out:** a skill or send directive still goes out, as a message
-  sent just before leaving does; words to edit, or a command that failed, become the chat's
-  saved draft, ahead of anything queued after it.
+  sent just before leaving does. What does not go out comes back when the chat opens again,
+  as it would have with the chat open: words to edit, or a command typed in the composer that
+  failed, become the saved draft with the files picked; a queued command that failed goes
+  back to its place in the queue, held, with its files. A message that fails to send after
+  leaving comes back the same way.
 - **Desktop-owned commands:** the commands the desktop app handles itself (a new chat, the
   theme, pickers, its own dedicated calls) and those Hermes gives no app surface are left off
   the menu, and sending one says to run it on the Mac (`SlashPolicy`).
