@@ -180,6 +180,57 @@ final class QueueFlowTests: XCTestCase {
     app.buttons["Archive"].firstMatch.tap()
   }
 
+  func testQueueSurvivesNavigatingAwayAndBack() throws {
+    if UIDevice.current.userInterfaceIdiom == .pad { XCUIDevice.shared.orientation = .landscapeLeft }
+    defer { XCUIDevice.shared.orientation = .portrait }
+    XCTAssertTrue(app.waitForHome(), "home did not load")
+    app.startNewChat(with: bot)
+    let marker = "queue-navigation-\(UUID().uuidString.prefix(8))"
+    type("Disposable UI regression test. Run this terminal command, wait for its result, then reply ORIGINAL: sleep 45; printf original", then: "Send")
+    let running = app.descendants(matching: .any).matching(
+      NSPredicate(format: "identifier == 'transcript.working' AND label CONTAINS 'Running a command'")).firstMatch
+    XCTAssertTrue(running.waitForExistence(timeout: 90))
+    app.buttons["More"].firstMatch.tap()
+    app.buttons["Rename"].firstMatch.tap()
+    let alert = app.alerts["Rename chat"]
+    XCTAssertTrue(alert.waitForExistence(timeout: 5))
+    let title = alert.textFields.firstMatch
+    title.tap()
+    if let value = title.value as? String {
+      title.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: value.count))
+    }
+    title.typeText(marker)
+    alert.buttons["Rename"].tap()
+    type("After the original reply, respond with exactly PAPAYA.", then: "Queue")
+    XCTAssertTrue(queueRows.firstMatch.waitForExistence(timeout: 5))
+    shoot("navigation-live-before")
+    if app.buttons["area.agents"].exists {
+      // Side dock: another area replaces the open chat; Chats brings back the list.
+      app.openAgents()
+      app.openChats()
+    } else {
+      let back = app.navigationBars.buttons["BackButton"]
+      if back.exists { back.tap() } else { app.navigationBars.buttons.element(boundBy: 0).tap() }
+    }
+    // The gateway's own title can replace the rename, so also accept the bot's group row, whose
+    // lead chat is the one this test just made.
+    let row = app.buttons.matching(NSPredicate(
+      format: "identifier == 'session.row' AND (label CONTAINS %@ OR label BEGINSWITH %@)", marker, "\(bot), ")).firstMatch
+    XCTAssertTrue(row.waitForExistence(timeout: 20))
+    row.tap()
+    let handedOff = app.descendants(matching: .any).matching(identifier: "queue.onMac").firstMatch
+    XCTAssertTrue(handedOff.waitForExistence(timeout: 15), "follow-up disappeared after leaving the chat")
+    XCTAssertTrue(handedOff.label.contains("PAPAYA"))
+    XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'Sending continues it as a new version'")).count, 0)
+    shoot("navigation-live-reopened")
+    XCTAssertTrue(answer(containing: "PAPAYA").waitForExistence(timeout: 150))
+    XCTAssertTrue(handedOff.waitForNonExistence(timeout: 10))
+    XCTAssertEqual(userMessage(containing: "PAPAYA").count, 1)
+    shoot("navigation-live-delivered")
+    app.buttons["More"].firstMatch.tap()
+    app.buttons["Archive"].firstMatch.tap()
+  }
+
   func testPicturesShow() throws {
     guard let pictureChat, !pictureChat.isEmpty else {
       throw XCTSkip("Set TEST_RUNNER_TALARIA_UITEST_PICTURE_CHAT to the title of a chat with pictures.")

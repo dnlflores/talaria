@@ -278,16 +278,19 @@ public final class HermesClient: Sendable {
   static func inflight(fromReplay events: [JSONValue], generation: Int?) -> JSONValue? {
     var streamed = ""
     var started = false
+    var admissionID: String?
     for event in events {
       if let generation, let own = event["execution_generation"].int, own != generation { continue }
       switch event["type"].stringValue {
-      case "message.start": started = true
+      case "message.start":
+        started = true
+        admissionID = event["admission_id"].string
       case "message.delta": streamed += event["payload"]["text"].stringValue
       default: break
       }
     }
     guard started else { return nil }
-    return ["assistant": .string(streamed), "streaming": true]
+    return .fields(["assistant": .string(streamed), "streaming": true, "admission_id": admissionID.map(JSONValue.string)])
   }
 
   /// One stored conversation's row, with its heartbeat.
@@ -345,9 +348,18 @@ public final class HermesClient: Sendable {
   public func submit(
     liveID: String, profile: String, text: String, queued: Bool = false, images: [StagedImage] = []
   ) async throws -> String {
+    _ = try await admit(liveID: liveID, profile: profile, text: text, queued: queued, images: images)
+    return "streaming"
+  }
+
+  /// Keep a queued prompt's durable receipt and reuse its identity after an uncertain handoff.
+  public func admit(
+    liveID: String, profile: String, text: String, queued: Bool = false, images: [StagedImage] = [],
+    submissionID: String = UUID().uuidString.lowercased()
+  ) async throws -> JSONValue {
     var params: [String: JSONValue] = [
       "session_id": .string(liveID), "profile": .string(profile), "text": .string(text),
-      "submission_id": .string(UUID().uuidString.lowercased()),
+      "submission_id": .string(submissionID),
     ]
     if queued { params["queued"] = true }
     if !images.isEmpty {
@@ -355,7 +367,20 @@ public final class HermesClient: Sendable {
     }
     let receipt = try await rpc.call("prompt.submit", .object(params), timeout: 60)
     guard receipt["admission_id"].string != nil else { throw HermesError.invalidResponse("the Mac did not take the message") }
-    return "streaming"
+    return receipt
+  }
+
+  public func receipt(liveID: String, profile: String, admissionID: String) async throws -> JSONValue {
+    try await rpc.call("prompt.receipt", [
+      "session_id": .string(liveID), "profile": .string(profile), "admission_id": .string(admissionID),
+    ], timeout: 15)
+  }
+
+  /// Cancels this exact waiting admission, not the unrelated turn currently running.
+  public func cancelAdmission(liveID: String, profile: String, admissionID: String) async throws {
+    _ = try await rpc.call("prompt.cancel", [
+      "session_id": .string(liveID), "profile": .string(profile), "admission_id": .string(admissionID),
+    ], timeout: 15)
   }
 
   /// Hands a message to the running reply: the agent takes it in now and answers it (the model

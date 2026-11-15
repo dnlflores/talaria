@@ -143,6 +143,8 @@ final class AppModel {
   private(set) var areas = AreaState()
   /// Live session status by stored id (`working`, `waiting`, `idle`), from the backend's active list.
   private(set) var liveStatuses: [String: String] = [:]
+  /// Membership is distinct from turn status. A known idle/starting chat is still gateway-owned.
+  @ObservationIgnored private var gatewaySessions: [String: Set<String>] = [:]
   private(set) var toast: ToastMessage?
   /// Approval, sudo and secret requests waiting for an answer; the first one is on screen.
   private(set) var prompts: [ServerRequest] = []
@@ -151,6 +153,8 @@ final class AppModel {
 
   private(set) var openChat: ChatModel?
   @ObservationIgnored private var chatCache: [String: ChatModel] = [:]
+  /// Retained across screen visits, including a handoff still awaiting its acknowledgement.
+  @ObservationIgnored private var chatQueues: [String: [String: ChatQueueState]] = [:]
   @ObservationIgnored private var liveToStored: [String: String] = [:]
 
   private let signIns: any SignInStore = AppModel.makeSignInStore()
@@ -300,8 +304,10 @@ final class AppModel {
     activityTask = nil
     openChat = nil
     chatCache = [:]
+    chatQueues = [:]
     sessions = []
     liveStatuses = [:]
+    gatewaySessions = [:]
     families = [:]
     owners = [:]
     profiles = []
@@ -416,8 +422,8 @@ final class AppModel {
   /// `fresh` is a just-fetched row; the inbox copy is at most a few seconds old.
   func isRunningElsewhere(_ storedID: String, row fresh: SessionSummary? = nil) -> Bool {
     guard let row = fresh ?? row(storedID), row.isTurnRunning(now: Date().timeIntervalSince1970) else { return false }
-    let here = liveStatuses[storedID]
-    return here != "working" && here != "waiting"
+    guard let roster = gatewaySessions[row.profile] else { return false }
+    return !roster.contains(storedID)
   }
 
   // MARK: Incoming
@@ -561,7 +567,8 @@ final class AppModel {
       }
     }
     async let ownersJob = try? client.owners()
-    async let activeJob = try? client.activeSessions(profiles: profileNames)
+    let rosterProfiles = profileNames
+    async let activeJob = try? client.activeSessions(profiles: rosterProfiles)
     async let totalsJob = sessionTotals(client)
     do {
       var rows = try await client.sessions()
@@ -570,7 +577,11 @@ final class AppModel {
       rows += await topUpRows(client, loaded: rows)
       if !archiving.isEmpty { rows.removeAll { archiving.contains($0.id) } }
       let currentOwners = await ownersJob ?? owners
-      if let active = await activeJob { setLiveStatuses(active) }
+      if let active = await activeJob {
+        setLiveStatuses(active, profiles: rosterProfiles)
+      } else {
+        invalidateLiveRoster(profiles: rosterProfiles)
+      }
       if rows != sessions {
         sessions = rows
         families = SessionGrouping.families(rows)
@@ -599,10 +610,26 @@ final class AppModel {
     }
   }
 
-  func setLiveStatuses(_ active: [JSONValue]) {
+  func invalidateLiveRoster(profiles: [String]) {
+    for profile in profiles { gatewaySessions[profile] = nil }
+  }
+
+  func refreshLiveRoster() async {
+    guard let client else { return }
+    let names = profileNames
+    if let active = try? await client.activeSessions(profiles: names) {
+      setLiveStatuses(active, profiles: names)
+    } else {
+      invalidateLiveRoster(profiles: names)
+    }
+  }
+
+  func setLiveStatuses(_ active: [JSONValue], profiles: [String]) {
+    for profile in profiles { gatewaySessions[profile] = [] }
     var fresh: [String: String] = [:]
     for entry in active {
       let key = entry["session_key"].stringValue
+      if !key.isEmpty { gatewaySessions[entry["profile"].stringValue, default: []].insert(key) }
       let status = entry["status"].stringValue.lowercased()
       guard !key.isEmpty, !status.isEmpty else { continue }
       // Several live copies of one chat: a working one wins over an idle one.
@@ -913,6 +940,13 @@ final class AppModel {
   }
 
   // MARK: Chats
+
+  func queueState(profile: String, storedID: String) -> ChatQueueState {
+    if let state = chatQueues[profile]?[storedID] { return state }
+    let state = ChatQueueState()
+    chatQueues[profile, default: [:]][storedID] = state
+    return state
+  }
 
   /// The model for a route. Models made ahead of navigation (a new chat, a new version) are
   /// handed over from the cache; anything else is built from the sidebar row.

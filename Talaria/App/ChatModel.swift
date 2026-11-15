@@ -22,6 +22,35 @@ struct ComposerAttachment: Identifiable {
   }
 }
 
+/// The queue belongs to the conversation, not to one visit to its screen. Both sides of a
+/// navigation can briefly be alive while the old model finishes handing messages to the Mac.
+@MainActor @Observable
+final class ChatQueueState {
+  struct PendingAdmission {
+    let liveID: String
+    let submissionID: String
+    let text: String
+    let images: [StagedImage]
+    let sent: TranscriptItem
+  }
+
+  var prompts = PromptQueue<ComposerAttachment>()
+  @ObservationIgnored var handoff: Task<Void, Never>?
+  @ObservationIgnored var recovery: Task<Void, Never>?
+  @ObservationIgnored var cancellation: Task<Void, Never>?
+  /// Stop survives navigation and an acknowledgement that has not arrived yet.
+  @ObservationIgnored var cancelRequested: Set<UUID> = []
+  /// Save the immutable wire payload BEFORE submitting. An unknown outcome cannot be retried
+  /// with a new identity or with freshly uploaded attachment paths.
+  @ObservationIgnored var pendingAdmissions: [UUID: PendingAdmission] = [:]
+  @ObservationIgnored var receipts: [UUID: JSONValue] = [:]
+  @ObservationIgnored var sentItems: [UUID: TranscriptItem] = [:]
+  @ObservationIgnored var startedAdmissions: Set<String> = []
+  /// One rendered prompt per admission, retained so a fresh history read can claim each
+  /// matching stored row once instead of letting later equal-text admissions reuse it.
+  @ObservationIgnored var renderedAdmissions: [(id: String, sent: TranscriptItem)] = []
+}
+
 /// One open conversation: its transcript, its live session on the Mac, and the composer.
 ///
 /// Chats run in the Hermes gateway on the Mac, the process the desktop app runs them in, so a
@@ -74,11 +103,18 @@ final class ChatModel: Identifiable {
   var attachments: [ComposerAttachment] = []
   var sendWhenReady = false
   /// Messages written while a reply runs. They go out one per turn once it ends, or now on request.
-  private(set) var queue = PromptQueue<ComposerAttachment>()
+  private let queueState: ChatQueueState
+  private(set) var queue: PromptQueue<ComposerAttachment> {
+    get { queueState.prompts }
+    set { queueState.prompts = newValue }
+  }
 
   private weak var app: AppModel?
   private var prepared: LiveSession?
   private var hasOpened = false
+  @ObservationIgnored private var openingEvents: [GatewayEvent] = []
+  @ObservationIgnored private var isReplayingOpeningEvents = false
+  @ObservationIgnored private var claimedQueueUserIDs: Set<UUID> = []
   private var isClosed = false
   private var hasSpoken = false
   /// Made here (a new chat) rather than opened from the Mac's list.
@@ -109,6 +145,7 @@ final class ChatModel: Identifiable {
     self.app = app
     self.profile = profile
     self.storedID = storedID
+    queueState = app.queueState(profile: profile, storedID: storedID)
     section = row?.section ?? .chats
     prepared = live
     madeHere = live != nil && row == nil
@@ -319,24 +356,31 @@ final class ChatModel: Identifiable {
       prepared = nil
       // A new chat, or a copy that brought its whole history along.
       adopt(live, history: .replace(TranscriptItem.items(fromHistory: live.messages), .complete))
-      isLoading = false
+      finishOpening()
+      await cancelStoppedAdmissions()
       if sendWhenReady {
         sendWhenReady = false
         await send()
       }
+      drainQueue()
       return
     }
 
     // Ask who has it open right before deciding how to open it.
     async let freshRow = try? client.session(storedID: storedID, profile: profile)
-    async let freshActive = try? client.activeSessions(profiles: (app?.profileNames ?? []) + [profile])
+    let rosterProfiles = (app?.profileNames ?? []) + [profile]
+    async let freshActive = try? client.activeSessions(profiles: rosterProfiles)
     if let owners = await app?.refreshOwners() { owner = owners[storedID] }
     let row = await freshRow
     // Our own backend running it is not "elsewhere": decide on a fresh live list, not the inbox's.
-    if let active = await freshActive { app?.setLiveStatuses(active) }
+    if let active = await freshActive {
+      app?.setLiveStatuses(active, profiles: rosterProfiles)
+    } else {
+      app?.invalidateLiveRoster(profiles: rosterProfiles)
+    }
     if isClosed { return }
-    // The desktop app runs chats in its own backend, which holds no lease this app can see:
-    // a turn running there is only visible as a heartbeat. Watch it like an owned chat.
+    // Only a fresh heartbeat absent from the gateway roster implies a separate process.
+    // Creation provenance and an idle/starting status say nothing about ownership.
     if owner == nil, !isChannel, let other = elsewhereOwner(row: row) {
       owner = other
       isRunningElsewhere = true
@@ -351,6 +395,11 @@ final class ChatModel: Identifiable {
     do {
       try await client.rpc.waitUntilReady(timeout: 45)
       let live = try await client.resume(storedID: storedID, profile: profile, omitMessages: true)
+      // Bind before receipt/history awaits. Events newer than this snapshot wait until its
+      // transcript is adopted, rather than disappearing or being overwritten by that adoption.
+      liveID = live.liveID
+      app?.noteLive(live.liveID, storedID: storedID)
+      await refreshQueuedReceipts(client: client, liveID: live.liveID)
       var history = try await newest.value
       if isClosed { return }
       if live.isRunning, history.window.hasOlder, !history.items.contains(where: { $0.kind == .user }) {
@@ -359,12 +408,15 @@ final class ChatModel: Identifiable {
         if isClosed { return }
       }
       adopt(live, history: .replace(history.items, history.window))
-      isLoading = false
+      finishOpening()
+      await recoverQueuedAdmissions()
+      await cancelStoppedAdmissions()
       if let row = app?.row(storedID), row.unread { app?.setUnread(row, false) }
       if sendWhenReady {
         sendWhenReady = false
         await send()
       }
+      drainQueue()
     } catch {
       if isClosed { return }
       loadError = error.localizedDescription
@@ -400,28 +452,16 @@ final class ChatModel: Identifiable {
     next.info.merge(live.info)
     if next.title.isEmpty { next.title = next.info.title }
     var fresh = history.items
+    for rendered in queueState.renderedAdmissions {
+      _ = claimQueuedUser(rendered.sent, in: fresh)
+    }
     // The gateway does not say when a running turn started; for the timer, its message (stored when it
     // was sent) does.
     let turnStartedAt = live.turnStartedAt ?? (live.isRunning ? TurnActivity.turnStart(in: fresh) : nil)
-    if !queue.onMac.isEmpty {
-      let texts = queue.onMac.map(\.text)
-      let running = ChatState.normalized(live.inflight["user"].stringValue)
-      if live.isRunning, !running.isEmpty, texts.contains(where: { running.contains(ChatState.normalized($0)) }) {
-        // The reply running now is theirs: the history already holds them in place.
-        _ = queue.takeOnMac()
-      } else if live.isRunning {
-        // Still waiting behind the running reply: the Mac's early copies stay out of the transcript.
-        fresh = TranscriptItem.withoutEarlyQueued(
-          fresh, queued: texts, runningUser: live.inflight["user"].string, turnStartedAt: live.turnStartedAt)
-      } else {
-        // The Mac ran them while the phone was away, or dropped them (a stopped reply clears its
-        // queue). What is not in the transcript comes back to the phone's queue, held.
-        var check = ChatState()
-        check.items = fresh
-        let handed = queue.takeOnMac()
-        queue.returnFromMac(handed.filter { !check.hasUserMessage($0.text) })
-      }
+    if let admissionID = live.inflight["admission_id"].string {
+      startHandedOffPrompt(admissionID, in: &fresh)
     }
+    settleHandedOffQueue(in: &fresh)
     switch history {
     case .replace(_, let newWindow):
       next.items = fresh
@@ -569,6 +609,7 @@ final class ChatModel: Identifiable {
         try? await Task.sleep(for: .seconds(self.owner != nil ? 3.5 : 8))
         if Task.isCancelled || self.isClosed { return }
         if self.isBranching { continue }
+        await self.app?.refreshLiveRoster()
         let owners = await self.app?.refreshOwners() ?? [:]
         var current = owners[self.storedID]
         if current == nil, !self.isChannel {
@@ -682,12 +723,18 @@ final class ChatModel: Identifiable {
   func connectionReady() async {
     guard hasOpened, !isClosed, !isLoading, !isReadOnly, !isWatching else { return }
     try? await reattach()
+    await recoverQueuedAdmissions()
+    await cancelStoppedAdmissions()
+    drainQueue()
   }
 
   func liveSessionReclaimed() async {
     liveID = nil
     guard !isClosed, !isLoading, !isReadOnly, !isWatching else { return }
     try? await reattach()
+    await recoverQueuedAdmissions()
+    await cancelStoppedAdmissions()
+    drainQueue()
   }
 
   /// Re-binds this chat to a live backend session after a reconnect, a reclaim, or "session not found".
@@ -718,6 +765,7 @@ final class ChatModel: Identifiable {
         self.draft = words
       }
       if self.isClosed { return }
+      await self.refreshQueuedReceipts(client: client, liveID: live.liveID)
       // A chat minted just now has no stored history yet; what was typed in it stays.
       let history = spoken
         ? try await self.readNewestPage(client: client) : History.newest(page: [], items: [], window: .complete)
@@ -744,14 +792,44 @@ final class ChatModel: Identifiable {
 
   // MARK: Events
 
+  private func finishOpening() {
+    isReplayingOpeningEvents = true
+    let buffered = openingEvents
+    openingEvents = []
+    for event in buffered { handle(event) }
+    isReplayingOpeningEvents = false
+    isLoading = false
+  }
+
   func handle(_ event: GatewayEvent) {
+    if isLoading, !isReplayingOpeningEvents {
+      openingEvents.append(event)
+      return
+    }
     lastEventAt = Date()
     var next = state
-    // A turn the Mac starts on its own right after a reply ended is the one for the messages
-    // handed to it while the phone slept.
-    if event.type == "message.start", !next.isStreaming, !queue.onMac.isEmpty {
-      next.beginHandedOverTurn(texts: queue.takeOnMac().map(\.text), now: now)
-      scrollToEnd += 1
+    // Cancelling a waiting admission publishes message.complete, but does not finish the
+    // unrelated execution currently streaming in this conversation.
+    if event.type == "message.complete", event.payload["outcome"].string == "cancelled",
+       event.payload["status"].string != "interrupted", let admissionID = event.admissionID {
+      // A queued cancellation owns no execution. It can come from any viewer, even when
+      // this phone never held its receipt. Executed interruptions carry status=interrupted.
+      if let entry = queue.onMac.first(where: { queueState.receipts[$0.id]?["admission_id"].string == admissionID }) {
+        queueState.receipts[entry.id] = ["admission_id": .string(admissionID), "status": "terminal", "outcome": "cancelled"]
+        if queueState.cancellation == nil { settleHandedOffQueue(in: &next.items) }
+      }
+      state = next
+      return
+    }
+    // A background wake or another client's turn is not necessarily our queued follow-up.
+    if event.type == "message.start", let admissionID = event.admissionID {
+      if !queueState.pendingAdmissions.isEmpty { queueState.startedAdmissions.insert(admissionID) }
+      startHandedOffPrompt(admissionID, in: &next.items)
+    }
+    if event.type == "message.complete", let admissionID = event.admissionID,
+       (["completed", "failed"].contains(event.payload["outcome"].stringValue) || event.payload["status"].string == "interrupted") {
+      // A terminal event is also proof of execution when the matching start was missed.
+      startHandedOffPrompt(admissionID, in: &next.items)
     }
     let effects = next.apply(event: event.type, payload: event.payload, now: now)
     state = next
@@ -987,7 +1065,10 @@ final class ChatModel: Identifiable {
 
   /// Stop the reply. Whatever is queued waits until sent by hand or resumed: stopping means stop.
   func stop() async {
+    queueState.cancelRequested.formUnion(queue.onMac.map(\.id))
+    queueState.cancelRequested.formUnion(queueState.pendingAdmissions.keys)
     queue.pause()
+    await cancelStoppedAdmissions()
     await interrupt()
   }
 
@@ -1005,9 +1086,101 @@ final class ChatModel: Identifiable {
 
   // MARK: Queue
 
+  private func cancelStoppedAdmissions() async {
+    if let cancellation = queueState.cancellation {
+      await cancellation.value
+      return
+    }
+    guard let client, let liveID, !queueState.cancelRequested.isEmpty else { return }
+    let cancellation = Task {
+      var attempted: Set<UUID> = []
+      // An in-flight submit can acknowledge while a previous cancellation is awaiting I/O.
+      // Re-read shared membership each time instead of freezing the initial onMac snapshot.
+      while let entry = queue.onMac.first(where: { queueState.cancelRequested.contains($0.id) && !attempted.contains($0.id) }) {
+        attempted.insert(entry.id)
+        guard let admissionID = queueState.receipts[entry.id]?["admission_id"].string else { continue }
+        do {
+          try await client.cancelAdmission(liveID: liveID, profile: profile, admissionID: admissionID)
+          let receipt = try await client.receipt(liveID: liveID, profile: profile, admissionID: admissionID)
+          if queue.onMac.contains(where: { $0.id == entry.id }) { queueState.receipts[entry.id] = receipt }
+        } catch {
+          // Keep the exact receipt and Stop intent for reconnect; never assume cancellation.
+          app?.show("Could not confirm that the queued message stopped. It remains on your Mac.", kind: .failure)
+        }
+      }
+      let current = app?.openChat.flatMap { $0.queueState === queueState ? $0 : nil } ?? self
+      current.settleHandedOffQueue(in: &current.state.items)
+    }
+    queueState.cancellation = cancellation
+    await cancellation.value
+    queueState.cancellation = nil
+  }
+
+  private func refreshQueuedReceipts(client: HermesClient, liveID: String) async {
+    for entry in queue.onMac {
+      guard let admissionID = queueState.receipts[entry.id]?["admission_id"].string,
+            let receipt = try? await client.receipt(liveID: liveID, profile: profile, admissionID: admissionID),
+            queue.onMac.contains(where: { $0.id == entry.id }) else { continue }
+      queueState.receipts[entry.id] = receipt
+    }
+  }
+
+  /// Receipts, not matching words or an arbitrary next turn, decide which entries left the queue.
+  private func settleHandedOffQueue(in items: inout [TranscriptItem]) {
+    var cancelled: [PromptQueue<ComposerAttachment>.Entry] = []
+    for entry in queue.onMac {
+      guard let receipt = queueState.receipts[entry.id], let admissionID = receipt["admission_id"].string else { continue }
+      switch receipt["status"].stringValue {
+      case "started":
+        startHandedOffPrompt(admissionID, in: &items)
+      case "terminal":
+        if receipt["outcome"].string == "cancelled" {
+          queue.removeOnMac(entry.id)
+          cancelled.append(entry)
+          queueState.receipts[entry.id] = nil
+          queueState.sentItems[entry.id] = nil
+          queueState.cancelRequested.remove(entry.id)
+        } else if ["completed", "failed", "interrupted"].contains(receipt["outcome"].stringValue) {
+          startHandedOffPrompt(admissionID, in: &items)
+        }
+      default:
+        // Queued or uncertain: keep the visible receipt, never automatically resubmit it.
+        break
+      }
+    }
+    // Prepend once in the Mac's FIFO order, not one at a time (which reverses A, B, C).
+    queue.returnFromMac(cancelled)
+  }
+
+  private func startHandedOffPrompt(_ admissionID: String, in items: inout [TranscriptItem]) {
+    guard let entry = queue.onMac.first(where: { queueState.receipts[$0.id]?["admission_id"].string == admissionID }) else { return }
+    let sent = queueState.sentItems[entry.id] ?? TranscriptItem.user(entry.text, timestamp: entry.queuedAt)
+    if !claimQueuedUser(sent, in: items) {
+      items.append(sent)
+      claimedQueueUserIDs.insert(sent.id)
+    }
+    queueState.renderedAdmissions.append((admissionID, sent))
+    queue.removeOnMac(entry.id)
+    queueState.receipts[entry.id] = nil
+    queueState.sentItems[entry.id] = nil
+    queueState.cancelRequested.remove(entry.id)
+  }
+
+  /// Stored history has no admission identity. Match its rows one-to-one, never many-to-one;
+  /// a locally rendered row or a prior admission's stored row cannot hide the next prompt.
+  private func claimQueuedUser(_ sent: TranscriptItem, in items: [TranscriptItem]) -> Bool {
+    guard let shown = items.first(where: {
+      $0.kind == .user && !claimedQueueUserIDs.contains($0.id)
+        && ($0.id == sent.id || ($0.signature == sent.signature && ($0.timestamp ?? 0) >= (sent.timestamp ?? 0) - 1))
+    }) else { return false }
+    claimedQueueUserIDs.insert(shown.id)
+    return true
+  }
+
   /// Sends the next queued message once nothing runs.
   private func drainQueue() {
-    guard !isClosed, !isLoading, !isReadOnly, !continuesAsNewVersion, let entry = queue.next(isBusy: isBusy) else { return }
+    guard !isClosed, !isLoading, !isReadOnly, !continuesAsNewVersion, queueState.handoff == nil,
+          queueState.pendingAdmissions.isEmpty, let entry = queue.next(isBusy: isBusy) else { return }
     queue.remove(entry.id)
     Task { await deliver(text: entry.text, picked: entry.attachments, origin: .queue(entry)) }
   }
@@ -1017,6 +1190,10 @@ final class ChatModel: Identifiable {
   /// message goes first. With nothing running it is simply sent.
   func sendNow(_ id: UUID) async {
     guard let entry = queue.entries.first(where: { $0.id == id }), !entry.isDelivering else { return }
+    if entry.isAwaitingReceipt {
+      await recoverQueuedAdmissions()
+      return
+    }
     queue.resume()
     UIImpactFeedbackGenerator(style: .light).impactOccurred()
     if !isBusy {
@@ -1077,6 +1254,7 @@ final class ChatModel: Identifiable {
 
   /// Takes a queued message back into the composer to change it.
   func editQueued(_ id: UUID) {
+    guard queue.entries.contains(where: { $0.id == id && !$0.isDelivering && !$0.isAwaitingReceipt }) else { return }
     guard let entry = queue.remove(id) else { return }
     let current = draft.trimmingCharacters(in: .whitespacesAndNewlines)
     draft = [entry.text, current].filter { !$0.isEmpty }.joined(separator: "\n\n")
@@ -1084,29 +1262,127 @@ final class ChatModel: Identifiable {
   }
 
   func deleteQueued(_ id: UUID) {
+    guard queue.entries.contains(where: { $0.id == id && !$0.isDelivering && !$0.isAwaitingReceipt }) else { return }
     queue.remove(id)
   }
 
   func resumeQueue() {
-    queue.resume()
-    drainQueue()
+    if queueState.pendingAdmissions.isEmpty {
+      queue.resume()
+      drainQueue()
+      return
+    }
+    Task {
+      await recoverQueuedAdmissions()
+      guard queueState.pendingAdmissions.isEmpty else { return }
+      queue.resume()
+      drainQueue()
+    }
   }
 
   /// The app is going to sleep, or this chat is closing, while messages wait for a reply that is
   /// still running. Hand them to the Mac, which runs them after the reply with this app suspended
   /// (`prompt.submit` with `queued`). A paused queue stays here: the person stopped the agent.
   func handOffQueue() async {
+    if let handoff = queueState.handoff {
+      await handoff.value
+      return
+    }
+    let handoff = Task { await submitWaitingQueue() }
+    queueState.handoff = handoff
+    await handoff.value
+    queueState.handoff = nil
+    queueState.startedAdmissions = []
+    if let current = app?.openChat, current.queueState === queueState { current.drainQueue() }
+  }
+
+  private func submitWaitingQueue() async {
+    await recoverQueuedAdmissions()
+    guard queueState.pendingAdmissions.isEmpty else { return }
     guard !queue.isEmpty, !queue.isPaused, isBusy, !continuesAsNewVersion, let client, let liveID else { return }
-    for entry in queue.entries {
+    for id in queue.entries.map(\.id) {
+      guard !queue.isPaused else { return }
+      guard let entry = queue.entries.first(where: { $0.id == id }), !entry.isDelivering else { continue }
+      queue.setDelivering(entry.id, true)
       do {
         let staged = try await stage(entry.attachments, liveID: liveID, client: client)
+        guard !queue.isPaused, queue.entries.contains(where: { $0.id == id && $0.isDelivering }) else {
+          queue.setDelivering(id, false)
+          return
+        }
         let full = ([entry.text] + staged.references).filter { !$0.isEmpty }.joined(separator: "\n\n")
-        _ = try await client.submit(liveID: liveID, profile: profile, text: full, queued: true, images: staged.images)
-        // Shown as waiting on the Mac until the Mac starts its turn; not in the transcript yet.
-        queue.moveToMac(entry.id)
-        hasSpoken = true
+        var sent = TranscriptItem.user(full, timestamp: now)
+        sent.images = staged.images.map(\.path)
+        let pending = ChatQueueState.PendingAdmission(liveID: liveID, submissionID: entry.submissionID, text: full, images: staged.images, sent: sent)
+        queueState.pendingAdmissions[id] = pending
+        let receipt = try await client.admit(
+          liveID: liveID, profile: profile, text: full, queued: true, images: staged.images,
+          submissionID: pending.submissionID)
+        await acknowledgeHandoff(id, pending: pending, receipt: receipt)
       } catch {
+        queue.setDelivering(entry.id, false)
+        // Only an explicit precommit refusal makes the entry unsent. Internal errors, timeouts
+        // and disconnects can all happen AFTER admission; do not guess that they mean "not sent".
+        if case HermesError.rpc(_, _, let reason) = error, reason == "queue_full" {
+          queueState.pendingAdmissions[id] = nil
+        }
+        if queueState.pendingAdmissions[id] != nil {
+          queue.setAwaitingReceipt(id, true)
+          queue.pause()
+          app?.show("Delivery unconfirmed. Held until the original message can be checked on your Mac.", kind: .failure, seconds: 6)
+        }
         return
+      }
+    }
+  }
+
+  /// Recovery only replays the original admission, never redirect/deliver or another upload.
+  /// Shared across screen models just like handoff, so competing wake/reopen/Send now paths join it.
+  private func recoverQueuedAdmissions() async {
+    if let recovery = queueState.recovery {
+      await recovery.value
+      return
+    }
+    guard queue.entries.contains(where: \.isAwaitingReceipt) else { return }
+    let recovery = Task {
+      for id in queue.entries.filter(\.isAwaitingReceipt).map(\.id) {
+        guard let pending = queueState.pendingAdmissions[id], let client else { continue }
+        queue.setDelivering(id, true)
+        defer { queue.setDelivering(id, false) }
+        do {
+          try await ensureLive()
+          // The target is part of admission identity. Never replay into a replacement session.
+          guard liveID == pending.liveID else { throw HermesError.notConnected }
+          let receipt = try await client.admit(
+            liveID: pending.liveID, profile: profile, text: pending.text, queued: true, images: pending.images,
+            submissionID: pending.submissionID)
+          await acknowledgeHandoff(id, pending: pending, receipt: receipt)
+        } catch {
+          if (error as? HermesError)?.isSessionGone == true { liveID = nil }
+          queue.pause()
+          return // Still unconfirmed: keep both the immutable payload and the hold.
+        }
+      }
+    }
+    queueState.recovery = recovery
+    await recovery.value
+    queueState.recovery = nil
+  }
+
+  private func acknowledgeHandoff(_ id: UUID, pending: ChatQueueState.PendingAdmission, receipt: JSONValue) async {
+    queueState.receipts[id] = receipt
+    queueState.sentItems[id] = pending.sent
+    queueState.pendingAdmissions[id] = nil
+    queue.setDelivering(id, false)
+    queue.setAwaitingReceipt(id, false)
+    queue.moveToMac(id)
+    hasSpoken = true
+    if queueState.cancelRequested.contains(id) { await cancelStoppedAdmissions() }
+    if let current = app?.openChat, current.queueState === queueState {
+      current.settleHandedOffQueue(in: &current.state.items)
+      if let admissionID = receipt["admission_id"].string,
+         queueState.startedAdmissions.remove(admissionID) != nil {
+        current.startHandedOffPrompt(admissionID, in: &current.state.items)
       }
     }
   }
@@ -1240,7 +1516,6 @@ final class ChatModel: Identifiable {
     if !queue.isEmpty {
       Task {
         await handOffQueue()
-        keepQueueAsDraft()
       }
     }
     // Stop following the chat once nothing here waits on it. A running reply stays followed, so a
@@ -1251,14 +1526,6 @@ final class ChatModel: Identifiable {
       subscriptionID = ""
       Task { try? await client.detach(liveID: liveID, subscriptionID: subscription, profile: profile) }
     }
-  }
-
-  /// Queued messages that could not go to the Mac (the queue was paused, or the handover failed)
-  /// become the chat's draft, so nothing typed is lost when the chat closes.
-  private func keepQueueAsDraft() {
-    let left = queue.removeAll().map(\.text).filter { !$0.isEmpty }
-    guard !left.isEmpty else { return }
-    draft = ([draft.trimmingCharacters(in: .whitespacesAndNewlines)] + left).filter { !$0.isEmpty }.joined(separator: "\n\n")
   }
 
   /// The phone is going to sleep. Messages waiting for the running reply go to the Mac now, or

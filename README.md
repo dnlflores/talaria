@@ -61,7 +61,9 @@ T3 Tools.
   queue above the composer instead of cutting in, and goes out as the next turn
   when the reply ends. "Send now" puts a queued message into the running reply,
   and the agent answers it right away. Tap a queued message to edit it; Stop
-  pauses the queue. If the phone sleeps first, the queue is handed to the Mac.
+  pauses the queue. Leaving and reopening a chat preserves its queue, order and
+  attachments. If the phone sleeps or the chat closes first, waiting messages
+  are handed to the Mac and remain visible until their own turns start.
 - **Pictures:** pictures sent in a chat show as pictures, from any app (the
   desktop app, a terminal, the phone), and so do pictures a reply delivers or
   names by path. Tap one to see it full screen and share it.
@@ -255,6 +257,25 @@ TEST_RUNNER_TALARIA_UITEST_BOT=<bot title> \
   xcodebuild test -project Talaria.xcodeproj -scheme Talaria \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro'
 ```
+
+Queue navigation also has a local-only regression harness (Python with `aiohttp`
+and `PyYAML`, plus XcodeGen). It runs the real hosted `AppModel` / `ChatModel`
+against an isolated loopback gateway fixture, without touching existing chats:
+
+```sh
+python TalariaQueueTests/run-tests.py --sim "$SIM"
+# Actual navigation, queue panel and admission delivery on iPhone or iPad:
+python TalariaQueueTests/run-tests.py --sim "$SIM" --ui
+```
+
+Use a dedicated simulator UUID for `SIM`, a Python environment containing the two
+dependencies, and set `TMPDIR` to your active scratch directory. The harness uses
+only `127.0.0.1:19129` and a nonexistent fixture sign-in file (not Keychain), refuses
+an occupied fixture port, and saves build logs, fixture calls and `.xcresult`
+bundles under scratch. Shut down/delete only the simulator you created afterward.
+
+`QueueFlowTests/testQueueSurvivesNavigatingAwayAndBack` exercises the same
+navigation against the real gateway with the live-test environment above.
 
 The live tests cost a few model calls and archive the chats they create.
 `TourTests` walks every area read-only and saves screenshots

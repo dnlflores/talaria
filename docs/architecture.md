@@ -361,17 +361,33 @@ on the phone (`PromptQueue`, HermesKit, unit-tested):
   later stores it as a `steer` row, which is the person's own words. Photos
   cannot ride a redirect, and an older agent may refuse one: then the entry
   goes to the front and the reply is stopped, so it goes out next.
-- Stop pauses the queue. Leaving the chat or the app going to the background
-  hands the queue to the Mac (`queued: true`), which runs it after the reply
-  with the phone asleep; what cannot be handed over becomes the chat's draft.
-- The Mac's queue merges text entries into one turn and writes each queued row
-  into the history at once, right after the running turn's message, moving it
-  to the end when its turn starts. So the visible queue stays on the phone, and
-  entries handed over show "On your Mac" in the panel: a resume while the reply
-  still runs leaves their early rows out (`withoutEarlyQueued`), the next turn
-  the Mac starts shows them as its message, and a resume after the reply puts
-  back in the queue (held) whatever the Mac dropped, for a stopped reply clears
-  its queue.
+- `AppModel` retains one `ChatQueueState` per profile and conversation across
+  screen visits. A closing model and a newly opened one share the same queue,
+  including photos, files, ordering and pause state. This is app-memory state,
+  not a claim that local unsent entries survive force-quitting the app.
+- Stop pauses the queue. Leaving the chat or backgrounding the app hands waiting
+  entries to the gateway (`queued: true`), which runs them with the phone asleep.
+  A paused or failed handoff stays queued, not flattened into a text draft.
+- Concurrent handoffs share a single task. Each queued entry uses its UUID as its
+  initial submission identity; a confirmed cancellation renews that wire identity
+  without replacing its visible row or attachments. Uncertain retries keep the
+  original identity and exact staged payload. Accepted entries retain their admission receipts and show
+  "On your Mac" until that admission starts, not whichever turn happens next.
+- On reattachment, `prompt.receipt` distinguishes entries still queued, started,
+  completed, cancelled or uncertain. Only the matching admission leaves the
+  queue. Cancelled entries return held with their attachments; uncertain reads
+  stay visible without blindly resubmitting. Live `message.start` preserves the
+  envelope's `admission_id`, so an unrelated background wake cannot consume the
+  follow-up. An unpaused local queue also drains after an idle chat finishes
+  opening.
+- Stop explicitly calls `prompt.cancel` for owned queued receipts before
+  interrupting the current execution. Its retained per-entry intent also covers
+  late acknowledgements and retries on reconnect. Confirmed cancellations return
+  held in FIFO order. Their `message.complete` events do not end another running
+  admission. Opening binds the live session before receipt/history awaits and
+  buffers newer events until adoption; replay retains the running admission ID,
+  and a matching terminal completion can settle a missed start. Unknown receipt
+  states/outcomes remain visible without being automatically resubmitted.
 
 ## Pictures
 
@@ -435,7 +451,11 @@ anyone else. Talaria treats that as a normal state, not an error:
 1. Hermes has no list of chats other processes hold. A chat counts as held
    elsewhere when its row says a turn is running there (the heartbeat:
    `last_activity_description` set, `last_activity_at` under three minutes
-   old) and the gateway is not running it, or when a send is refused.
+   old) and a successfully read gateway roster for that profile does not contain
+   it, or when a send is refused. Membership, not turn status, is decisive:
+   `starting` and `idle` entries still belong to the shared gateway. A failed
+   roster read is unknown, not evidence of an external owner. Creation source
+   describes provenance only, never the current owner.
 2. An owned chat opens in watch mode: the stored transcript, refreshed every
    few seconds, with a notice explaining why.
 3. Sending from an owned chat calls `session.branch_stored`, which copies the

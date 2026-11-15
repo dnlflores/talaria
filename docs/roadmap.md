@@ -40,6 +40,9 @@ yet.
   reconnect; tool events alone start it; a quiet turn is re-checked against
   `session.active_list`. Chats a terminal runs in its own agent are read from
   the session heartbeat (`last_activity_*`) and watched read-only.
+- Follow-up queues survive navigating away and back, keeping attachments,
+  ordering and pause state. Gateway handoff receipts identify the exact queued
+  turn; idle/starting gateway chats do not show a false Mac-owned branch notice.
 - One live chat with the desktop app: the app drives chats through the Hermes
   gateway directly (its `/api/ws`), so turns, thinking, tool results and questions
   from either side reach the other.

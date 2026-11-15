@@ -14,15 +14,23 @@ import Foundation
 public struct PromptQueue<Attachment: Sendable>: Sendable {
   public struct Entry: Identifiable, Sendable {
     public let id: UUID
+    /// Wire identity is stable through uncertain retries, but renewed after definite cancellation.
+    public var submissionID: String
     public var text: String
     public var attachments: [Attachment]
     /// Seconds since 1970.
     public var queuedAt: Double
     /// A "Send now" for this entry is on its way to the Mac.
     public var isDelivering = false
+    /// Submission may have committed, but its acknowledgement was lost. Recover its original
+    /// identity before allowing an edit, removal or alternate delivery; this is not an active send.
+    public var isAwaitingReceipt = false
+    /// Preserve admission FIFO even when cancellations return in separate batches.
+    fileprivate var handoffSequence: Int?
 
     public init(id: UUID = UUID(), text: String, attachments: [Attachment] = [], queuedAt: Double) {
       self.id = id
+      submissionID = id.uuidString.lowercased()
       self.text = text
       self.attachments = attachments
       self.queuedAt = queuedAt
@@ -35,6 +43,7 @@ public struct PromptQueue<Attachment: Sendable>: Sendable {
   /// Entries given to the Mac's own queue because the phone was going to sleep. The Mac runs
   /// them after the reply; they show here until their turn starts.
   public private(set) var onMac: [Entry] = []
+  private var nextHandoffSequence = 0
 
   public init() {}
 
@@ -46,8 +55,19 @@ public struct PromptQueue<Attachment: Sendable>: Sendable {
 
   /// The Mac accepted this entry into its own queue.
   public mutating func moveToMac(_ id: UUID) {
-    guard let entry = remove(id) else { return }
+    guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
+    // Transfer is not consumption: Stop still holds even when the last local entry leaves.
+    var entry = entries.remove(at: index)
+    entry.handoffSequence = nextHandoffSequence
+    nextHandoffSequence += 1
     onMac.append(entry)
+  }
+
+  /// One admission started or settled; other queued admissions still wait on the Mac.
+  @discardableResult
+  public mutating func removeOnMac(_ id: UUID) -> Entry? {
+    guard let index = onMac.firstIndex(where: { $0.id == id }) else { return nil }
+    return onMac.remove(at: index)
   }
 
   /// The Mac started the turn for what it was holding, or it no longer holds it.
@@ -59,7 +79,16 @@ public struct PromptQueue<Attachment: Sendable>: Sendable {
   /// Entries the Mac dropped (a stopped reply clears its queue) come back here, held.
   public mutating func returnFromMac(_ dropped: [Entry]) {
     guard !dropped.isEmpty else { return }
-    entries.insert(contentsOf: dropped.map { var entry = $0; entry.isDelivering = false; return entry }, at: 0)
+    for var entry in dropped {
+      entry.isDelivering = false
+      entry.isAwaitingReceipt = false
+      entry.submissionID = UUID().uuidString.lowercased()
+      let index = entries.firstIndex {
+        guard let order = $0.handoffSequence else { return true }
+        return order > (entry.handoffSequence ?? -1)
+      } ?? entries.endIndex
+      entries.insert(entry, at: index)
+    }
     isPaused = true
   }
 
@@ -105,8 +134,13 @@ public struct PromptQueue<Attachment: Sendable>: Sendable {
     entries[index].isDelivering = value
   }
 
+  public mutating func setAwaitingReceipt(_ id: UUID, _ value: Bool) {
+    guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
+    entries[index].isAwaitingReceipt = value
+  }
+
   public mutating func pause() {
-    if !entries.isEmpty { isPaused = true }
+    if isShowing { isPaused = true }
   }
 
   public mutating func resume() {
@@ -115,7 +149,7 @@ public struct PromptQueue<Attachment: Sendable>: Sendable {
 
   /// The entry to send now that nothing runs, if the queue is flowing.
   public func next(isBusy: Bool) -> Entry? {
-    guard !isBusy, !isPaused else { return nil }
+    guard !isBusy, !isPaused, !entries.contains(where: \.isAwaitingReceipt) else { return nil }
     return entries.first { !$0.isDelivering }
   }
 }

@@ -16,6 +16,8 @@ public struct GatewayEvent: Sendable, Equatable {
   public let type: String
   public let sessionID: String
   public let payload: JSONValue
+  /// The exact admitted input this event belongs to, not merely the conversation.
+  public var admissionID: String? = nil
 }
 
 /// A question the gateway asks the client (approval, clarify, sudo, secret) and waits on.
@@ -370,7 +372,7 @@ public actor RPCConnection {
         default:
           break
         }
-        continuation.yield(.event(GatewayEvent(type: type, sessionID: sessionID, payload: payload)))
+        continuation.yield(.event(GatewayEvent(type: type, sessionID: sessionID, payload: payload, admissionID: frame["params"]["admission_id"].string)))
         continue
       }
 
