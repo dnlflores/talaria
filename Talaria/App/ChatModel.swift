@@ -22,6 +22,14 @@ struct ComposerAttachment: Identifiable {
   }
 }
 
+/// What a closed chat had not sent: words for its composer, picked files, and queued messages,
+/// each still its own entry. The next copy of the chat to open takes it back (`AppModel.leaveBehind`).
+struct LeftBehind {
+  var words = ""
+  var attachments: [ComposerAttachment] = []
+  var queue = PromptQueue<ComposerAttachment>()
+}
+
 /// One open conversation: its transcript, its live session on the Mac, and the composer.
 ///
 /// Chats run in the Hermes gateway on the Mac, the process the desktop app runs them in, so a
@@ -96,7 +104,10 @@ final class ChatModel: Identifiable {
   private weak var app: AppModel?
   private var prepared: LiveSession?
   private var hasOpened = false
-  private var isClosed = false
+  private(set) var isClosed = false
+  /// Queued messages taken back from a closed copy of this chat, before it opened: they are held
+  /// if no reply is running once it has opened, rather than sent on their own.
+  @ObservationIgnored private var holdsTakenBackQueue = false
   private var hasSpoken = false
   /// Made here (a new chat) rather than opened from the Mac's list.
   private let madeHere: Bool
@@ -136,6 +147,7 @@ final class ChatModel: Identifiable {
     state.info.cwd = row?.cwd ?? ""
     state.info.branch = row?.gitBranch ?? ""
     owner = app.owners[storedID]
+    takeBack(app.takeLeftBehind(storedID: storedID))
   }
 
   #if DEBUG
@@ -333,6 +345,7 @@ final class ChatModel: Identifiable {
       // A new chat, or a copy that brought its whole history along.
       adopt(live, history: .replace(TranscriptItem.items(fromHistory: live.messages), .complete))
       isLoading = false
+      holdTakenBackQueueIfIdle()
       if sendWhenReady {
         sendWhenReady = false
         await send()
@@ -373,6 +386,7 @@ final class ChatModel: Identifiable {
       }
       adopt(live, history: .replace(history.items, history.window))
       isLoading = false
+      holdTakenBackQueueIfIdle()
       if let row = app?.row(storedID), row.unread { app?.setUnread(row, false) }
       if sendWhenReady {
         sendWhenReady = false
@@ -974,6 +988,15 @@ final class ChatModel: Identifiable {
     } catch {
       state.isStreaming = false
       let wrapped = error as? HermesError ?? .transport(error.localizedDescription)
+      if isClosed {
+        // Nobody sees this chat any more: it goes back where it came from, files and all, in the
+        // copy of the chat that opens next.
+        switch origin {
+        case .composer: leaveBehind(words: typed, attachments: picked)
+        case .queue(let entry): leaveBehind(queued: [entry], paused: true)
+        }
+        return
+      }
       if wrapped.isOwnedElsewhere {
         // Open on the Mac: nothing was sent. Keep the words and the attachments, and explain.
         state.items.removeAll { $0.id == itemID }
@@ -984,11 +1007,6 @@ final class ChatModel: Identifiable {
       update(itemID) {
         $0.isPending = false
         $0.isFailed = true
-      }
-      if isClosed {
-        // Nobody sees this chat any more: what was typed becomes its saved draft.
-        keepAsDraft(typed)
-        return
       }
       switch origin {
       case .composer:
@@ -1097,13 +1115,19 @@ final class ChatModel: Identifiable {
     }
     isSending = false
     if isClosed {
-      // Nobody sees this chat any more. Words to edit, or a command that did not run, become its
-      // saved draft (ahead of anything queued after it), so nothing typed is lost; an answer
-      // has nowhere to show.
-      switch result.outcome {
-      case .prefill(let words): keepAsDraft(words)
-      case .failure: keepAsDraft(command.typed)
-      case .submit, .output, .macOnly: break
+      // Nobody sees this chat any more, so an answer has nowhere to show. What was not sent goes
+      // to the copy of the chat that opens next: words to edit to its composer with the files
+      // picked; a command that failed back where it came from (its queue entry, held, keeps its
+      // place ahead of what was queued after it).
+      switch (result.outcome, origin) {
+      case (.failure, .queue(let entry)):
+        leaveBehind(queued: [entry], paused: true)
+      case (.prefill(let words), _):
+        leaveBehind(words: words, attachments: picked)
+      case (.failure, .composer):
+        leaveBehind(words: command.typed, attachments: picked)
+      case (.submit, _), (.output, _), (.macOnly, _):
+        leaveBehind(attachments: picked)
       }
       return
     }
@@ -1131,6 +1155,40 @@ final class ChatModel: Identifiable {
   private func keepAsDraft(_ words: String) {
     let current = draft.trimmingCharacters(in: .whitespacesAndNewlines)
     draft = [words, current].filter { !$0.isEmpty }.joined(separator: "\n\n")
+  }
+
+  /// This chat has closed: what it had not sent goes to the copy of it that opens next (or is
+  /// open already). This copy keeps the files too, as an open chat would.
+  private func leaveBehind(
+    words: String = "", attachments picked: [ComposerAttachment] = [],
+    queued: [PromptQueue<ComposerAttachment>.Entry] = [], paused: Bool = false
+  ) {
+    attachments = picked + attachments
+    var left = LeftBehind(words: words, attachments: picked)
+    left.queue.takeBack(queued, paused: paused)
+    guard !left.words.isEmpty || !left.attachments.isEmpty || !left.queue.isEmpty else { return }
+    app?.leaveBehind(left, storedID: storedID)
+  }
+
+  /// Takes back what a closed copy of this chat had not sent: words ahead of the draft, files in
+  /// the composer, queued messages in their place in the queue. Queued messages wait for a running
+  /// reply; with none running they are held until sent by hand.
+  func takeBack(_ left: LeftBehind) {
+    if !left.words.isEmpty { keepAsDraft(left.words) }
+    if !left.attachments.isEmpty { attachments = left.attachments + attachments }
+    guard !left.queue.isEmpty else { return }
+    queue.takeBack(left.queue.entries, paused: left.queue.isPaused)
+    if !hasOpened || isLoading {
+      holdsTakenBackQueue = true
+    } else if !isBusy {
+      queue.pause()
+    }
+  }
+
+  private func holdTakenBackQueueIfIdle() {
+    guard holdsTakenBackQueue else { return }
+    holdsTakenBackQueue = false
+    if !isBusy { queue.pause() }
   }
 
   private func runOnMac(_ command: SlashInvocation) async -> SlashResult {
@@ -1514,10 +1572,12 @@ final class ChatModel: Identifiable {
     slashTask?.cancel()
     slashTask = nil
     app?.preferences.setDraft(draft, for: storedID)
+    // Picked files wait for the next copy of the chat, as the words do.
+    if !attachments.isEmpty { app?.leaveBehind(LeftBehind(attachments: attachments), storedID: storedID) }
     if !queue.isEmpty {
       Task {
         await handOffQueue()
-        keepQueueAsDraft()
+        leaveQueueBehind()
       }
     }
     // Stop following the chat once nothing here waits on it. A running reply stays followed, so a
@@ -1530,12 +1590,14 @@ final class ChatModel: Identifiable {
     }
   }
 
-  /// Queued messages that could not go to the Mac (the queue was paused, or the handover failed)
-  /// become the chat's draft, so nothing typed is lost when the chat closes.
-  private func keepQueueAsDraft() {
-    let left = queue.removeAll().map(\.text).filter { !$0.isEmpty }
+  /// Queued messages that could not go to the Mac (the queue was paused, a command waits in it, or
+  /// the handover failed) go to the copy of the chat that opens next, each still its own entry
+  /// with its files, so nothing is lost and no message becomes part of another (or a command's).
+  private func leaveQueueBehind() {
+    let paused = queue.isPaused
+    let left = queue.removeAll()
     guard !left.isEmpty else { return }
-    draft = ([draft.trimmingCharacters(in: .whitespacesAndNewlines)] + left).filter { !$0.isEmpty }.joined(separator: "\n\n")
+    leaveBehind(queued: left, paused: paused)
   }
 
   /// The phone is going to sleep. Messages waiting for the running reply go to the Mac now, or

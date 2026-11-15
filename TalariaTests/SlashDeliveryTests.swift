@@ -178,4 +178,187 @@ final class SlashDeliveryTests: XCTestCase {
     XCTAssertEqual(userBubbles(chat).map(\.id), [bubble.id], "matched against the stored copy, file and all")
     XCTAssertEqual(userBubbles(chat).map(\.text), ["/goal Ship notes"])
   }
+
+  // MARK: Coming back to what was not sent
+
+  /// The chat opened again as the app opens it from the list: a new model for the same stored chat.
+  private func reopen(_ app: AppModel, _ chat: ChatModel) async -> ChatModel {
+    let reopened = ChatModel(app: app, profile: "preview", storedID: chat.storedID, row: nil, live: nil)
+    await reopened.open()
+    XCTAssertFalse(reopened.isLoading)
+    return reopened
+  }
+
+  /// Waits until `condition` holds, up to five seconds.
+  private func eventually(_ condition: () -> Bool) async -> Bool {
+    for _ in 0..<250 {
+      if condition() { return true }
+      try? await Task.sleep(for: .milliseconds(20))
+    }
+    return condition()
+  }
+
+  private func addNotes(_ chat: ChatModel) {
+    chat.addFile(data: Data("notes".utf8), name: "notes.txt", mimeType: "text/plain")
+  }
+
+  /// Queues `/usage` then words while the reply runs, and leaves before either has gone out.
+  private func leaveWithACommandAndWordsQueued(_ name: String) async throws -> (AppModel, ChatModel) {
+    let (app, chat) = try await openChat(name, running: true)
+    chat.draft = "/usage"
+    await chat.send()
+    chat.draft = "Implement the fix"
+    await chat.send()
+    chat.leave()
+    let parked = await eventually { app.preferences.queued(for: chat.storedID).count == 2 }
+    XCTAssertTrue(parked, "both entries were kept for the next copy")
+    XCTAssertTrue(fixture.submitted.isEmpty)
+    XCTAssertTrue(fixture.slashRequests.isEmpty, "the command waits for the phone; the Mac's queue takes words only")
+    XCTAssertEqual(app.preferences.draft(for: chat.storedID), "", "nothing was joined into the draft")
+    return (app, chat)
+  }
+
+  func testAQueuedCommandAndTheWordsAfterItComeBackAsTwoMessages() async throws {
+    let (app, chat) = try await leaveWithACommandAndWordsQueued("boundaries")
+    let reopened = await reopen(app, chat)
+    XCTAssertEqual(reopened.queue.entries.map(\.text), ["/usage", "Implement the fix"])
+    XCTAssertEqual(reopened.draft, "")
+    XCTAssertFalse(reopened.queue.isPaused, "the reply is still running: they wait for it as before")
+    reopened.handle(GatewayEvent(type: "message.complete", sessionID: reopened.liveID ?? "", payload: ["text": "Done"]))
+    let prompts = await waitForPrompts(1)
+    XCTAssertEqual(fixture.slashRequests, ["usage"], "the command ran on its own, without the words after it")
+    XCTAssertEqual(prompts.map(\.text), ["Implement the fix"])
+    XCTAssertTrue(reopened.state.items.contains { $0.isLocal && $0.text == "ok" }, "the command's answer shows")
+    XCTAssertTrue(reopened.queue.isEmpty)
+  }
+
+  func testAQueueTakenBackIntoAnIdleChatIsHeldUntilResumed() async throws {
+    let (app, chat) = try await leaveWithACommandAndWordsQueued("held")
+    fixture.finishesRunning(chat.storedID)
+    let reopened = await reopen(app, chat)
+    XCTAssertEqual(reopened.queue.entries.map(\.text), ["/usage", "Implement the fix"])
+    XCTAssertTrue(reopened.queue.isPaused, "nothing goes out on its own when the chat opens idle")
+    try await Task.sleep(for: .milliseconds(300))
+    XCTAssertTrue(fixture.slashRequests.isEmpty)
+    XCTAssertTrue(fixture.submitted.isEmpty)
+    reopened.resumeQueue()
+    let prompts = await waitForPrompts(1)
+    XCTAssertEqual(fixture.slashRequests, ["usage"])
+    XCTAssertEqual(prompts.map(\.text), ["Implement the fix"])
+  }
+
+  func testAFailedCommandAfterLeavingComesBackWithItsFile() async throws {
+    fixture.answerExec { _ in .error(code: 5030, message: "worker unavailable") }
+    let (app, chat) = try await openChat("failed-file")
+    addNotes(chat)
+    fixture.hold()
+    chat.draft = "/work A"
+    let sending = Task { await chat.send() }
+    await waitForSlash()
+    chat.leave()
+    fixture.release()
+    await sending.value
+    XCTAssertEqual(app.preferences.draft(for: chat.storedID), "/work A")
+    let reopened = await reopen(app, chat)
+    XCTAssertEqual(reopened.draft, "/work A")
+    XCTAssertEqual(reopened.attachments.map(\.name), ["notes.txt"], "the file comes back with the command")
+    XCTAssertTrue(fixture.submitted.isEmpty)
+  }
+
+  func testPrefillAfterLeavingComesBackWithItsFile() async throws {
+    fixture.answerExec { _ in .result(["type": "prefill", "message": "edit me"]) }
+    let (app, chat) = try await openChat("prefill-file")
+    addNotes(chat)
+    fixture.hold()
+    chat.draft = "/undo"
+    let sending = Task { await chat.send() }
+    await waitForSlash()
+    chat.leave()
+    fixture.release()
+    await sending.value
+    let reopened = await reopen(app, chat)
+    XCTAssertEqual(reopened.draft, "edit me")
+    XCTAssertEqual(reopened.attachments.map(\.name), ["notes.txt"])
+    XCTAssertTrue(fixture.submitted.isEmpty)
+  }
+
+  func testAQueuedCommandThatFailsAfterLeavingKeepsItsPlaceAndFile() async throws {
+    fixture.answerExec { _ in .error(code: 5030, message: "worker unavailable") }
+    let (app, chat) = try await openChat("failed-queued", running: true)
+    addNotes(chat)
+    chat.draft = "/work A"
+    await chat.send()
+    chat.draft = "B"
+    await chat.send()
+    fixture.hold()
+    chat.handle(GatewayEvent(type: "message.complete", sessionID: chat.liveID ?? "", payload: ["text": "Done"]))
+    await waitForSlash()
+    chat.leave()
+    fixture.release()
+    let parked = await eventually { app.preferences.queued(for: chat.storedID).count == 2 }
+    XCTAssertTrue(parked)
+    let reopened = await reopen(app, chat)
+    XCTAssertEqual(reopened.queue.entries.map(\.text), ["/work A", "B"], "the command keeps its place ahead of B")
+    XCTAssertEqual(reopened.queue.entries.first?.attachments.map(\.name), ["notes.txt"])
+    XCTAssertTrue(reopened.queue.isPaused, "a failed entry is held, as when the chat stays open")
+    XCTAssertEqual(reopened.draft, "")
+    XCTAssertTrue(fixture.submitted.isEmpty)
+  }
+
+  func testAMessageThatFailsToSendAfterLeavingComesBackWithItsFile() async throws {
+    fixture.answerSubmit { _ in .error(code: 5000, message: "boom") }
+    let (app, chat) = try await openChat("submit-failed")
+    addNotes(chat)
+    fixture.holdSubmits()
+    chat.draft = "Ship it"
+    let sending = Task { await chat.send() }
+    let fixture = fixture!
+    _ = await fixture.wait { fixture.submitAttempts >= 1 }
+    chat.leave()
+    fixture.release()
+    await sending.value
+    let reopened = await reopen(app, chat)
+    XCTAssertEqual(reopened.draft, "Ship it")
+    XCTAssertEqual(reopened.attachments.map(\.name), ["notes.txt"])
+  }
+
+  func testAQueuedMessageThatFailsToSendAfterLeavingComesBackHeldWithItsFile() async throws {
+    fixture.answerSubmit { _ in .error(code: 5000, message: "boom") }
+    let (app, chat) = try await openChat("submit-failed-queued", running: true)
+    addNotes(chat)
+    chat.draft = "Ship it"
+    await chat.send()
+    fixture.holdSubmits()
+    chat.handle(GatewayEvent(type: "message.complete", sessionID: chat.liveID ?? "", payload: ["text": "Done"]))
+    let fixture = fixture!
+    _ = await fixture.wait { fixture.submitAttempts >= 1 }
+    chat.leave()
+    fixture.release()
+    let parked = await eventually { app.preferences.queued(for: chat.storedID) == ["Ship it"] }
+    XCTAssertTrue(parked)
+    let reopened = await reopen(app, chat)
+    XCTAssertEqual(reopened.queue.entries.map(\.text), ["Ship it"])
+    XCTAssertEqual(reopened.queue.entries.first?.attachments.map(\.name), ["notes.txt"])
+    XCTAssertTrue(reopened.queue.isPaused)
+  }
+
+  func testWhatFailsAfterTheChatWasOpenedAgainGoesToTheOpenCopy() async throws {
+    fixture.answerExec { _ in .error(code: 5030, message: "worker unavailable") }
+    let (app, chat) = try await openChat("reopened-first")
+    addNotes(chat)
+    fixture.hold()
+    chat.draft = "/work A"
+    let sending = Task { await chat.send() }
+    await waitForSlash()
+    chat.leave()
+    // Opened again, as the app does from the list, before the command has answered.
+    let reopened = app.chat(profile: "preview", storedID: chat.storedID)
+    await reopened.open()
+    reopened.draft = "and more"
+    fixture.release()
+    await sending.value
+    XCTAssertEqual(reopened.draft, "/work A\n\nand more", "the command comes back ahead of what was typed since")
+    XCTAssertEqual(reopened.attachments.map(\.name), ["notes.txt"])
+    XCTAssertEqual(app.preferences.draft(for: chat.storedID), "/work A\n\nand more")
+  }
 }

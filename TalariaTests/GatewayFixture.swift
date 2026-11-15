@@ -36,6 +36,10 @@ final class GatewayFixture: @unchecked Sendable {
   }
   /// Chats whose reply is running when they are opened.
   private var running: Set<String> = []
+  /// How `prompt.submit` answers: nil accepts the message.
+  private var submitAnswer: @Sendable (String) -> Answer? = { _ in nil }
+  private var isHoldingSubmits = false
+  private var submitCalls = 0
 
   private(set) var port: UInt16 = 0
   var address: String { "http://127.0.0.1:\(port)" }
@@ -73,6 +77,12 @@ final class GatewayFixture: @unchecked Sendable {
   func answerExec(_ answer: @escaping @Sendable (String) -> Answer) { locked { execAnswer = answer } }
   func answerDispatch(_ answer: @escaping @Sendable (String, String) -> Answer) { locked { dispatchAnswer = answer } }
   func startsRunning(_ session: String) { locked { _ = running.insert(session) } }
+  /// The chat's reply has ended: opening it again finds it idle.
+  func finishesRunning(_ session: String) { locked { _ = running.remove(session) } }
+  /// Answers `prompt.submit` with an error instead of accepting it (nil accepts).
+  func answerSubmit(_ answer: @escaping @Sendable (String) -> Answer?) { locked { submitAnswer = answer } }
+  /// `prompt.submit` answers wait until `release()`.
+  func holdSubmits() { locked { isHoldingSubmits = true } }
 
   /// Slash answers wait until `release()`.
   func hold() { locked { isHolding = true } }
@@ -80,13 +90,17 @@ final class GatewayFixture: @unchecked Sendable {
   func release() {
     let waiting: [@Sendable () -> Void] = locked {
       isHolding = false
+      isHoldingSubmits = false
       defer { held = [] }
       return held
     }
     for answer in waiting { answer() }
   }
 
+  /// Messages the fixture accepted.
   var submitted: [Prompt] { locked { prompts } }
+  /// Every `prompt.submit` that arrived, accepted or not.
+  var submitAttempts: Int { locked { submitCalls } }
   /// `slash.exec` commands and `command.dispatch` names, in the order they arrived.
   var slashRequests: [String] { locked { slashCalls } }
 
@@ -194,8 +208,20 @@ final class GatewayFixture: @unchecked Sendable {
       let send: @Sendable () -> Void = { [queue] in queue.async { answer(result) } }
       if hold { locked { held.append(send) } } else { answer(result) }
     case "prompt.submit":
-      locked { prompts.append(Prompt(session: session, text: params["text"].stringValue, queued: params["queued"].truthy)) }
-      answer(.result(["admission_id": .string(UUID().uuidString)]))
+      let prompt = Prompt(session: session, text: params["text"].stringValue, queued: params["queued"].truthy)
+      let (failure, hold): (Answer?, Bool) = locked {
+        submitCalls += 1
+        return (submitAnswer(prompt.text), isHoldingSubmits)
+      }
+      let finish: @Sendable () -> Void = { [self] in
+        if let failure {
+          answer(failure)
+        } else {
+          locked { prompts.append(prompt) }
+          answer(.result(["admission_id": .string(UUID().uuidString)]))
+        }
+      }
+      if hold { locked { held.append { [queue] in queue.async(execute: finish) } } } else { finish() }
     case "file.attach":
       answer(.result(["attached": true, "ref_text": .string("@file:/fixture/\(params["name"].stringValue)")]))
     case "session.active_list":
