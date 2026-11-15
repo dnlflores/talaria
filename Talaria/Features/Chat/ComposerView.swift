@@ -40,6 +40,10 @@ struct ComposerView: View {
           .foregroundStyle(palette.foregroundMuted)
           .padding(.horizontal, 8)
       }
+      if !chat.slashItems.isEmpty {
+        SlashMenuPanel(chat: chat)
+          .transition(.move(edge: .bottom).combined(with: .opacity))
+      }
 
       VStack(alignment: .leading, spacing: 8) {
         ComposerInput(text: $chat.draft, placeholder: placeholder) {
@@ -77,6 +81,7 @@ struct ComposerView: View {
     .padding(.top, 6)
     .padding(.bottom, 8)
     .animation(.snappy(duration: 0.25), value: chat.queue.entries.map(\.id.uuidString) + chat.macQueue.map(\.id))
+    .animation(.snappy(duration: 0.2), value: chat.slashItems.isEmpty)
     .photosPicker(isPresented: $showsPhotos, selection: $photoItems, maxSelectionCount: 6, matching: .images)
     .onChange(of: photoItems) { _, items in
       guard !items.isEmpty else { return }

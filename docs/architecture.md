@@ -38,6 +38,9 @@ HermesKit (Swift package, no UI)
   PromptQueue     messages waiting for the running reply
   PushRegistration  what the phone tells the Mac's push plugin; SigningFacts
   ComposerKey     what a hardware key does in the composer
+  SlashCommands   `/command` parsing, the `/` menu's rows, which commands stay on the Mac,
+                  and SlashRunner, which turns `slash.exec` / `command.dispatch` answers
+                  into a turn, a composer prefill or a notice
   RecentChats     the last three chats opened on the phone, and the app icon's
                   shortcuts made from them (QuickAction)
   UserContent     a user message's words and its `@image:` pictures
@@ -363,10 +366,17 @@ on the phone (`PromptQueue`, HermesKit, unit-tested):
   goes to the front and the reply is stopped, so it goes out next.
 - `AppModel` retains one `ChatQueueState` per profile and conversation across
   screen visits. A closing model and a newly opened one share the same queue,
-  including photos, files, ordering and pause state. This is app-memory state,
-  not a claim that local unsent entries survive force-quitting the app.
+  including photos, files, ordering and pause state. What a closed chat could
+  not hand to the Mac (a paused queue, a `/command` and what follows it, a
+  failed handover) stays in that shared queue; its words are also saved on the
+  phone (`Preferences.setQueued`), so after the app restarts they come back
+  held, without files (`AppModel.takeLeftBehind`). Picked files and words left
+  in the composer go to the next copy too (`AppModel.leaveBehind`).
 - Stop pauses the queue. Leaving the chat or backgrounding the app hands waiting
   entries to the gateway (`queued: true`), which runs them with the phone asleep.
+  The Mac's queue takes words only: a queued `/command` and everything after
+  it wait on the phone, and the handover first waits for a command that
+  already left the queue.
   A paused or failed handoff stays queued, not flattened into a text draft.
 - Concurrent handoffs share a single task. Each queued entry uses its UUID as its
   initial submission identity; a confirmed cancellation renews that wire identity
@@ -418,6 +428,55 @@ on the phone (`PromptQueue`, HermesKit, unit-tested):
   close the window in which the admission starts and the cancel stops it. A
   handed-over entry that another device cancels comes back here held (paused,
   visible), the same as any cancellation this device did not ask for.
+
+## Slash commands
+
+A message that starts with `/name` (a bare name, then a space or the end; `/usr/local` is
+words) is a command, run the way the desktop app runs one
+(`apps/desktop/src/app/session/hooks/use-prompt-actions/slash.ts`), never sent to the model as
+words:
+
+- **The menu:** while the composer holds just `/` and one word, `complete.slash {text,
+  session_id | profile}` fills a list above the composer card, 150 ms after the last
+  keystroke, stale answers dropped and each answer kept for the chat. A chat attached here
+  names its session (project skills follow its folder); a new chat nothing was sent in yet
+  names its bot. Rows carry the item's `kind` (skill or command); an answer completing an
+  argument (`replace_from` past the slash) gives no rows. Tapping one leaves `/name ` in the
+  composer.
+- **Running one:** `slash.exec {session_id, command}` first; when it refuses (skills and
+  bundles are refused on purpose), `command.dispatch {session_id, name, arg}`. A `skill` or
+  `send` directive's `message` goes out with `prompt.submit` like any turn, and the bubble
+  shows `display`, else what was typed: never the expanded skill or the words a command
+  composed. What it is matched against the Mac's copy by is kept apart from what it shows:
+  `sentText` is how the Mac's history reads the exact text sent back (a skill turn as its
+  invocation, anything else with its `@file:` references), so a lost acknowledgement or a
+  reload finds it rather than adding a second copy. `prefill` fills the composer (`/undo`,
+  after which the chat re-reads the Mac's copy). `alias` runs its target. Plain `output`
+  (with `warning`) and every error become a notice card under the command, in this app only
+  (`TranscriptItem.isLocal`): not sent, not stored, gone on the next full reload.
+- **Leaving while one is worked out:** a skill or send directive still goes out, as a message
+  sent just before leaving does. What does not go out comes back when the chat opens again,
+  as it would have with the chat open: words to edit, or a command typed in the composer that
+  failed, become the saved draft with the files picked; a queued command that failed goes
+  back to its place in the queue, held, with its files. A message that fails to send after
+  leaving comes back the same way.
+- **Desktop-owned commands:** the commands the desktop app handles itself (a new chat, the
+  theme, pickers, its own dedicated calls) and those Hermes gives no app surface are left off
+  the menu, and sending one says to run it on the Mac (`SlashPolicy`).
+- **While a reply runs** a command waits in the phone's queue and runs when it reaches the
+  front. "Send now" cannot put a command into the running reply, so it stops the reply and
+  runs the command next; handing the queue to the Mac stops at a command, which waits for the
+  phone, and waits for a command that already left the queue until its turn has been taken,
+  so nothing queued after it reaches the Mac first.
+
+`SlashCommandTests` (HermesKit) covers parsing, every directive, plain output, errors, the
+rule that no answer turns the typed command into a message, and matching a sent skill or
+composed message (files included) against the Mac's stored copy; the UI test of the same name
+runs the production composer and transcript against canned answers (`--scroll-preview
+--slash-preview`). `SlashDeliveryTests` (the hosted `TalariaTests` target) drives the
+production `ChatModel` and `HermesClient` against `GatewayFixture`, a loopback stand-in for the
+gateway: leaving or going to sleep while a command is worked out, and finding a sent command
+again on reload.
 
 ## Pictures
 
@@ -689,6 +748,7 @@ Kanban rows switch to those areas instead (Cron filtered to the bot through
 
 ## What is deliberately not here yet
 
-- Slash commands typed into the composer are sent as plain text.
+- Argument menus for commands (`/personality <name>`), `@` file references, and the slash
+  commands the desktop app handles itself.
 - Rolling an edit back (`rollback.*`) and the working-folder picker.
 - Actions on notifications (approve, answer, reply from the banner).

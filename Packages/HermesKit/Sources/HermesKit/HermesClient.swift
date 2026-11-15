@@ -485,6 +485,31 @@ public final class HermesClient: Sendable {
     return reference
   }
 
+  // MARK: Slash commands
+
+  /// The `/` menu's rows for `text` (`/wo`). A chat this socket has attached names its session, so
+  /// project skills follow the chat's folder; a new chat's draft names only its bot.
+  public func completeSlash(text: String, liveID: String?, profile: String) async throws -> [SlashCompletion] {
+    let json = try await rpc.call("complete.slash", JSONValue.fields([
+      "text": .string(text), "session_id": liveID.map(JSONValue.string), "profile": .string(profile),
+    ]), timeout: 15)
+    return SlashCompletion.items(from: json)
+  }
+
+  /// Runs a command on the chat's slash worker: plain text back (`output`, `warning`), or a
+  /// directive (`type`) when the gateway rerouted it. `command` is without its slash.
+  public func slashExec(liveID: String, profile: String, command: String) async throws -> JSONValue {
+    try await rpc.call(
+      "slash.exec", ["session_id": .string(liveID), "command": .string(command), "profile": .string(profile)], timeout: 60)
+  }
+
+  /// Resolves a quick, plugin, bundle, skill or built-in command to a directive (`SlashDirective`).
+  public func commandDispatch(liveID: String, profile: String, name: String, arg: String) async throws -> JSONValue {
+    try await rpc.call(
+      "command.dispatch",
+      ["session_id": .string(liveID), "name": .string(name), "arg": .string(arg), "profile": .string(profile)], timeout: 60)
+  }
+
   // MARK: Model and effort (this conversation only)
 
   public func modelCatalog(liveID: String, profile: String) async throws -> [ModelProvider] {

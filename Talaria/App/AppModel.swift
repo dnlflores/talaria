@@ -155,6 +155,8 @@ final class AppModel {
   @ObservationIgnored private var chatCache: [String: ChatModel] = [:]
   /// Retained across screen visits, including a handoff still awaiting its acknowledgement.
   @ObservationIgnored private var chatQueues: [String: [String: ChatQueueState]] = [:]
+  /// What closed chats had not sent, by stored id, until a copy of the chat opens again.
+  @ObservationIgnored private var leftBehind: [String: LeftBehind] = [:]
   @ObservationIgnored private var liveToStored: [String: String] = [:]
 
   private let signIns: any SignInStore = AppModel.makeSignInStore()
@@ -305,6 +307,7 @@ final class AppModel {
     openChat = nil
     chatCache = [:]
     chatQueues = [:]
+    leftBehind = [:]
     sessions = []
     liveStatuses = [:]
     gatewaySessions = [:]
@@ -1064,6 +1067,40 @@ final class AppModel {
     chat.leave()
     if openChat === chat { openChat = nil }
     for (key, cached) in chatCache where cached === chat { chatCache[key] = nil }
+  }
+
+  /// What a closed chat had not sent (`LeftBehind`). A copy of the chat that is open already takes
+  /// it now; otherwise it waits for the next copy to open. Words go to the saved draft and queued
+  /// words are saved too, so both outlast the app; picked files are kept only while it runs.
+  func leaveBehind(_ left: LeftBehind, storedID: String) {
+    if let open = [chatCache[storedID], openChat].compactMap({ $0 }).first(where: { $0.storedID == storedID && !$0.isClosed }) {
+      open.takeBack(left)
+      return
+    }
+    if !left.words.isEmpty {
+      let saved = preferences.draft(for: storedID).trimmingCharacters(in: .whitespacesAndNewlines)
+      preferences.setDraft([left.words, saved].filter { !$0.isEmpty }.joined(separator: "\n\n"), for: storedID)
+    }
+    var parked = leftBehind[storedID] ?? LeftBehind()
+    parked.attachments = left.attachments + parked.attachments
+    parked.queue.takeBack(left.queue.entries, paused: left.queue.isPaused)
+    leftBehind[storedID] = parked
+    if !parked.queue.isEmpty { preferences.setQueued(parked.queue.entries.map(\.text), for: storedID) }
+  }
+
+  /// What closed copies of this chat left for the copy opening now (the words are in its saved draft).
+  func takeLeftBehind(storedID: String) -> LeftBehind {
+    var left = leftBehind.removeValue(forKey: storedID) ?? LeftBehind()
+    let saved = preferences.queued(for: storedID)
+    if left.queue.isEmpty, !saved.isEmpty {
+      // The app was closed since: the queued words come back, held, without their files.
+      left.queue.takeBack(saved.enumerated().map {
+        .init(text: $0.element, queuedAt: Double($0.offset),
+              submissionID: QueueOrigin.submissionID(device: ChatQueueState.deviceKind))
+      }, paused: true)
+    }
+    preferences.setQueued([], for: storedID)
+    return left
   }
 
   // MARK: Toasts

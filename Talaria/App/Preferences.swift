@@ -32,6 +32,8 @@ final class Preferences {
   /// Chats this phone created, so they read as Talaria before the Mac's backfill runs.
   private(set) var startedHere: Set<String>
   private var drafts: [String: String]
+  /// Queued messages a closed chat had not sent, by stored id, so they outlast the app.
+  private var queued: [String: [String]]
 
   private enum Key {
     /// Hermes' own listener. Its own key: an address saved for the hermesdash gate (the old
@@ -44,6 +46,7 @@ final class Preferences {
     static let lastProfile = "chat.lastProfile"
     static let profileFilter = "home.profileFilter"
     static let drafts = "chat.drafts"
+    static let queued = "chat.queued"
     static let notifyFinished = "push.notifyFinished"
     static let liveActivities = "push.liveActivities"
     static let notifyScope = "push.scope"
@@ -68,6 +71,7 @@ final class Preferences {
     lastProfile = defaults.string(forKey: Key.lastProfile) ?? ""
     profileFilter = defaults.string(forKey: Key.profileFilter) ?? ""
     drafts = defaults.dictionary(forKey: Key.drafts) as? [String: String] ?? [:]
+    queued = defaults.dictionary(forKey: Key.queued) as? [String: [String]] ?? [:]
     notifyFinished = defaults.object(forKey: Key.notifyFinished) as? Bool ?? true
     liveActivities = defaults.object(forKey: Key.liveActivities) as? Bool ?? true
     notifyScope = defaults.string(forKey: Key.notifyScope) ?? "all"
@@ -103,4 +107,13 @@ final class Preferences {
   }
 
   func hasDraft(for storedID: String) -> Bool { drafts[storedID] != nil }
+
+  func queued(for storedID: String) -> [String] { queued[storedID] ?? [] }
+
+  func setQueued(_ texts: [String], for storedID: String) {
+    let next = texts.isEmpty ? nil : texts
+    guard queued[storedID] != next else { return }
+    queued[storedID] = next
+    defaults.set(queued, forKey: Key.queued)
+  }
 }

@@ -48,6 +48,9 @@ final class ChatQueueState {
   @ObservationIgnored var steered: [String: (entry: PromptQueue<ComposerAttachment>.Entry, shown: UUID?)] = [:]
   /// Of those, the ones a Stop came after: if one bounces back it must not run.
   @ObservationIgnored var stoppedSteers: Set<String> = []
+  /// A copy of the chat closed with messages it could not hand to the Mac. The next copy holds
+  /// them if no reply is running when it opens, rather than sending them on its own.
+  @ObservationIgnored var leftWaiting = false
   @ObservationIgnored var handoff: Task<Void, Never>?
   @ObservationIgnored var recovery: Task<Void, Never>?
   @ObservationIgnored var cancellation: Task<Void, Never>?
@@ -68,6 +71,14 @@ final class ChatQueueState {
   static var deviceKind: String {
     UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
   }
+}
+
+/// What a closed chat had not sent: words for its composer, picked files, and queued messages,
+/// each still its own entry. The next copy of the chat to open takes it back (`AppModel.leaveBehind`).
+struct LeftBehind {
+  var words = ""
+  var attachments: [ComposerAttachment] = []
+  var queue = PromptQueue<ComposerAttachment>()
 }
 
 /// One open conversation: its transcript, its live session on the Mac, and the composer.
@@ -118,7 +129,12 @@ final class ChatModel: Identifiable {
   /// Bumped when the view should scroll to the newest message.
   private(set) var scrollToEnd = 0
 
-  var draft: String { didSet { app?.preferences.setDraft(draft, for: storedID) } }
+  var draft: String {
+    didSet {
+      app?.preferences.setDraft(draft, for: storedID)
+      slashDraftChanged()
+    }
+  }
   var attachments: [ComposerAttachment] = []
   var sendWhenReady = false
   /// Messages written while a reply runs. They go out one per turn once it ends, or now on request.
@@ -185,6 +201,18 @@ final class ChatModel: Identifiable {
     let others = othersOnMac.map { (rank[$0.admissionID] ?? Int.max, MacQueueRow.other($0)) }
     return (mine + others).enumerated().sorted { ($0.element.0, $0.offset) < ($1.element.0, $1.offset) }.map(\.element.1)
   }
+  /// The `/` menu's rows for the `/token` being typed; empty when no menu shows.
+  private(set) var slashItems: [SlashCompletion] = []
+  @ObservationIgnored private var slashQuery: String?
+  @ObservationIgnored private var slashTask: Task<Void, Never>?
+  /// Menu rows already read for this chat, by query.
+  @ObservationIgnored private var slashCache: [String: [SlashCompletion]] = [:]
+  /// The `/command` being worked out or sent, which the queue's hand-off to the Mac waits for.
+  @ObservationIgnored private var slashRun: (id: UUID, task: Task<Void, Never>)?
+  #if DEBUG
+  /// `--slash-preview`: the `/` menu and commands answer from canned data, with no Mac.
+  @ObservationIgnored private(set) var isSlashPreview = false
+  #endif
 
   private weak var app: AppModel?
   private var prepared: LiveSession?
@@ -192,7 +220,10 @@ final class ChatModel: Identifiable {
   @ObservationIgnored private var openingEvents: [GatewayEvent] = []
   @ObservationIgnored private var isReplayingOpeningEvents = false
   @ObservationIgnored private var claimedQueueUserIDs: Set<UUID> = []
-  private var isClosed = false
+  private(set) var isClosed = false
+  /// Queued messages taken back from a closed copy of this chat, before it opened: they are held
+  /// if no reply is running once it has opened, rather than sent on their own.
+  @ObservationIgnored private var holdsTakenBackQueue = false
   private var hasSpoken = false
   /// Made here (a new chat) rather than opened from the Mac's list.
   private let madeHere: Bool
@@ -233,6 +264,7 @@ final class ChatModel: Identifiable {
     state.info.cwd = row?.cwd ?? ""
     state.info.branch = row?.gitBranch ?? ""
     owner = app.owners[storedID]
+    takeBack(app.takeLeftBehind(storedID: storedID))
   }
 
   #if DEBUG
@@ -240,6 +272,9 @@ final class ChatModel: Identifiable {
   static func scrollPreview(app: AppModel, short: Bool) -> ChatModel {
     let chat = ChatModel(app: app, profile: "preview", storedID: "scroll-preview", row: nil, live: nil)
     chat.state.title = "Scroll preview"
+    chat.isSlashPreview = ProcessInfo.processInfo.arguments.contains("--slash-preview")
+    // Each launch starts with an empty composer: a draft a test left behind is not restored.
+    chat.draft = ""
     // `--empty-chat`: a new chat with nothing sent yet (the particle field behind it).
     if ProcessInfo.processInfo.arguments.contains("--empty-chat") {
       chat.state.title = "New chat"
@@ -434,6 +469,7 @@ final class ChatModel: Identifiable {
       // A new chat, or a copy that brought its whole history along.
       adopt(live, history: .replace(TranscriptItem.items(fromHistory: live.messages), .complete))
       finishOpening()
+      holdTakenBackQueueIfIdle()
       await cancelStoppedAdmissions()
       if sendWhenReady {
         sendWhenReady = false
@@ -486,6 +522,7 @@ final class ChatModel: Identifiable {
       }
       adopt(live, history: .replace(history.items, history.window))
       finishOpening()
+      holdTakenBackQueueIfIdle()
       await recoverQueuedAdmissions()
       await cancelStoppedAdmissions()
       if let row = app?.row(storedID), row.unread { app?.setUnread(row, false) }
@@ -1001,6 +1038,12 @@ final class ChatModel: Identifiable {
   func send() async {
     guard !isReadOnly else { return }
     if continuesAsNewVersion {
+      // A command the phone leaves to the Mac is answered here, without making a new version.
+      if let command = SlashInvocation(draft), command.name.isEmpty || SlashPolicy.isMacOnly(command.name) {
+        draft = ""
+        await startSlash(command, picked: [], origin: .composer).value
+        return
+      }
       if canSend, !isSending { await continueAsNewVersion(send: true) }
       return
     }
@@ -1010,10 +1053,11 @@ final class ChatModel: Identifiable {
     draft = ""
     attachments = []
     if isBusy {
+      // A `/command` waits its turn like any message, and runs when it reaches the front.
       queue.enqueue(text: text, attachments: picked, now: now)
       return
     }
-    await deliver(text: text, picked: picked, origin: .composer)
+    await goOut(text: text, picked: picked, origin: .composer)
   }
 
   /// Where a message being delivered came from, which decides where it goes back if it fails.
@@ -1022,11 +1066,35 @@ final class ChatModel: Identifiable {
     case queue(PromptQueue<ComposerAttachment>.Entry)
   }
 
+  /// A `/command` runs as a command; anything else starts a turn with these words.
+  private func goOut(text: String, picked: [ComposerAttachment], origin: Origin) async {
+    if let command = SlashInvocation(text) {
+      await startSlash(command, picked: picked, origin: origin).value
+    } else {
+      await deliver(text: text, picked: picked, origin: origin)
+    }
+  }
+
   /// Starts a turn with this message: shows it as sending, uploads what was picked, submits.
-  private func deliver(text: String, picked: [ComposerAttachment], origin: Origin) async {
+  /// `display` is what the bubble shows when that differs from what is sent (a skill sends the
+  /// expanded skill and shows the invocation that was typed); `typed` is what goes back to the
+  /// composer if it fails. The Mac's copy is recognised by what was sent, whatever the bubble shows.
+  private func deliver(
+    text: String, display: String? = nil, typed: String? = nil, picked: [ComposerAttachment], origin: Origin
+  ) async {
+    let typed = typed ?? display ?? text
+    #if DEBUG
+    if isSlashPreview {
+      var item = TranscriptItem.outgoing(text, shown: display, timestamp: now)
+      item.isPending = false
+      state.items.append(item)
+      scrollToEnd += 1
+      isSending = false
+      return
+    }
+    #endif
     guard let client else { return }
-    var item = TranscriptItem(kind: .user, text: text, timestamp: now)
-    item.isPending = true
+    var item = TranscriptItem.outgoing(text, shown: display, timestamp: now)
     item.attachments = picked.map { attachment in
       AttachmentChip(
         id: attachment.id, kind: attachment.kind == .image ? .image : .file, name: attachment.name,
@@ -1053,7 +1121,10 @@ final class ChatModel: Identifiable {
           guard let liveID else { throw HermesError.notConnected }
           let staged = try await stage(picked, liveID: liveID, client: client)
           let full = ([text] + staged.references).filter { !$0.isEmpty }.joined(separator: "\n\n")
-          update(itemID) { $0.sentText = full }
+          // Kept apart from what the bubble shows, so the Mac's copy is recognised after a lost
+          // acknowledgement (below) or a reload: a skill by the invocation the Mac's history reads
+          // back, a composed message and its files as sent.
+          update(itemID) { $0.submitted(full) }
           state.beginTurn(now: now)
           // A queued message must never cut into a reply the Mac is still wrapping up.
           status = try await client.submit(
@@ -1082,18 +1153,28 @@ final class ChatModel: Identifiable {
       }
       hasSpoken = true
       if status == "queued", !fromQueue { app?.show("Queued. It goes out after the current reply.") }
-      if state.title.isEmpty { state.title = String((text.isEmpty ? picked.first?.name ?? "" : text).prefix(60)) }
+      let shown = display ?? text
+      if state.title.isEmpty { state.title = String((shown.isEmpty ? picked.first?.name ?? "" : shown).prefix(60)) }
       PushCenter.shared.noteSent(profile: profile, storedID: storedID, title: title)
       app?.recordSent(self)
       app?.scheduleReload(after: 2.5)
     } catch {
       state.isStreaming = false
       let wrapped = error as? HermesError ?? .transport(error.localizedDescription)
+      if isClosed {
+        // Nobody sees this chat any more: it goes back where it came from, files and all, in the
+        // copy of the chat that opens next.
+        switch origin {
+        case .composer: leaveBehind(words: typed, attachments: picked)
+        case .queue(let entry): leaveBehind(queued: [entry], paused: true)
+        }
+        return
+      }
       if wrapped.isOwnedElsewhere {
         // Open on the Mac: nothing was sent. Keep the words and the attachments, and explain.
         state.items.removeAll { $0.id == itemID }
         attachments = picked + attachments
-        await refused(message: wrapped.localizedDescription, text: text)
+        await refused(message: wrapped.localizedDescription, text: typed)
         return
       }
       update(itemID) {
@@ -1102,7 +1183,8 @@ final class ChatModel: Identifiable {
       }
       switch origin {
       case .composer:
-        if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { draft = text }
+        // What was typed goes back, never an expanded skill.
+        if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { draft = typed }
         attachments = picked + attachments
         app?.show("Not sent: \(wrapped.localizedDescription)", kind: .failure, seconds: 6)
       case .queue(let entry):
@@ -1168,6 +1250,265 @@ final class ChatModel: Identifiable {
       app?.show(error.localizedDescription, kind: .failure)
     }
   }
+
+  // MARK: Slash commands
+
+  /// Starts a `/command`. Until it has run, or the turn it starts has been taken, it holds back
+  /// the queue's hand-off to the Mac (`handOffQueue`), so nothing queued after it reaches the Mac
+  /// first. It runs to the end even if the chat closes meanwhile.
+  @discardableResult
+  private func startSlash(_ command: SlashInvocation, picked: [ComposerAttachment], origin: Origin) -> Task<Void, Never> {
+    let id = UUID()
+    let task = Task {
+      await self.runSlash(command, picked: picked, origin: origin)
+      if self.slashRun?.id == id { self.slashRun = nil }
+    }
+    slashRun = (id, task)
+    return task
+  }
+
+  /// Runs a `/command` the way the desktop app does (`SlashRunner`). A skill, or a message the
+  /// command composed, starts a turn whose bubble shows what was typed; words to edit go back into
+  /// the composer; anything else is a notice in the chat that only this phone shows. The command
+  /// itself never goes to the model as words.
+  private func runSlash(_ command: SlashInvocation, picked: [ComposerAttachment], origin: Origin) async {
+    isSending = true
+    let result: SlashResult
+    #if DEBUG
+    if isSlashPreview {
+      result = await SlashRunner.run(command, exec: Self.previewExec, dispatch: Self.previewDispatch)
+    } else {
+      result = await runOnMac(command)
+    }
+    #else
+    result = await runOnMac(command)
+    #endif
+    if case .submit(let message, let display) = result.outcome {
+      if !isClosed, let notice = result.notice { addNotice(notice, for: command) }
+      // Sent even if the chat closed meanwhile, as a message sent just before leaving is.
+      // `deliver` drains the queue when it is done.
+      await deliver(text: message, display: display, typed: command.typed, picked: picked, origin: origin)
+      return
+    }
+    isSending = false
+    if isClosed {
+      // Nobody sees this chat any more, so an answer has nowhere to show. What was not sent goes
+      // to the copy of the chat that opens next: words to edit to its composer with the files
+      // picked; a command that failed back where it came from (its queue entry, held, keeps its
+      // place ahead of what was queued after it).
+      switch (result.outcome, origin) {
+      case (.failure, .queue(let entry)):
+        leaveBehind(queued: [entry], paused: true)
+      case (.prefill(let words), _):
+        leaveBehind(words: words, attachments: picked)
+      case (.failure, .composer):
+        leaveBehind(words: command.typed, attachments: picked)
+      case (.submit, _), (.output, _), (.macOnly, _):
+        leaveBehind(attachments: picked)
+      }
+      return
+    }
+    if let notice = result.notice { addNotice(notice, for: command) }
+    switch result.outcome {
+    case .submit:
+      return
+    case .prefill(let words):
+      keepAsDraft(words)
+      // `/undo` took turns off the Mac's copy: show the chat as it is now.
+      if !command.name.isEmpty, liveID != nil { try? await reattach() }
+    case .output(let text):
+      addNotice(text, for: command)
+    case .macOnly:
+      addNotice("Run /\(command.name) on the Mac for now.", for: command)
+    case .failure(let text):
+      addNotice(text, for: command)
+    }
+    // Nothing was sent: what was picked goes back to the composer.
+    attachments = picked + attachments
+    drainQueue()
+  }
+
+  /// Puts `words` in the composer ahead of whatever is there.
+  private func keepAsDraft(_ words: String) {
+    let current = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    draft = [words, current].filter { !$0.isEmpty }.joined(separator: "\n\n")
+  }
+
+  /// This chat has closed: what it had not sent goes to the copy of it that opens next (or is
+  /// open already). This copy keeps the files too, as an open chat would.
+  private func leaveBehind(
+    words: String = "", attachments picked: [ComposerAttachment] = [],
+    queued: [PromptQueue<ComposerAttachment>.Entry] = [], paused: Bool = false
+  ) {
+    attachments = picked + attachments
+    // The queue is the conversation's (`ChatQueueState`), shared with the copy that opens next:
+    // queued messages go straight back into it.
+    if !queued.isEmpty {
+      queue.takeBack(queued, paused: paused)
+      leaveQueueBehind()
+    }
+    let left = LeftBehind(words: words, attachments: picked)
+    guard !left.words.isEmpty || !left.attachments.isEmpty else { return }
+    app?.leaveBehind(left, storedID: storedID)
+  }
+
+  /// Takes back what a closed copy of this chat had not sent: words ahead of the draft, files in
+  /// the composer, queued messages in their place in the queue. Queued messages wait for a running
+  /// reply; with none running they are held until sent by hand.
+  func takeBack(_ left: LeftBehind) {
+    if !left.words.isEmpty { keepAsDraft(left.words) }
+    if !left.attachments.isEmpty { attachments = left.attachments + attachments }
+    // Saved queued words only stand in for a queue the app lost when it restarted; the live
+    // shared queue is the original, with its files.
+    guard !left.queue.isEmpty, !queue.isShowing else { return }
+    queue.takeBack(left.queue.entries, paused: left.queue.isPaused)
+    if !hasOpened || isLoading {
+      holdsTakenBackQueue = true
+    } else if !isBusy {
+      queue.pause()
+    }
+  }
+
+  private func holdTakenBackQueueIfIdle() {
+    guard holdsTakenBackQueue || queueState.leftWaiting else { return }
+    holdsTakenBackQueue = false
+    queueState.leftWaiting = false
+    if !isBusy { queue.pause() }
+  }
+
+  private func runOnMac(_ command: SlashInvocation) async -> SlashResult {
+    if SlashPolicy.isMacOnly(command.name) || command.name.isEmpty {
+      // Answered without asking the Mac.
+      return await SlashRunner.run(command, exec: { _ in .null }, dispatch: { _, _ in .null })
+    }
+    do {
+      try await ensureLive()
+    } catch {
+      return SlashResult(.failure("Could not reach the Mac: \(error.localizedDescription)"))
+    }
+    let profile = profile
+    return await SlashRunner.run(
+      command,
+      exec: { text in
+        try await self.onLive { client, liveID in try await client.slashExec(liveID: liveID, profile: profile, command: text) }
+      },
+      dispatch: { name, arg in
+        try await self.onLive { client, liveID in
+          try await client.commandDispatch(liveID: liveID, profile: profile, name: name, arg: arg)
+        }
+      })
+  }
+
+  /// A call against this chat's live session, made once more after re-attaching when the gateway
+  /// no longer knows this socket in it.
+  private func onLive(_ call: @Sendable (HermesClient, String) async throws -> JSONValue) async throws -> JSONValue {
+    var retried = false
+    while true {
+      try await ensureLive()
+      guard let client, let liveID else { throw HermesError.notConnected }
+      do {
+        return try await call(client, liveID)
+      } catch let error as HermesError where error.isSessionGone && !retried {
+        retried = true
+        self.liveID = nil
+      }
+    }
+  }
+
+  /// A command's answer under it in the chat, shown only on this phone.
+  private func addNotice(_ text: String, for command: SlashInvocation) {
+    let header = command.name.isEmpty ? "/" : "/\(command.name)"
+    state.items.append(.slashNotice(text, command: header, timestamp: now))
+    scrollToEnd += 1
+  }
+
+  /// The composer's text changed: show, narrow or hide the `/` menu.
+  private func slashDraftChanged() {
+    let query = SlashMenu.query(in: draft)
+    guard query != slashQuery else { return }
+    slashQuery = query
+    slashTask?.cancel()
+    slashTask = nil
+    guard let query, !isReadOnly, !isClosed else {
+      if !slashItems.isEmpty { slashItems = [] }
+      return
+    }
+    let key = query.lowercased()
+    if let cached = slashCache[key] {
+      slashItems = cached
+      return
+    }
+    // What is on screen stays while the narrower list loads, so the menu does not flicker.
+    slashTask = Task { [weak self] in
+      try? await Task.sleep(for: .milliseconds(150))
+      guard let self, !Task.isCancelled else { return }
+      guard let items = await self.completions(for: query), !Task.isCancelled, self.slashQuery == query else { return }
+      self.slashCache[key] = items
+      self.slashItems = items
+    }
+  }
+
+  /// The menu's rows for `query`, or nil when the Mac could not say.
+  private func completions(for query: String) async -> [SlashCompletion]? {
+    #if DEBUG
+    if isSlashPreview { return Self.previewCompletions(query) }
+    #endif
+    guard let client else { return nil }
+    // A chat attached here names its session (project skills follow its folder); a new chat that
+    // nothing was sent in yet, or one sending would continue elsewhere, names its bot.
+    let session = isUnsaved || continuesAsNewVersion ? nil : liveID
+    return try? await client.completeSlash(text: query, liveID: session, profile: profile)
+  }
+
+  /// Tapping a row: the `/token` becomes the name and a space; the keyboard stays up.
+  func pickSlash(_ item: SlashCompletion) {
+    UISelectionFeedbackGenerator().selectionChanged()
+    draft = SlashMenu.picking(item)
+  }
+
+  #if DEBUG
+  /// What the Mac would offer and answer, for the offline preview (`--slash-preview`).
+  nonisolated private static let previewMenu: JSONValue = [
+    "replace_from": 1,
+    "items": [
+      ["text": "work", "display": "/work", "meta": "⚡ Pick up a task, do it and hand it off", "kind": "skill"],
+      ["text": "workdash", "display": "/workdash", "meta": "⚡ Open the work dashboard for a task", "kind": "skill"],
+      ["text": "app-gardener", "display": "/app-gardener", "meta": "⚡ Grow the apps from approved ideas", "kind": "skill"],
+      ["text": "review", "display": "/review", "meta": "⚡ Review a pull request", "kind": "skill"],
+      ["text": "usage", "display": "/usage", "meta": "Show token usage and cost for this session", "kind": "command"],
+      ["text": "goal", "display": "/goal", "meta": "Set a standing goal for this chat", "kind": "command"],
+      ["text": "personality", "display": "/personality", "meta": "Set a personality overlay", "kind": "command"],
+      ["text": "skin", "display": "/skin", "meta": "Switch the desktop theme", "kind": "command"],
+    ],
+  ]
+  nonisolated private static let previewSkills: Set<String> = ["work", "workdash", "app-gardener", "review"]
+
+  private static func previewCompletions(_ query: String) -> [SlashCompletion] {
+    let word = query.dropFirst().lowercased()
+    return SlashCompletion.items(from: previewMenu).filter { word.isEmpty || $0.name.dropFirst().lowercased().contains(word) }
+  }
+
+  nonisolated private static let previewExec: SlashRunner.Exec = { command in
+    let name = command.split(separator: " ").first.map { $0.lowercased() } ?? ""
+    if previewSkills.contains(name) {
+      throw HermesError.rpc(code: 4018, message: "skill command: use command.dispatch for /\(name)", reason: nil)
+    }
+    if name == "usage" {
+      return ["output": "Session usage\n  Input     12,480 tokens\n  Output     3,215 tokens\n  Cache hit  78%\n  Cost       $0.42"]
+    }
+    throw HermesError.rpc(code: 5030, message: "unknown command: /\(name)", reason: nil)
+  }
+
+  nonisolated private static let previewDispatch: SlashRunner.Dispatch = { name, arg in
+    guard previewSkills.contains(name) else {
+      throw HermesError.rpc(code: 4018, message: "not a quick/plugin/bundle/skill command: \(name)", reason: nil)
+    }
+    let invocation = arg.isEmpty ? "/\(name)" : "/\(name) \(arg)"
+    let body = "[IMPORTANT: The user has invoked the \"\(name)\" skill, indicating they want you to follow its instructions."
+      + " The full skill content is loaded below.]\n\n# \(name)\n\nThe whole skill, for the model."
+    return ["type": "skill", "name": .string(name), "message": .string(body), "display": .string(invocation)]
+  }
+  #endif
 
   // MARK: Queue
 
@@ -1267,7 +1608,12 @@ final class ChatModel: Identifiable {
     guard !isClosed, !isLoading, !isReadOnly, !continuesAsNewVersion, queueState.handoff == nil,
           queueState.pendingAdmissions.isEmpty, let entry = queue.next(isBusy: isBusy) else { return }
     queue.remove(entry.id)
-    Task { await deliver(text: entry.text, picked: entry.attachments, origin: .queue(entry)) }
+    if let command = SlashInvocation(entry.text) {
+      // Started right here, so the hand-off to the Mac already waits for it.
+      startSlash(command, picked: entry.attachments, origin: .queue(entry))
+    } else {
+      Task { await deliver(text: entry.text, picked: entry.attachments, origin: .queue(entry)) }
+    }
   }
 
   /// "Send now": the running reply takes this message in and answers it. Words go straight into
@@ -1283,10 +1629,11 @@ final class ChatModel: Identifiable {
     UIImpactFeedbackGenerator(style: .light).impactOccurred()
     if !isBusy {
       queue.remove(id)
-      await deliver(text: entry.text, picked: entry.attachments, origin: .queue(entry))
+      await goOut(text: entry.text, picked: entry.attachments, origin: .queue(entry))
       return
     }
-    guard entry.attachments.isEmpty, !entry.text.isEmpty, state.isStreaming else {
+    // A command cannot go into a running reply as words: it runs next, once the reply stops.
+    guard entry.attachments.isEmpty, !entry.text.isEmpty, state.isStreaming, SlashInvocation(entry.text) == nil else {
       await goesNext(id)
       return
     }
@@ -1356,11 +1703,11 @@ final class ChatModel: Identifiable {
   /// Edit on a message this app handed to the Mac: it leaves the Mac's queue and comes back into
   /// the composer.
   func editOnMac(_ id: UUID) async {
-    if await takeBack(id) != nil { editQueued(id) }
+    if await takeBackFromMac(id) != nil { editQueued(id) }
   }
 
   func removeOnMac(_ id: UUID) async {
-    if await takeBack(id) != nil { queue.remove(id) }
+    if await takeBackFromMac(id) != nil { queue.remove(id) }
   }
 
   /// Send now on a message this app handed to the Mac. Words go into the running reply straight
@@ -1393,7 +1740,7 @@ final class ChatModel: Identifiable {
         // Refused (the reply cannot take messages in, or it just ended): send it another way.
       }
     }
-    if await takeBack(id) != nil { await sendNow(id) }
+    if await takeBackFromMac(id) != nil { await sendNow(id) }
   }
 
   /// Send now on another device's message in the Mac's queue: the running reply takes it in.
@@ -1496,7 +1843,7 @@ final class ChatModel: Identifiable {
 
   /// Takes one of this app's messages back out of the Mac's queue, keeping its photos and files.
   /// Nil when it already went out (then it shows in the conversation as usual).
-  private func takeBack(_ id: UUID) async -> PromptQueue<ComposerAttachment>.Entry? {
+  private func takeBackFromMac(_ id: UUID) async -> PromptQueue<ComposerAttachment>.Entry? {
     guard queue.onMac.contains(where: { $0.id == id }), !queueState.takingBack.contains(id),
           let admissionID = queueState.receipts[id]?["admission_id"].string else { return nil }
     queueState.takingBack.insert(id)
@@ -1553,12 +1900,17 @@ final class ChatModel: Identifiable {
   }
 
   private func submitWaitingQueue() async {
+    // A command that left the queue is still being worked out: what was queued after it waits
+    // until its turn has been taken, or it would reach the Mac first.
+    while let running = slashRun?.task { await running.value }
     await recoverQueuedAdmissions()
     guard queueState.pendingAdmissions.isEmpty else { return }
     guard !queue.isEmpty, !queue.isPaused, isBusy, !continuesAsNewVersion, let client, let liveID else { return }
     for id in queue.entries.map(\.id) {
       guard !queue.isPaused else { return }
       guard let entry = queue.entries.first(where: { $0.id == id }), !entry.isDelivering else { continue }
+      // The Mac's queue takes words only; a command and what follows it wait here for the phone.
+      if SlashInvocation(entry.text) != nil { return }
       queue.setDelivering(entry.id, true)
       do {
         let staged = try await stage(entry.attachments, liveID: liveID, client: client)
@@ -1768,10 +2120,15 @@ final class ChatModel: Identifiable {
     watchTask = nil
     livenessTask?.cancel()
     livenessTask = nil
+    slashTask?.cancel()
+    slashTask = nil
     app?.preferences.setDraft(draft, for: storedID)
+    // Picked files wait for the next copy of the chat, as the words do.
+    if !attachments.isEmpty { app?.leaveBehind(LeftBehind(attachments: attachments), storedID: storedID) }
     if !queue.isEmpty {
       Task {
         await handOffQueue()
+        leaveQueueBehind()
       }
     }
     // Stop following the chat once nothing here waits on it. A running reply stays followed, so a
@@ -1782,6 +2139,14 @@ final class ChatModel: Identifiable {
       subscriptionID = ""
       Task { try? await client.detach(liveID: liveID, subscriptionID: subscription, profile: profile) }
     }
+  }
+
+  /// Queued messages that could not go to the Mac (the queue was paused, a command waits in it, or
+  /// the handover failed) stay in the chat's shared queue, each its own entry with its files.
+  /// Their words are also saved, so they come back (held, without files) after the app restarts.
+  private func leaveQueueBehind() {
+    app?.preferences.setQueued(queue.entries.map(\.text), for: storedID)
+    if !queue.isEmpty { queueState.leftWaiting = true }
   }
 
   /// The phone is going to sleep. Messages waiting for the running reply go to the Mac now, or

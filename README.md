@@ -66,7 +66,8 @@ T3 Tools.
   are handed to the Mac and remain visible until their own turns start; they
   can still be edited, removed or sent now from there. Messages queued from
   another device or app (the iPad, Hermes desktop, a terminal) show in the same
-  queue, each named by where it came from.
+  queue, each named by where it came from. Queued words are saved on the phone
+  and come back, held, even after the app restarts.
 - **Pictures:** pictures sent in a chat show as pictures, from any app (the
   desktop app, a terminal, the phone), and so do pictures a reply delivers or
   names by path. Tap one to see it full screen and share it.
@@ -104,6 +105,15 @@ T3 Tools.
   phone.
 - **Keyboard:** with a hardware keyboard, Return sends and Shift-Return adds a
   line. The on-screen keyboard's Return still adds a line.
+- **Skills and slash commands:** type `/` in a chat (or a new chat) for a list
+  of the bot's skills and commands, each with a line about it and a Skill or
+  Command tag; it narrows as you type, and tapping one puts it in the
+  composer. Sending `/work fix the leak` starts the turn with the skill loaded,
+  as the desktop app does, and your message shows what you typed. A command
+  that answers in words shows them in a card under it, only on the phone;
+  `/undo` puts the message back in the composer to edit. Commands the desktop
+  app handles itself (`/skin`, `/new`, ...) say to run them on the Mac. Sent
+  while a reply runs, a command waits in the queue like any message.
 - **Composer:** a card with the text on top and, under it, attach, the model
   in use with its logo and thinking effort ("GPT-6.1 Sol 900K • High", tap to
   change either), dictation and send. Dictation uses Apple's speech
@@ -292,6 +302,12 @@ included. `ActivityLookTests` (`TEST_RUNNER_TALARIA_UITEST_ACTIVITY_LOOK=1`)
 screenshots the Live Activity in each phase with no Mac;
 `QuickActionTests` presses the app icon on the home screen and taps its
 shortcuts, with made-up chats and no Mac;
+`SlashCommandTests` opens the `/` menu, picks from it and sends a skill and a
+command against canned answers, with no Mac;
+`SlashDeliveryTests` (the `TalariaTests` target, `-only-testing:TalariaTests`)
+runs the app's own chat model against a stand-in gateway on loopback: leaving
+or going to sleep while a command is worked out, and what comes back (words,
+files, queued messages) when the chat opens again, with no Mac;
 `NotificationSettingsTests` (`TEST_RUNNER_TALARIA_UITEST_PUSH=1`) allows
 notifications and shows what the Mac said; the push plugin has its own tests
 (`python -m unittest discover -s mac/talaria-push/tests` with Hermes' Python).
@@ -310,6 +326,8 @@ Talaria/                   the app
                            Cron, Settings
 Shared/                    the Live Activity's attributes (app and widget)
 TalariaActivity/           the Live Activity: Lock Screen and Dynamic Island
+TalariaTests/              the app's chat model against a loopback stand-in gateway
+TalariaUITests/            UI tests in the simulator
 mac/talaria-push/          Hermes plugin on the Mac that sends the pushes
 scripts/                   palette generator, icon, sign-in for tests, push plugin install,
                            gateway-call.mjs (call the backend as the app does),

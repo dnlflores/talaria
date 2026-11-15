@@ -35,6 +35,7 @@ final class ChatQueueTests: XCTestCase {
     try await control([:])
     app = AppModel()
     app.preferences.setDraft("", for: "fixture")
+    app?.preferences.setQueued([], for: "fixture")
     try await app.connect(to: base)
     let client = try XCTUnwrap(app.client)
     await client.rpc.start()
@@ -47,6 +48,7 @@ final class ChatQueueTests: XCTestCase {
     app?.openChat?.leave()
     await app?.client?.rpc.stop()
     app?.preferences.setDraft("", for: "fixture")
+    app?.preferences.setQueued([], for: "fixture")
     app = nil
   }
 
@@ -322,20 +324,31 @@ final class ChatQueueTests: XCTestCase {
     app.chatDisappeared(reopened)
   }
 
-  func testUnpausedQueueDrainsWhenReopenedAfterTheOriginalTurnEnded() async throws {
+  func testQueueLeftBehindIsHeldWhenReopenedIdleAndSendsOnResume() async throws {
     try await control(["gateway_running": true, "submit_error": true])
     let chat = await openChat()
     chat.draft = "Retry when the chat is available"
     await chat.send()
-    await chat.handOffQueue()
     app.chatDisappeared(chat)
+    try await waitUntil("the refused handoff was tried") {
+      try await self.calls().contains { $0["method"].string == "prompt.submit" }
+    }
     try await Task.sleep(for: .milliseconds(50))
     let before = try await calls().filter { $0["method"].string == "prompt.submit" }.count
     try await configure(["gateway_running": false, "submit_error": false])
     let reopened = await openChat()
-    try await waitUntil("an unpaused queue in an idle reopened chat must actually send") {
+    // The reply it was waiting for ended while the chat was closed: held, not sent on its own.
+    XCTAssertEqual(reopened.queue.entries.map(\.text), ["Retry when the chat is available"])
+    XCTAssertTrue(reopened.queue.isPaused)
+    try await Task.sleep(for: .milliseconds(200))
+    var submitted = try await calls().filter { $0["method"].string == "prompt.submit" }.count
+    XCTAssertEqual(submitted, before)
+    reopened.resumeQueue()
+    try await waitUntil("resuming sends it") {
       try await self.calls().filter { $0["method"].string == "prompt.submit" }.count > before
     }
+    submitted = try await calls().filter { $0["method"].string == "prompt.submit" }.count
+    XCTAssertEqual(submitted, before + 1)
     XCTAssertTrue(reopened.queue.entries.isEmpty)
     app.chatDisappeared(reopened)
   }

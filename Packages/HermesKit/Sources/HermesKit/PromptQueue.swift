@@ -155,6 +155,19 @@ public struct PromptQueue<Attachment: Sendable>: Sendable {
     entries.insert(entry, at: 0)
   }
 
+  /// Takes back entries a closed copy of this chat had not sent, each as its own entry and in the
+  /// order they were written: one goes in ahead of the first entry written after it. `paused`
+  /// holds the queue (one of them failed, or the person had stopped the agent).
+  public mutating func takeBack(_ older: [Entry], paused: Bool) {
+    for var entry in older.sorted(by: { $0.queuedAt < $1.queuedAt }) {
+      entry.isDelivering = false
+      entries.removeAll { $0.id == entry.id }
+      let index = entries.firstIndex { $0.queuedAt > entry.queuedAt } ?? entries.endIndex
+      entries.insert(entry, at: index)
+    }
+    if paused { pause() }
+  }
+
   /// Moves an entry to the front so it is the next to go out.
   public mutating func promote(_ id: UUID) {
     guard let index = entries.firstIndex(where: { $0.id == id }), index > 0 else { return }
