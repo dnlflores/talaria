@@ -26,6 +26,8 @@ struct DiffCounts: View {
 /// hunk headers muted. Long lines wrap; nothing scrolls sideways.
 struct DiffView: View {
   let lines: [DiffLine]
+  /// Its own rounded box; off inside a card that draws one (an edit message).
+  var framed = true
   @Environment(\.palette) private var palette
 
   /// Hermes caps its diffs at 80 lines; this only guards against something far larger.
@@ -46,9 +48,11 @@ struct DiffView: View {
     }
     .padding(.vertical, 8)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(palette.mdCodeBg, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .overlay { RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(palette.border, lineWidth: 1) }
+    .background(framed ? palette.mdCodeBg : .clear, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .clipShape(RoundedRectangle(cornerRadius: framed ? 12 : 0, style: .continuous))
+    .overlay {
+      if framed { RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(palette.border, lineWidth: 1) }
+    }
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("diff.view")
   }
@@ -62,7 +66,9 @@ struct DiffView: View {
       .frame(maxWidth: .infinity, alignment: .leading)
       .padding(.horizontal, 10)
       .padding(.vertical, 1.5)
-      .background(band(line.kind))
+      // In a Rectangle: a bare color background is drawn with rounded ends on iOS 27, which
+      // notched every line's band.
+      .background(band(line.kind), in: Rectangle())
       .padding(.top, line.kind == .hunk ? 4 : 0)
       .accessibilityLabel(Self.spoken(line))
       .accessibilityIdentifier("diff.line")

@@ -413,6 +413,18 @@ its full path), its edits are merged back in transcript order. The file sheet
 opens on Changes (one block per edit) with File beside it; the tool details
 sheet uses the same `DiffView`.
 
+A finished edit with a diff is also its own transcript row
+(`TranscriptRow.edit`), not a step in the work log: `TranscriptLayout` closes
+the work group at it, so a turn that reads, edits, then reads again shows a
+log, the edit, then a second log, the desktop app's `splitRunItems` order.
+`EditSummary.isShown` decides (done, not failed or cancelled, an `inline_diff`
+with a `+`, `-` or `@` in it; a character scan, since the layout runs on every
+streamed token). A running edit stays in the live log until it completes, and
+a failed one never leaves it. `EditMessage` draws it open by default; the
+transcript keeps the set of folded ones (`foldedEdits`) and, like opening a
+work log, a fold stops auto-follow. One file's message drops the `a/x → b/x`
+line (its title and folder say it); a patch over several files keeps them.
+
 ## One owner per conversation
 
 Hermes lets one process hold a conversation at a time. The gateway is one

@@ -181,6 +181,7 @@ final class ChatModel: Identifiable {
     }
     let swift = "/Users/me/talaria/Sources/App/Greeting.swift"
     let notes = "/Users/me/talaria/docs/notes.md"
+    let strings = "/Users/me/talaria/Sources/App/Strings.swift"
     return [
       call("edit-1", "patch", ["mode": "replace", "path": .string(swift)], result: #"{"success": true}"#,
         diff: rendered("Sources/App/Greeting.swift", [
@@ -199,6 +200,12 @@ final class ChatModel: Identifiable {
             + " readable on a phone held upright, even when one sentence runs on for a long time without a break.",
           "+Greeting takes an excited flag now.",
         ])),
+      // Longer than an edit message's preview, so it shows "Show all".
+      call("write-2", "write_file", ["path": .string(strings)],
+        result: #"{"bytes_written": 600, "resolved_path": "\#(strings)"}"#,
+        diff: rendered("Sources/App/Strings.swift",
+          ["@@ -0,0 +1,18 @@", "+enum Strings {"]
+            + (1...16).map { "+  static let line\($0) = \"Line \($0)\"" } + ["+}"])),
     ]
   }
 

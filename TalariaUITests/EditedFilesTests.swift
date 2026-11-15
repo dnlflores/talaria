@@ -32,6 +32,70 @@ final class EditedFilesTests: XCTestCase {
     app.staticTexts.matching(identifier: "diff.line").matching(NSPredicate(format: "label CONTAINS %@", label)).firstMatch
   }
 
+  private func editHeader(_ title: String) -> XCUIElement {
+    app.buttons.matching(identifier: "transcript.edit").matching(NSPredicate(format: "label BEGINSWITH %@", title)).firstMatch
+  }
+
+  /// Every code change shows in the conversation as its own message, open on its diff, and folds
+  /// to one line and back with a tap.
+  func testEditsShowAsTheirOwnMessages() {
+    app.launch()
+    XCTAssertTrue(app.staticTexts["Updated the greeting in two places and wrote the notes."].waitForExistence(timeout: 10))
+
+    let headers = app.buttons.matching(identifier: "transcript.edit")
+    XCTAssertEqual(headers.count, 4, "one message per edit")
+    XCTAssertFalse(app.buttons.matching(identifier: "transcript.work").firstMatch.exists, "edits are not folded into a work log")
+
+    let first = headers.element(boundBy: 0)
+    XCTAssertTrue(first.label.hasPrefix("Edited Greeting.swift"), first.label)
+    XCTAssertTrue(first.label.contains("3 lines added, 2 removed"), first.label)
+    XCTAssertEqual(first.value as? String, "expanded", "an edit opens on its diff")
+    let removed = diffLine("Removed: func greet(_ name: String) -> String {")
+    XCTAssertTrue(removed.exists)
+    shoot("6-edit-messages-open")
+
+    // Folding hides the diff and keeps the one-line summary; opening shows it again.
+    first.tap()
+    XCTAssertTrue(waitFor { (first.value as? String) == "collapsed" })
+    XCTAssertTrue(waitFor { !removed.exists }, "a folded edit hides its lines")
+    XCTAssertTrue(diffLine("Added:   let subtitle: String").exists, "other edits stay open")
+    shoot("7-edit-folded")
+    first.tap()
+    XCTAssertTrue(waitFor { (first.value as? String) == "expanded" })
+    XCTAssertTrue(removed.waitForExistence(timeout: 5))
+
+    // A long diff shows its first lines until Show all.
+    let strings = editHeader("Wrote Strings.swift")
+    XCTAssertTrue(strings.exists)
+    XCTAssertTrue(strings.label.contains("18 lines added, 0 removed"), strings.label)
+    let more = app.buttons["transcript.edit.more"]
+    let last = diffLine("Added: }")
+    // Above the composer, or the tap lands on it (isHittable is true behind it too).
+    let composer = app.descendants(matching: .any)["composer.input"]
+    for _ in 0..<6 where !more.exists || more.frame.maxY > composer.frame.minY - 8 {
+      app.swipeUp(velocity: .slow)
+      RunLoop.current.run(until: Date().addingTimeInterval(1))
+    }
+    XCTAssertTrue(more.waitForExistence(timeout: 5))
+    XCTAssertLessThan(more.frame.maxY, composer.frame.minY)
+    XCTAssertFalse(diffLine("line16").exists, "the end of a long diff waits for Show all")
+    shoot("8-edit-long-preview")
+    more.tap()
+    XCTAssertTrue(diffLine("line16").waitForExistence(timeout: 5))
+    XCTAssertTrue(last.exists)
+    XCTAssertFalse(more.exists)
+    shoot("9-edit-show-all")
+  }
+
+  private func waitFor(_ timeout: TimeInterval = 5, _ check: () -> Bool) -> Bool {
+    let end = Date().addingTimeInterval(timeout)
+    while Date() < end {
+      if check() { return true }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+    }
+    return check()
+  }
+
   private func chip(_ name: String) -> XCUIElement {
     app.buttons.matching(identifier: "transcript.file").matching(NSPredicate(format: "label BEGINSWITH %@", name)).firstMatch
   }
@@ -85,13 +149,13 @@ final class EditedFilesTests: XCTestCase {
     shoot("4-files-sheet-counts")
     app.buttons["Done"].tap()
 
-    // A tool's details color its diff the same way.
-    let log = app.buttons.matching(identifier: "transcript.work").firstMatch
-    XCTAssertTrue(log.waitForExistence(timeout: 5))
-    log.tap()
-    let edit = app.buttons["transcript.tool.edit-1"]
+    // An edit's details (long-press its message) color its diff the same way.
+    let edit = editHeader("Edited Greeting.swift")
     XCTAssertTrue(edit.waitForExistence(timeout: 5))
-    edit.tap()
+    edit.press(forDuration: 0.8)
+    let details = app.buttons["Details"]
+    XCTAssertTrue(details.waitForExistence(timeout: 5))
+    details.tap()
     XCTAssertTrue(app.staticTexts["DIFF"].waitForExistence(timeout: 5))
     XCTAssertTrue(diffLine("Removed:   \"Hello, \\(name)\"").exists)
     XCTAssertTrue(diffLine("File: a/Sources/App/Greeting.swift → b/Sources/App/Greeting.swift").exists)

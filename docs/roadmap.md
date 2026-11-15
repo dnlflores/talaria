@@ -50,6 +50,8 @@ yet.
 - What each edit changed: the `inline_diff` Hermes sends with `tool.complete`
   (and stores in `display_metadata`) counted per file on the chips and the
   Files list, and shown in green and red when a file or a tool's details open.
+  Each finished edit is also its own foldable message in the conversation,
+  open on its diff, as in the desktop app.
 - iPad: a side dock, the list and the open item; iPhone Duo: the side dock unfolded,
   the iPhone dock folded. Both docks hold Chats and Agents only.
 

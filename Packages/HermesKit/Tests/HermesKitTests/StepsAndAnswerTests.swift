@@ -17,6 +17,7 @@ import Testing
       case .commentary(let item): return "commentary(\(item.text))"
       case .work(let log): return "work(\(log.items.count)\(log.isLive ? ",live" : ""))"
       case .question: return "question"
+      case .edit: return "edit"
       case .system: return "system"
       case .files: return "files"
       }

@@ -81,12 +81,17 @@ public enum TranscriptRow: Identifiable, Sendable, Equatable {
   case work(WorkLog)
   /// A question the agent asked (clarify), always visible so it can be answered in place.
   case question(TranscriptItem)
+  /// A finished file edit with its diff, shown as its own message (opened by default) rather
+  /// than folded into the work log, like the desktop app's edit cards.
+  case edit(TranscriptItem)
   case system(TranscriptItem)
   case files(TurnFiles)
 
   public var id: UUID {
     switch self {
-    case .user(let item), .answer(let item), .commentary(let item), .question(let item), .system(let item): return item.id
+    case .user(let item), .answer(let item), .commentary(let item), .question(let item), .edit(let item),
+      .system(let item):
+      return item.id
     case .work(let group): return group.id
     case .files(let files): return files.id
     }
@@ -135,6 +140,11 @@ public enum TranscriptLayout {
         case .tool where item.tool?.isClarify == true:
           closeGroup()
           emitted.append(.question(item))
+        case .tool where item.tool.map(EditSummary.isShown) == true:
+          // The point of the turn: what changed stays on screen, in order, between the logs of
+          // the reads and commands around it.
+          closeGroup()
+          emitted.append(.edit(item))
         case .assistant:
           if !item.reasoning.isEmpty {
             // A second, stable identity keeps reasoning and words from sharing a row id.

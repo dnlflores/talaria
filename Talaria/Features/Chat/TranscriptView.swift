@@ -20,6 +20,8 @@ struct TranscriptView: View {
   @State private var isUserScrolling = false
   @State private var visibleLimit = TranscriptView.pageSize
   @State private var expanded: Set<UUID> = []
+  /// Edit messages start open; these are the ones folded.
+  @State private var foldedEdits: Set<UUID> = []
   @State private var inspected: ToolCall?
   @State private var tracker = ScrollTracker()
 
@@ -248,6 +250,15 @@ struct TranscriptView: View {
     }
   }
 
+  private func toggleEdit(_ id: UUID) {
+    // Like a work log: the view stays where the tap was. Folding one at the end shrinks the
+    // content, and `follow` picks the end back up.
+    isFollowing = false
+    withAnimation(.snappy(duration: 0.25)) {
+      if foldedEdits.contains(id) { foldedEdits.remove(id) } else { foldedEdits.insert(id) }
+    }
+  }
+
   @ViewBuilder
   private func rowView(_ row: TranscriptRow) -> some View {
     switch row {
@@ -266,6 +277,13 @@ struct TranscriptView: View {
     case .question(let item):
       ClarifyCard(item: item, botTitle: app.title(forProfile: chat.profile)) { requestID, values in
         chat.answer(requestID: requestID, values: values)
+      }
+    case .edit(let item):
+      if let tool = item.tool {
+        EditMessage(
+          tool: tool, isOpen: !foldedEdits.contains(item.id),
+          toggle: { toggleEdit(item.id) },
+          inspect: { inspected = tool })
       }
     case .system(let item):
       SystemNote(text: item.text)

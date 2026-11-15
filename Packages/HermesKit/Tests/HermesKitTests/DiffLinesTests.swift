@@ -161,4 +161,72 @@ import Testing
     #expect(files[0].removed == 1)
     #expect(files[0].diffs.count == 2)
   }
+
+
+  // MARK: Edits as their own messages
+
+  private func turn(_ middle: [TranscriptItem]) -> [TranscriptItem] {
+    [.user("Fix it", timestamp: 1)] + middle + [TranscriptItem(kind: .assistant, text: "Done.", timestamp: 9)]
+  }
+
+  private func read(_ id: String) -> TranscriptItem {
+    .tool(ToolCall(callID: id, name: "read_file", args: ["path": "a.swift"], isDone: true), timestamp: 5)
+  }
+
+  private func kinds(_ rows: [TranscriptRow]) -> [String] {
+    rows.map { row in
+      switch row {
+      case .user: return "user"
+      case .answer: return "answer"
+      case .commentary: return "commentary"
+      case .work(let log): return "work(\(log.items.compactMap { $0.tool?.callID }.joined(separator: ",")))"
+      case .question: return "question"
+      case .edit(let item): return "edit(\(item.tool?.callID ?? ""))"
+      case .system: return "system"
+      case .files: return "files"
+      }
+    }
+  }
+
+  @Test func anEditWithADiffIsItsOwnMessageBetweenTheLogsAroundIt() {
+    let diff = Self.rendered("Sources/a.swift", ["@@ -1 +1 @@", "-old", "+new"])
+    let items = turn([
+      read("r1"), tool("patch", args: ["path": "/repo/Sources/a.swift"], diff: diff), read("r2"),
+    ])
+    let edit = items[2].tool!.callID
+    #expect(kinds(TranscriptLayout.rows(for: items, isStreaming: false))
+      == ["user", "work(r1)", "edit(\(edit))", "work(r2)", "answer", "files"])
+  }
+
+  @Test func aFailedOrRunningEditStaysInTheLog() {
+    var running = ToolCall(callID: "run", name: "patch", args: ["path": "a.swift"], isDone: false)
+    running.inlineDiff = "+x"
+    let failed = tool("patch", args: ["path": "a.swift"], diff: "+x", error: true)
+    let noDiff = tool("write_file", args: ["path": "a.swift"], diff: "")
+    let items = turn([.tool(running, timestamp: 5), failed, noDiff])
+    let rows = TranscriptLayout.rows(for: items, isStreaming: false)
+    #expect(!kinds(rows).contains { $0.hasPrefix("edit") })
+  }
+
+  @Test func anEditSaysWhatItDidToWhichFile() throws {
+    let diff = Self.rendered("Sources/App/Greeting.swift", ["@@ -1,2 +1,3 @@", " a", "-b", "+c", "+d"])
+    let patchCall = try #require(tool("patch", args: ["path": "/repo/Sources/App/Greeting.swift"], diff: diff).tool)
+    let summary = try #require(EditSummary(patchCall))
+    #expect(summary.title == "Edited Greeting.swift")
+    #expect(summary.paths == ["/repo/Sources/App/Greeting.swift"])
+    #expect(summary.diff.added == 2 && summary.diff.removed == 1)
+
+    let write = try #require(tool("write_file", args: ["path": "notes.md"], diff: Self.rendered("notes.md", ["+# Notes"])).tool)
+    #expect(EditSummary(write)?.title == "Wrote notes.md")
+
+    let two = try #require(tool("patch", args: ["mode": "patch", "patch": "*** Update File: a.swift\n*** Add File: b.swift\n"],
+      diff: "a/a.swift → b/a.swift\n+x\na/b.swift → b/b.swift\n+y").tool)
+    #expect(EditSummary(two)?.title == "Edited 2 files")
+    #expect(EditSummary(two)?.paths == ["a.swift", "b.swift"])
+  }
+
+  @Test func aDiffWithOnlyItsHeadingIsNotShown() throws {
+    let call = try #require(tool("patch", args: ["path": "a.swift"], diff: "  ┊ review diff\n").tool)
+    #expect(EditSummary(call) == nil)
+  }
 }

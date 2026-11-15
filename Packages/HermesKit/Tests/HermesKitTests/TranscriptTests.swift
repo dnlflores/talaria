@@ -78,6 +78,7 @@ import Testing
       case .commentary(let item): return "commentary(\(item.text))"
       case .work(let group): return "work(\(group.items.count))"
       case .question: return "question"
+      case .edit(let item): return "edit(\(item.tool?.callID ?? ""))"
       case .system: return "system"
       case .files(let turn): return "files(\(turn.files.count))"
       }
