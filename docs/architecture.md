@@ -560,24 +560,30 @@ follows the desktop app's `/retry`
   taken back from the shortened transcript (the desktop app's `replay_only` /
   `derived_target`). Sending any other message retires the kept request, as the desktop's
   `prompt.submit` does.
-- **A receipt can be old:** a replayed or late receipt does not authorize a send against
-  today's history (the gateway answers an exact retry before checking fences). Before the
-  words go out, the newest stored row is read (`HermesClient.newestRowID`): row ids are never
-  reused, so anything newer than the receipt's `new_head_id` means another device moved the
-  chat on since the rewind, and the words are not sent (`RewindReceipt.isCurrent`); the chat
-  reloads and says the chat changed.
 - **Resend:** the receipt (`rewound_count`, `status: nothing`, `target_message {id, content}`,
-  `new_head_id`) names the words. The turn comes off the screen, the newest page is read afresh
-  (the held history window named rows that are gone), and the words go out through the normal
-  send path, a skill turn showing its invocation. If that send fails, the words land in the
-  composer.
+  `new_head_id`) names the words. Once a copy claims it, every copy of the chat is busy
+  (`ChatQueueState.isResending`, part of `isSending`) until the words have gone out: a message
+  sent meanwhile, from this copy or one opened after leaving it, waits in the queue behind
+  them, the queue is not handed to the Mac, and no other Try again starts. The turn comes off
+  the screen and the newest page is read afresh (the held history window named rows that are
+  gone).
+- **A receipt can be old:** a replayed or late receipt does not authorize a send against
+  today's history (the gateway answers an exact retry before checking fences), and another
+  device can add a turn while the chat reloads. After that reload, right before the words go
+  out, the newest stored row is read (`HermesClient.newestRowID`): row ids are never reused,
+  so anything newer than the receipt's `new_head_id` means the chat moved on since the rewind,
+  and the words are not sent (`RewindReceipt.isCurrent`); the chat reloads and says the chat
+  changed. Otherwise they go out through the normal send path, a skill turn showing its
+  invocation. If that send fails, the words land in the composer.
 
 `RetryTurnTests` (HermesKit) covers picking the turn, reading its words, row identity and the
 receipt; `RetryDeliveryTests` (hosted) runs Try again against `GatewayFixture`, which rewinds its
 stored copy as the gateway does (fences, exact retries, a held or lost answer), including the
-same words sent again elsewhere, leaving and reopening while the answer waits, and an old
-receipt after another device moved on; `RetryTests` (UI) long-presses the reply and the message
-and sends `/retry` against the offline preview (`--scroll-preview`).
+same words sent again elsewhere, leaving and reopening while the answer waits, an old
+receipt after another device moved on, and a turn from another device, a message from the
+composer or a reopened copy while the chat reloads after the rewind; `RetryTests` (UI)
+long-presses the reply and the message and sends `/retry` against the offline preview
+(`--scroll-preview`).
 
 ## Pictures
 

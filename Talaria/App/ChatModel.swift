@@ -51,6 +51,9 @@ final class ChatQueueState {
   /// A copy of the chat closed with messages it could not hand to the Mac. The next copy holds
   /// them if no reply is running when it opens, rather than sending them on its own.
   @ObservationIgnored var leftWaiting = false
+  /// A Try again took its turn back and has not sent the words again yet. Every copy of the chat
+  /// is busy until then: a message sent meanwhile waits behind it, and no other Try again starts.
+  var isResending = false
   @ObservationIgnored var handoff: Task<Void, Never>?
   @ObservationIgnored var recovery: Task<Void, Never>?
   @ObservationIgnored var cancellation: Task<Void, Never>?
@@ -118,7 +121,10 @@ final class ChatModel: Identifiable {
   private(set) var isRunningElsewhere = false {
     didSet { if isRunningElsewhere != oldValue { layOut() } }
   }
-  private(set) var isSending = false
+  /// A message (or a command, or a Try again) is on its way from this copy of the chat.
+  private var sendingHere = false
+  /// A message is on its way: from this copy, or a Try again's words from any copy of the chat.
+  var isSending: Bool { sendingHere || queueState.isResending }
   private(set) var isBranching = false
   private(set) var uploadStatus = ""
   private(set) var catalog: [ModelProvider]?
@@ -1130,7 +1136,7 @@ final class ChatModel: Identifiable {
       item.isPending = false
       state.items.append(item)
       scrollToEnd += 1
-      isSending = false
+      sendingHere = false
       return
     }
     #endif
@@ -1146,9 +1152,9 @@ final class ChatModel: Identifiable {
     let itemID = item.id
     state.items.append(item)
     scrollToEnd += 1
-    isSending = true
+    sendingHere = true
     defer {
-      isSending = false
+      sendingHere = false
       uploadStatus = ""
       drainQueue()
     }
@@ -1322,7 +1328,7 @@ final class ChatModel: Identifiable {
       drainQueue()
       return
     }
-    isSending = true
+    sendingHere = true
     let result: SlashResult
     #if DEBUG
     if isSlashPreview {
@@ -1340,7 +1346,7 @@ final class ChatModel: Identifiable {
       await deliver(text: message, display: display, typed: command.typed, picked: picked, origin: origin)
       return
     }
-    isSending = false
+    sendingHere = false
     if isClosed {
       // Nobody sees this chat any more, so an answer has nowhere to show. What was not sent goes
       // to the copy of the chat that opens next: words to edit to its composer with the files
@@ -1706,13 +1712,14 @@ final class ChatModel: Identifiable {
     if isScrollPreview { return await previewRetry() }
     #endif
     guard let client else { return say(HermesError.notConnected.localizedDescription, failure: true) }
-    isSending = true
-    var handedOver = false
+    sendingHere = true
+    // Set once this Try again holds the one resend, until its words have gone out.
+    var ownsResend = false
     defer {
-      if !handedOver {
-        isSending = false
-        drainQueue()
-      }
+      sendingHere = false
+      if ownsResend { queueState.isResending = false }
+      // What was sent meanwhile waited behind the Try again; it goes now, from the copy on screen.
+      (visibleCopy ?? self).drainQueue()
     }
     let key = rewindKey
     do {
@@ -1771,31 +1778,39 @@ final class ChatModel: Identifiable {
       }
       let receipt = taken.receipt
       guard receipt.didRewind else { return say(Self.retryNothing) }
+      // From here until the words have gone out, every copy of this chat is busy: what is sent
+      // meanwhile waits behind them, and no other Try again starts.
+      ownsResend = true
+      queueState.isResending = true
       guard let text = receipt.retryText, !text.isEmpty else {
         // Rows came off but there are no words to send: show the chat as it is now.
         await reloadAfterRewind()
         say(Self.retryNothing)
         return
       }
-      // The receipt can be old (replayed after a lost answer, or late): the words go out only onto
-      // the copy the rewind left, never after a turn another device added since.
+      // Shown on the copy of the chat on screen (this one, or the one opened after leaving it).
+      let shown = visibleCopy ?? self
+      shown.state.items = RetryTurn.cut(shown.state.items, rowID: receipt.targetID)
+      await shown.reloadAfterRewind()
+      // The receipt can be old (replayed after a lost answer, or late), and another device can
+      // add a turn while the chat reloads: the words go out only onto the copy the rewind left,
+      // so the Mac's newest row is read after the reload, right before they are sent.
       let newest: Int?
       do {
         newest = try await client.newestRowID(storedID: storedID, profile: profile)
       } catch {
         // Taken back, but the Mac's copy cannot be read now: the words wait in the composer.
-        if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { draft = text }
+        let composer = visibleCopy ?? self
+        if composer.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { composer.draft = text }
         throw error
       }
       guard receipt.isCurrent(newestRowID: newest) else {
-        await reloadAfterRewind()
+        await (visibleCopy ?? self).reloadAfterRewind()
         say(Self.retryChanged, failure: true)
         return
       }
-      isSending = false
-      handedOver = true
-      // From the copy of the chat on screen, when this one was left meanwhile.
-      await (visibleCopy ?? self).resend(text, takenBack: receipt.targetID)
+      // Through the normal send path: if they do not go, they land in the composer.
+      await (visibleCopy ?? self).deliver(text: text, display: RetryTurn.display(for: text), picked: [], origin: .composer)
     } catch {
       let wrapped = error as? HermesError ?? .transport(error.localizedDescription)
       if wrapped.isStaleFence || Self.lostTarget(wrapped) {
@@ -1860,14 +1875,6 @@ final class ChatModel: Identifiable {
   private var visibleCopy: ChatModel? {
     guard isClosed, let open = app?.openChat, open !== self, open.storedID == storedID, !open.isClosed else { return nil }
     return open
-  }
-
-  /// Sends the words a Try again took back (the stored row `rowID` and what followed) as a new
-  /// turn, through the normal send path: if they do not go, they land in the composer.
-  private func resend(_ text: String, takenBack rowID: Int?) async {
-    state.items = RetryTurn.cut(state.items, rowID: rowID)
-    await reloadAfterRewind()
-    await deliver(text: text, display: RetryTurn.display(for: text), picked: [], origin: .composer)
   }
 
   /// Shows the Mac's copy after a rewind (or a refused one): the newest page, read afresh. The held
@@ -2298,6 +2305,8 @@ final class ChatModel: Identifiable {
     while let running = slashRun?.task { await running.value }
     await recoverQueuedAdmissions()
     guard queueState.pendingAdmissions.isEmpty else { return }
+    // A Try again's words go out before anything queued after it: those wait here meanwhile.
+    guard !queueState.isResending else { return }
     guard !queue.isEmpty, !queue.isPaused, isBusy, !continuesAsNewVersion, let client, let liveID else { return }
     for id in queue.entries.map(\.id) {
       guard !queue.isPaused else { return }

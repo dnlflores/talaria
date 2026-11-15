@@ -62,6 +62,9 @@ final class GatewayFixture: @unchecked Sendable {
   private var dropsNextMutateAnswer = false
   /// The next `session.mutate` is applied, but its answer waits until `release()`.
   private var holdsNextMutateAnswer = false
+  /// The next `session.resume` with `omit_messages` (a reattach) waits until `release()`.
+  private var holdsNextReattach = false
+  private var heldReattaches = 0
   /// Another device moves the chat on between the snapshot and the next rewind.
   private var movesOnBeforeNextMutate = false
   /// Every JSON-RPC method called, in order.
@@ -176,6 +179,9 @@ final class GatewayFixture: @unchecked Sendable {
 
   func dropNextMutateAnswer() { locked { dropsNextMutateAnswer = true } }
   func holdNextMutateAnswer() { locked { holdsNextMutateAnswer = true } }
+  func holdNextReattach() { locked { holdsNextReattach = true } }
+  /// Reattaches held by `holdNextReattach` so far.
+  var reattachesHeld: Int { locked { heldReattaches } }
   func moveOnBeforeNextMutate() { locked { movesOnBeforeNextMutate = true } }
 
   /// Call with `lock` held.
@@ -295,12 +301,22 @@ final class GatewayFixture: @unchecked Sendable {
         (running.contains(session), transcripts[session] ?? [], revisions[session] ?? 1, generations[session] ?? 1)
       }
       let omit = call["method"].stringValue == "session.create" || params["omit_messages"].truthy
-      answer(.result([
+      let result: Answer = .result([
         "session_id": .string(session), "stored_session_id": .string(session), "subscription_id": "fixture",
         "running": .bool(isRunning), "messages": omit ? [] : .array(rows),
         "execution_generation": .number(Double(generation)), "revision": .number(Double(revision)),
         "profile": "preview",
-      ]))
+      ])
+      let holds = locked {
+        guard holdsNextReattach, call["method"].stringValue == "session.resume", params["omit_messages"].truthy else {
+          return false
+        }
+        holdsNextReattach = false
+        heldReattaches += 1
+        held.append { [queue] in queue.async { answer(result) } }
+        return true
+      }
+      if !holds { answer(result) }
     case "session.mutate":
       answerMutate(params, session: session, on: connection, answer: answer)
     case "slash.exec", "command.dispatch":
