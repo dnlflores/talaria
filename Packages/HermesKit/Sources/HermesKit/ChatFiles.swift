@@ -122,7 +122,7 @@ public enum FileExtraction {
         for (path, origin) in files { add(path, origin, item.timestamp, diffs.removeValue(forKey: path)) }
       case .assistant:
         for (path, explicit) in textFiles(item.text) { add(path, explicit ? .delivered : .mentioned, item.timestamp) }
-      case .user, .system:
+      case .user, .system, .side:
         continue
       }
     }

@@ -157,6 +157,9 @@ final class AppModel {
   @ObservationIgnored private var chatQueues: [String: [String: ChatQueueState]] = [:]
   /// What closed chats had not sent, by stored id, until a copy of the chat opens again.
   @ObservationIgnored private var leftBehind: [String: LeftBehind] = [:]
+  /// `/btw` and `/bg` notices and answers by profile and stored id. The Mac never stores them, so
+  /// they live here while the app runs, for a chat left and opened again to show them still.
+  @ObservationIgnored private var sideItems: [String: [String: [TranscriptItem]]] = [:]
   @ObservationIgnored private var liveToStored: [String: String] = [:]
 
   private let signIns: any SignInStore = AppModel.makeSignInStore()
@@ -308,6 +311,7 @@ final class AppModel {
     chatCache = [:]
     chatQueues = [:]
     leftBehind = [:]
+    sideItems = [:]
     sessions = []
     liveStatuses = [:]
     gatewaySessions = [:]
@@ -949,6 +953,22 @@ final class AppModel {
     let state = ChatQueueState()
     chatQueues[profile, default: [:]][storedID] = state
     return state
+  }
+
+  /// The `/btw` and `/bg` notices and answers this app holds for a chat.
+  func sideItems(profile: String, storedID: String) -> [TranscriptItem] {
+    sideItems[profile]?[storedID] ?? []
+  }
+
+  /// Holds a side notice or answer for the chat, or the newer copy of one already held.
+  func keepSideItem(_ item: TranscriptItem, profile: String, storedID: String) {
+    var held = sideItems[profile]?[storedID] ?? []
+    if let index = held.firstIndex(where: { $0.id == item.id }) { held[index] = item } else { held.append(item) }
+    sideItems[profile, default: [:]][storedID] = held
+  }
+
+  func dropSideItem(_ id: UUID, profile: String, storedID: String) {
+    sideItems[profile]?[storedID]?.removeAll { $0.id == id }
   }
 
   /// The model for a route. Models made ahead of navigation (a new chat, a new version) are

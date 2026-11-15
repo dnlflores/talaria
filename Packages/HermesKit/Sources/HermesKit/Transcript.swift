@@ -158,7 +158,8 @@ public struct AttachmentChip: Sendable, Equatable, Identifiable {
 
 /// One entry of a conversation as the app shows it.
 public struct TranscriptItem: Identifiable, Sendable, Equatable {
-  public enum Kind: Sendable, Equatable { case user, assistant, tool, system }
+  /// `side`: a `/btw` or `/bg` sent from here, or its answer (`SideTask`).
+  public enum Kind: Sendable, Equatable { case user, assistant, tool, system, side }
 
   public let id: UUID
   public var kind: Kind
@@ -181,6 +182,8 @@ public struct TranscriptItem: Identifiable, Sendable, Equatable {
   /// The `/command` a local notice answers (`/usage`).
   public var command = ""
   public var tool: ToolCall?
+  /// A side question or background task, for `side` items.
+  public var side: SideTask?
   public var attachments: [AttachmentChip] = []
   /// Pictures the message carries, as paths on the Mac (`@image:` lines, lifted out of `text`).
   public var images: [String] = []

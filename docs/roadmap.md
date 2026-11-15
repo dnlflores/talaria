@@ -134,8 +134,11 @@ mobile app: Connections, Plugins, MCP).
   plain output is a card only the phone shows. Next: argument menus
   (`/personality <name>`), `@` file references (`complete.path`), and the
   commands the desktop app handles itself.
+- Done: side questions and background tasks. `/btw` and `/bg` go out right
+  away with `prompt.btw` / `prompt.background`, even mid-reply, and their
+  `btw.complete` / `background.complete` answers show as cards on the phone.
 - Conversation tools: `session.undo`, `session.compress`, `session.branch`,
-  `session.steer`, `prompt.btw`, `prompt.background`
+  `session.steer`
 
 ## Then: what only a phone can do
 
