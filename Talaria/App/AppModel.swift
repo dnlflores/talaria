@@ -157,7 +157,12 @@ final class AppModel {
   @ObservationIgnored private var chatQueues: [String: [String: ChatQueueState]] = [:]
   /// What closed chats had not sent, by stored id, until a copy of the chat opens again.
   @ObservationIgnored private var leftBehind: [String: LeftBehind] = [:]
+  /// `/btw` and `/bg` notices and answers by profile and stored id. The Mac never stores them, so
+  /// they live here while the app runs, for a chat left and opened again to show them still.
+  @ObservationIgnored private var sideItems: [String: [String: [TranscriptItem]]] = [:]
   @ObservationIgnored private var liveToStored: [String: String] = [:]
+  /// The bot of each live session a chat here attached to, for events no open chat takes.
+  @ObservationIgnored private var liveProfiles: [String: String] = [:]
 
   private let signIns: any SignInStore = AppModel.makeSignInStore()
   @ObservationIgnored private var signInSheet: SignInSheet?
@@ -308,6 +313,7 @@ final class AppModel {
     chatCache = [:]
     chatQueues = [:]
     leftBehind = [:]
+    sideItems = [:]
     sessions = []
     liveStatuses = [:]
     gatewaySessions = [:]
@@ -318,6 +324,7 @@ final class AppModel {
     prompts = []
     waitingOnYou = []
     liveToStored = [:]
+    liveProfiles = [:]
     hasLoadedSessions = false
     connection = .idle
   }
@@ -472,6 +479,9 @@ final class AppModel {
         }
       } else if let chat = openChat, chat.liveID == event.sessionID {
         chat.handle(event)
+      } else if let task = SideTask(event: event.type, payload: event.payload) {
+        // A chat left while its reply runs stays followed: its side answers are kept for when it opens again.
+        keepSideAnswer(task, liveID: event.sessionID)
       }
 
     case .request(let request):
@@ -541,8 +551,9 @@ final class AppModel {
     waitingOnYou.remove(storedID)
   }
 
-  func noteLive(_ liveID: String, storedID: String) {
+  func noteLive(_ liveID: String, storedID: String, profile: String) {
     liveToStored[liveID] = storedID
+    liveProfiles[liveID] = profile
   }
 
   /// A short name for the bot behind a live session, for prompts.
@@ -949,6 +960,46 @@ final class AppModel {
     let state = ChatQueueState()
     chatQueues[profile, default: [:]][storedID] = state
     return state
+  }
+
+  /// The `/btw` and `/bg` notices and answers this app holds for a chat.
+  func sideItems(profile: String, storedID: String) -> [TranscriptItem] {
+    sideItems[profile]?[storedID] ?? []
+  }
+
+  /// Holds a side notice or answer for the chat, or the newer copy of one already held.
+  func keepSideItem(_ item: TranscriptItem, profile: String, storedID: String) {
+    var held = sideItems[profile]?[storedID] ?? []
+    if let index = held.firstIndex(where: { $0.id == item.id }) { held[index] = item } else { held.append(item) }
+    sideItems[profile, default: [:]][storedID] = held
+  }
+
+  func dropSideItem(_ id: UUID, profile: String, storedID: String) {
+    sideItems[profile]?[storedID]?.removeAll { $0.id == id }
+  }
+
+  /// A side answer for a chat attached here but not on screen: held, once per task, until the
+  /// chat opens again.
+  private func keepSideAnswer(_ task: SideTask, liveID: String) {
+    guard let storedID = liveToStored[liveID] else { return }
+    let profile = liveProfiles[liveID] ?? profile(forLive: liveID)
+    var held = sideItems[profile]?[storedID] ?? []
+    guard held.addSideAnswer(task, timestamp: Date().timeIntervalSince1970) != nil else { return }
+    sideItems[profile, default: [:]][storedID] = held
+    // A copy of the chat open on a newer attachment shows it now.
+    if let chat = openChat, chat.storedID == storedID, chat.profile == profile { chat.restoreHeldSideItems() }
+  }
+
+  /// The gateway named the task a side notice started. The held copies, and any other copy of the
+  /// chat on screen, take the id, and an answer that beat it takes the notice's words.
+  func sideStarted(noticeID: UUID, taskID: String, prompt: String, profile: String, storedID: String, by source: ChatModel) {
+    sideItems[profile]?[storedID]?.noteSideStarted(noticeID: noticeID, taskID: taskID, prompt: prompt)
+    var copies: [ChatModel] = []
+    for chat in [openChat, chatCache[storedID]].compactMap({ $0 })
+    where chat !== source && chat.storedID == storedID && chat.profile == profile && !copies.contains(where: { $0 === chat }) {
+      copies.append(chat)
+    }
+    for chat in copies { chat.restoreHeldSideItems() }
   }
 
   /// The model for a route. Models made ahead of navigation (a new chat, a new version) are

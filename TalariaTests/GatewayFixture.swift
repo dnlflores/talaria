@@ -40,6 +40,16 @@ final class GatewayFixture: @unchecked Sendable {
   private var submitAnswer: @Sendable (String) -> Answer? = { _ in nil }
   private var isHoldingSubmits = false
   private var submitCalls = 0
+  /// Every JSON-RPC method called, in order.
+  private var methodCalls: [String] = []
+  /// `/api/status` asks for a sign-in (the app stays off its inbox and its event pump).
+  private var signInRequired = true
+  /// `prompt.btw`/`prompt.background` emit this completion text before answering with the task id.
+  private var sideAnswerFirst: String?
+  private var refusesResumes = false
+  /// Chats another process is running: their row carries a fresh heartbeat the gateway's live list lacks.
+  private var elsewhere: Set<String> = []
+  private var sideCount = 0
 
   private(set) var port: UInt16 = 0
   var address: String { "http://127.0.0.1:\(port)" }
@@ -83,6 +93,16 @@ final class GatewayFixture: @unchecked Sendable {
   func answerSubmit(_ answer: @escaping @Sendable (String) -> Answer?) { locked { submitAnswer = answer } }
   /// `prompt.submit` answers wait until `release()`.
   func holdSubmits() { locked { isHoldingSubmits = true } }
+  /// Signed in already: the app reaches Ready and runs its real event pump.
+  func opensWithoutSignIn() { locked { signInRequired = false } }
+  /// A side agent that finishes (with `text`) before the gateway answers with its task id.
+  func sideAnswersBeforeTaskID(_ text: String) { locked { sideAnswerFirst = text } }
+  /// `session.resume` fails, so a chat opens read-only from its stored history.
+  func refuseResumes() { locked { refusesResumes = true } }
+  /// Another process runs the chat: the app watches it instead of attaching.
+  func runsElsewhere(_ session: String) { locked { _ = elsewhere.insert(session) } }
+  /// Every JSON-RPC method called, in order.
+  var calls: [String] { locked { methodCalls } }
 
   /// Slash answers wait until `release()`.
   func hold() { locked { isHolding = true } }
@@ -163,14 +183,25 @@ final class GatewayFixture: @unchecked Sendable {
     let body: JSONValue
     switch request.path {
     case "/api/status":
-      // Sign-in is offered but not done: the app stays off its inbox and the test drives the chat.
-      body = ["auth_required": true, "auth_providers": ["nous"], "gateway_running": true, "version": "fixture"]
+      // By default sign-in is offered but not done: the app stays off its inbox and the test drives the chat.
+      body = [
+        "auth_required": .bool(locked { signInRequired }), "auth_providers": ["nous"], "gateway_running": true,
+        "version": "fixture",
+      ]
     case let path where path.hasPrefix("/api/sessions/") && path.hasSuffix("/messages"):
       let session = String(path.dropFirst("/api/sessions/".count).dropLast("/messages".count))
       let rows: [JSONValue] = submitted.filter { $0.session == session }.enumerated().map { index, prompt in
         ["id": .number(Double(index + 1)), "role": "user", "content": .string(prompt.text)]
       }
       body = ["messages": .array(rows), "total": .number(Double(rows.count)), "has_more": false]
+    case let path where path.hasPrefix("/api/sessions/") && !path.dropFirst("/api/sessions/".count).contains("/"):
+      let session = String(path.dropFirst("/api/sessions/".count))
+      let busy = locked { elsewhere.contains(session) }
+      body = [
+        "id": .string(session), "profile": "preview",
+        "last_activity_description": .string(busy ? "Running a command" : ""),
+        "last_activity_at": .number(busy ? Date().timeIntervalSince1970 : 0),
+      ]
     default:
       body = [:]
     }
@@ -189,7 +220,10 @@ final class GatewayFixture: @unchecked Sendable {
         connection.send(["jsonrpc": "2.0", "id": id, "error": ["code": .number(Double(code)), "message": .string(message)]])
       }
     }
+    locked { methodCalls.append(call["method"].stringValue) }
     switch call["method"].stringValue {
+    case "session.resume" where locked({ refusesResumes }):
+      answer(.error(code: -32603, message: "resume unavailable"))
     case "session.create", "session.resume":
       let isRunning = locked { running.contains(session) }
       answer(.result([
@@ -224,6 +258,21 @@ final class GatewayFixture: @unchecked Sendable {
       if hold { locked { held.append { [queue] in queue.async(execute: finish) } } } else { finish() }
     case "file.attach":
       answer(.result(["attached": true, "ref_text": .string("@file:/fixture/\(params["name"].stringValue)")]))
+    case "prompt.btw", "prompt.background":
+      // The gateway starts the side agent before it answers, so a fast one can finish first.
+      let isBtw = call["method"].stringValue == "prompt.btw"
+      let (task, early): (String, String?) = locked {
+        sideCount += 1
+        return ("\(isBtw ? "btw" : "bg")_fixture\(sideCount)", sideAnswerFirst)
+      }
+      if let early {
+        var payload: [String: JSONValue] = ["task_id": .string(task), "text": .string(early)]
+        if isBtw { payload["question"] = params["text"] }
+        emit(isBtw ? "btw.complete" : "background.complete", session: session, payload: .object(payload))
+        queue.asyncAfter(deadline: .now() + .milliseconds(200)) { answer(.result(["task_id": .string(task)])) }
+      } else {
+        answer(.result(["task_id": .string(task)]))
+      }
     case "session.active_list":
       answer(.result(["sessions": []]))
     default:

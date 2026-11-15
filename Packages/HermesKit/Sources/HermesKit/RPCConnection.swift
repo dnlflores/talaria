@@ -18,6 +18,13 @@ public struct GatewayEvent: Sendable, Equatable {
   public let payload: JSONValue
   /// The exact admitted input this event belongs to, not merely the conversation.
   public var admissionID: String? = nil
+
+  public init(type: String, sessionID: String, payload: JSONValue, admissionID: String? = nil) {
+    self.type = type
+    self.sessionID = sessionID
+    self.payload = payload
+    self.admissionID = admissionID
+  }
 }
 
 /// A question the gateway asks the client (approval, clarify, sudo, secret) and waits on.
