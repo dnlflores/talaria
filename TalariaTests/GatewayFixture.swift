@@ -60,6 +60,8 @@ final class GatewayFixture: @unchecked Sendable {
   private var mutations: [Mutation] = []
   /// The next rewind is applied, then the socket drops before its answer goes out.
   private var dropsNextMutateAnswer = false
+  /// The next `session.mutate` is applied, but its answer waits until `release()`.
+  private var holdsNextMutateAnswer = false
   /// Another device moves the chat on between the snapshot and the next rewind.
   private var movesOnBeforeNextMutate = false
 
@@ -153,6 +155,7 @@ final class GatewayFixture: @unchecked Sendable {
   }
 
   func dropNextMutateAnswer() { locked { dropsNextMutateAnswer = true } }
+  func holdNextMutateAnswer() { locked { holdsNextMutateAnswer = true } }
   func moveOnBeforeNextMutate() { locked { movesOnBeforeNextMutate = true } }
 
   /// Call with `lock` held.
@@ -345,6 +348,7 @@ final class GatewayFixture: @unchecked Sendable {
       let receipt: JSONValue = [
         "session_id": .string(session), "rewound_count": .number(Double(count)), "revision": .number(Double(revision + 1)),
         "target_message": ["id": taken["row_id"], "content": taken["content"], "timestamp": taken["timestamp"]],
+        "new_head_id": rows.last?["row_id"] ?? .null,
       ]
       receipts[requestID] = receipt
       defer { dropsNextMutateAnswer = false }
@@ -354,7 +358,12 @@ final class GatewayFixture: @unchecked Sendable {
       // Applied, but the answer is lost with the socket.
       connection.connection.cancel()
     } else {
-      answer(result)
+      let hold = locked {
+        defer { holdsNextMutateAnswer = false }
+        if holdsNextMutateAnswer { held.append { [queue] in queue.async { answer(result) } } }
+        return holdsNextMutateAnswer
+      }
+      if !hold { answer(result) }
     }
   }
 }

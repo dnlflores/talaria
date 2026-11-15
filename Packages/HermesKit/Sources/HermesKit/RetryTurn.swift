@@ -88,22 +88,25 @@ public enum RetryTurn {
     return ids
   }
 
-  /// Whether the newest message from the person on screen is the one the Mac would go back to.
-  /// When they differ, the Mac's copy moved on (another device sent something) and nothing may be
-  /// rewound from this view.
-  public static func showsSameTurn(_ items: [TranscriptItem], as row: JSONValue) -> Bool {
-    guard let shown = items.last(where: { $0.kind == .user && !$0.isLocal && !$0.isFailed }) else { return false }
-    guard let stored = TranscriptItem.items(fromStoredRows: [row]).last(where: { $0.kind == .user }) else { return false }
-    return shown.signature == stored.signature
+  /// The newest message from the person on screen: the turn Try again would go back to.
+  public static func shownTurn(_ items: [TranscriptItem]) -> TranscriptItem? {
+    items.last(where: { $0.kind == .user && !$0.isLocal && !$0.isFailed })
   }
 
-  /// The transcript without the turn that was taken back: the newest message from the person
-  /// and everything after it, when that message reads as `text`. Otherwise unchanged (the
-  /// reload that follows shows the Mac's copy either way).
-  public static func cut(_ items: [TranscriptItem], text: String) -> [TranscriptItem] {
-    guard let index = items.lastIndex(where: { $0.kind == .user && !$0.isLocal && !$0.isFailed }) else { return items }
-    let resent = TranscriptItem.user(TranscriptItem.storedText(submitted: text), timestamp: nil)
-    guard items[index].signature == resent.signature else { return items }
+  /// Whether the newest message from the person on screen is the stored row the Mac would go back
+  /// to: the same row, not just the same words (another device may have asked the same thing
+  /// again since). When it is not, or the screen does not know its row, the Mac's copy may have
+  /// moved on and nothing may be rewound from this view.
+  public static func showsTurn(_ items: [TranscriptItem], rowID: Int) -> Bool {
+    guard let shown = shownTurn(items)?.rowID else { return false }
+    return shown == rowID
+  }
+
+  /// The transcript without the turn that was taken back: the message from the person stored as
+  /// `rowID` and everything after it. Otherwise unchanged (the reload that follows shows the
+  /// Mac's copy either way).
+  public static func cut(_ items: [TranscriptItem], rowID: Int?) -> [TranscriptItem] {
+    guard let rowID, let index = items.lastIndex(where: { $0.kind == .user && $0.rowID == rowID }) else { return items }
     return Array(items[..<index])
   }
 
@@ -140,6 +143,9 @@ public struct RewindReceipt: Sendable, Equatable {
   public let targetID: Int?
   public let targetContent: JSONValue
   public let targetTimestamp: Double?
+  /// `new_head_id`: the newest row the Mac's copy kept (nil when the rewind left nothing, or an
+  /// older gateway did not say).
+  public let newHeadID: Int?
 
   public init(_ json: JSONValue) {
     // The receipt's fields, at the top or under `result`.
@@ -150,6 +156,7 @@ public struct RewindReceipt: Sendable, Equatable {
     targetID = target["id"].int
     targetContent = target["content"]
     targetTimestamp = TranscriptItem.seconds(target["timestamp"])
+    newHeadID = body["new_head_id"].int
   }
 
   /// Rows came off the Mac's copy.
@@ -157,4 +164,15 @@ public struct RewindReceipt: Sendable, Equatable {
 
   /// The words to send again (`RetryTurn.text`).
   public var retryText: String? { RetryTurn.text(targetContent) }
+
+  /// Whether the Mac's copy is still as this rewind left it, given its newest stored row now. A
+  /// receipt can be old (its answer was lost and replayed, or came back late): if anything was
+  /// written since, the words it took back are no longer the newest turn and must not go out
+  /// after it. Rows are never given an id again, so anything written since has a larger id than
+  /// the newest row the rewind kept (or, when the receipt does not name it, than the row taken
+  /// back). False when the receipt names neither.
+  public func isCurrent(newestRowID: Int?) -> Bool {
+    guard let boundary = newHeadID ?? targetID.map({ $0 - 1 }) else { return false }
+    return (newestRowID ?? 0) <= boundary
+  }
 }

@@ -490,6 +490,14 @@ public final class HermesClient: Sendable {
     return RewindReceipt(json)
   }
 
+  /// The id of the newest stored row of a conversation (nil when it holds none): what a rewind
+  /// receipt is checked against before the words it took back go out again
+  /// (`RewindReceipt.isCurrent`).
+  public func newestRowID(storedID: String, profile: String) async throws -> Int? {
+    let rows = try await latestMessages(storedID: storedID, profile: profile, limit: 1)
+    return rows.compactMap { $0["id"].int }.max()
+  }
+
   /// Stages a picture for the next turn of this session; pass the result to `submit`.
   public func attachImage(liveID: String, profile: String, data: Data, filename: String) async throws -> StagedImage {
     let result = try await rpc.call(

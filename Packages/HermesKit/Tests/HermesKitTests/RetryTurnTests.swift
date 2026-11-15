@@ -147,22 +147,88 @@ struct RetryTurnTests {
     #expect(RetryTurn.offeredItems(in: [first, firstReply, pending]).isEmpty)
   }
 
-  @Test func theViewMustShowTheSameTurnAsTheMac() throws {
-    let items = [TranscriptItem.user("Earlier", timestamp: 1), TranscriptItem.user("Fix   the\nbuild", timestamp: 2)]
-    let same = try JSONValue.parse(#"{"role": "user", "content": "Fix the build", "row_id": 5}"#)
-    let other = try JSONValue.parse(#"{"role": "user", "content": "Sent from the Mac", "row_id": 7}"#)
-    #expect(RetryTurn.showsSameTurn(items, as: same))
-    #expect(!RetryTurn.showsSameTurn(items, as: other))
-    #expect(!RetryTurn.showsSameTurn([], as: same))
+  @Test func theViewMustShowTheSameStoredTurnAsTheMac() throws {
+    var earlier = TranscriptItem.user("Earlier", timestamp: 1)
+    earlier.rowID = 3
+    var shown = TranscriptItem.user("Check the build", timestamp: 2)
+    shown.rowID = 5
+    let items = [earlier, TranscriptItem(kind: .assistant, text: "Original answer"), shown]
+    #expect(RetryTurn.showsTurn(items, rowID: 5))
+    // Another device asked the same thing again: same words, a different row. Still behind.
+    #expect(!RetryTurn.showsTurn(items, rowID: 7))
+    // A message whose row the screen does not know cannot be vouched for.
+    #expect(!RetryTurn.showsTurn([earlier, .user("Check the build", timestamp: 2)], rowID: 5))
+    #expect(!RetryTurn.showsTurn([], rowID: 5))
+  }
+
+  @Test func storedRowsNameTheirMessages() throws {
+    let stored = TranscriptItem.items(fromStoredRows: try rows("""
+      [{"role": "user", "content": "Hi", "id": 41}, {"role": "assistant", "content": "Hello", "id": 42}]
+      """))
+    #expect(stored.first?.rowID == 41)
+    let snapshot = TranscriptItem.items(fromHistory: try rows("""
+      [{"role": "user", "text": "Hi", "row_id": 41}, {"role": "assistant", "text": "Hello", "row_id": 42}]
+      """))
+    #expect(snapshot.first?.rowID == 41)
+  }
+
+  @Test func aMessageSentHereLearnsItsRowWhenTheStoredPageLinesUp() throws {
+    var state = ChatState()
+    var sent = TranscriptItem.outgoing("Check the build", shown: nil, timestamp: 1)
+    sent.isPending = false
+    state.items = [sent, TranscriptItem(kind: .assistant, text: "Original answer")]
+    let page = TranscriptItem.items(fromStoredRows: try rows("""
+      [{"role": "user", "content": "Check the build", "id": 8}, {"role": "assistant", "content": "Original answer", "id": 9}]
+      """))
+    let lined = state.reconcileTail(fresh: page, inflight: nil, now: 2)
+    #expect(lined)
+    #expect(state.items.first?.id == sent.id, "the message keeps its place")
+    #expect(state.items.first?.rowID == 8)
+
+    // The full reconcile names it too.
+    var full = ChatState()
+    full.items = [sent, TranscriptItem(kind: .assistant, text: "Original answer")]
+    full.reconcile(fresh: page, inflight: nil, now: 2)
+    #expect(full.items.first?.id == sent.id)
+    #expect(full.items.first?.rowID == 8)
   }
 
   @Test func cutDropsTheTurnTakenBack() {
-    let first = TranscriptItem.user("One", timestamp: 1)
+    var first = TranscriptItem.user("One", timestamp: 1)
+    first.rowID = 1
     let firstReply = TranscriptItem(kind: .assistant, text: "Reply one")
-    let second = TranscriptItem.user("Two", timestamp: 2)
+    var second = TranscriptItem.user("Two", timestamp: 2)
+    second.rowID = 3
     let reply = TranscriptItem(kind: .assistant, text: "Reply two")
-    #expect(RetryTurn.cut([first, firstReply, second, reply], text: "Two").map(\.id) == [first.id, firstReply.id])
-    // A view whose newest message reads differently is left for the reload to correct.
-    #expect(RetryTurn.cut([first, firstReply, second, reply], text: "Other").count == 4)
+    #expect(RetryTurn.cut([first, firstReply, second, reply], rowID: 3).map(\.id) == [first.id, firstReply.id])
+    // A row the view does not hold is left for the reload to correct.
+    #expect(RetryTurn.cut([first, firstReply, second, reply], rowID: 9).count == 4)
+    #expect(RetryTurn.cut([first, firstReply, second, reply], rowID: nil).count == 4)
+  }
+
+  // MARK: Whether a receipt still fits the Mac's copy
+
+  @Test func aReceiptIsCurrentUntilAnythingIsWrittenAfterIt() throws {
+    let receipt = RewindReceipt(try JSONValue.parse("""
+      {"rewound_count": 2, "new_head_id": 2, "target_message": {"id": 3, "content": "B"}}
+      """))
+    #expect(receipt.newHeadID == 2)
+    #expect(receipt.isCurrent(newestRowID: 2))
+    // Another device finished a turn since: rows 5 and 6.
+    #expect(!receipt.isCurrent(newestRowID: 6))
+
+    // Everything was taken back: nothing may be there now.
+    let emptied = RewindReceipt(try JSONValue.parse("""
+      {"rewound_count": 2, "new_head_id": null, "target_message": {"id": 1, "content": "A"}}
+      """))
+    #expect(emptied.isCurrent(newestRowID: nil))
+    #expect(!emptied.isCurrent(newestRowID: 3))
+
+    // A receipt with no head goes by the row it took back.
+    let older = RewindReceipt(try JSONValue.parse(#"{"rewound_count": 2, "target_message": {"id": 3, "content": "B"}}"#))
+    #expect(older.isCurrent(newestRowID: 2))
+    #expect(!older.isCurrent(newestRowID: 4))
+    // One that names neither cannot vouch for anything.
+    #expect(!RewindReceipt(try JSONValue.parse(#"{"rewound_count": 2}"#)).isCurrent(newestRowID: 1))
   }
 }

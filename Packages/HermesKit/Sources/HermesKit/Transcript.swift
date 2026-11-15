@@ -184,6 +184,10 @@ public struct TranscriptItem: Identifiable, Sendable, Equatable {
   public var attachments: [AttachmentChip] = []
   /// Pictures the message carries, as paths on the Mac (`@image:` lines, lifted out of `text`).
   public var images: [String] = []
+  /// The stored row of a message from the person (`id` in stored rows, `row_id` in a snapshot):
+  /// which turn this is, even when another turn reads the same. Nil until the Mac's copy names it
+  /// (a message sent from here, before the chat reads its stored rows again).
+  public var rowID: Int?
 
   public init(id: UUID = UUID(), kind: Kind, text: String = "", timestamp: Double? = nil) {
     self.id = id
@@ -291,7 +295,9 @@ extension TranscriptItem {
         let displayKind = message["display_kind"].string ?? ""
         if displayKind == "hidden" || machineryKinds.contains(displayKind) { continue }
         if userKinds.contains(displayKind) {
-          items.append(.user(message["text"].stringValue, timestamp: timestamp))
+          var item = TranscriptItem.user(message["text"].stringValue, timestamp: timestamp)
+          item.rowID = message["row_id"].int
+          items.append(item)
         } else {
           items.append(TranscriptItem(kind: .system, text: message["text"].stringValue, timestamp: timestamp))
         }
@@ -365,7 +371,9 @@ extension TranscriptItem {
         }
         if let invocation = SkillInvocation.text(body) { body = invocation }
         if userKinds.contains(displayKind) {
-          items.append(.user(body, timestamp: timestamp))
+          var item = TranscriptItem.user(body, timestamp: timestamp)
+          item.rowID = row["id"].int ?? row["row_id"].int
+          items.append(item)
         } else {
           items.append(TranscriptItem(kind: .system, text: body, timestamp: timestamp))
         }

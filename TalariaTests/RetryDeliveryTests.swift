@@ -48,6 +48,18 @@ final class RetryDeliveryTests: XCTestCase {
     return (app, chat, session)
   }
 
+  /// A chat already on the Mac, opened from its stored rows (as a chat picked from the inbox is).
+  private func openStored(
+    _ name: String, seed: [(role: String, content: JSONValue)]
+  ) async throws -> (AppModel, ChatModel, String) {
+    let (app, created, session) = try await openChat(name, seed: seed)
+    created.leave()
+    let chat = ChatModel(app: app, profile: "preview", storedID: session, row: nil, live: nil)
+    await chat.open()
+    XCTAssertFalse(chat.isLoading)
+    return (app, chat, session)
+  }
+
   private func eventually(_ timeout: Double = 5, _ condition: () -> Bool) async -> Bool {
     let deadline = Date().addingTimeInterval(timeout)
     while Date() < deadline {
@@ -140,6 +152,34 @@ final class RetryDeliveryTests: XCTestCase {
     XCTAssertTrue(reloaded, "the chat reloads to the Mac's copy")
   }
 
+  func testTheSameWordsSentAgainElsewhereAreStillANewerTurn() async throws {
+    let (app, chat, session) = try await openStored("retry-same-words", seed: [
+      ("user", "Check the build"), ("assistant", "Original answer"),
+    ])
+    fixture.sendFromAnotherDevice(session, "Check the build", reply: "New answer from desktop")
+    await chat.retry()
+    XCTAssertTrue(fixture.mutateRequests.isEmpty, "a different row with the same words is not the turn on screen")
+    XCTAssertTrue(fixture.submitted.isEmpty, "nothing is resent")
+    XCTAssertEqual(history(session), [
+      "user: Check the build", "assistant: Original answer", "user: Check the build", "assistant: New answer from desktop",
+    ], "the unseen answer is still there")
+    XCTAssertEqual(app.toast?.text, ChatModel.retryChanged)
+    XCTAssertTrue(chat.state.items.contains { $0.text == "New answer from desktop" }, "the chat reloads to the Mac's copy")
+  }
+
+  func testTheSameWordsSentElsewhereAfterAMessageFromHereAreStillANewerTurn() async throws {
+    let (_, chat, session) = try await openChat("retry-same-words-here")
+    await ask(chat, session, "Check the build", answer: "Original answer")
+    fixture.sendFromAnotherDevice(session, "Check the build", reply: "New answer from desktop")
+    chat.draft = "/retry"
+    await chat.send()
+    XCTAssertTrue(fixture.mutateRequests.isEmpty, "a message sent from here is matched to its own row")
+    XCTAssertEqual(fixture.submitted.map(\.text), ["Check the build"], "nothing is resent")
+    XCTAssertEqual(history(session).count, 4)
+    XCTAssertEqual(notices(chat), [ChatModel.retryChanged])
+    XCTAssertTrue(chat.state.items.contains { $0.text == "New answer from desktop" }, "the chat reloads to the Mac's copy")
+  }
+
   // MARK: A lost answer
 
   func testARewindWhoseAnswerWasLostIsReplayedNotRepeated() async throws {
@@ -160,6 +200,98 @@ final class RetryDeliveryTests: XCTestCase {
     XCTAssertEqual(Set(mutations.map(\.requestID)).count, 1, "the second try sent the same request again")
     XCTAssertEqual(fixture.submitted.last?.text, "Second", "the turn that was taken back goes out")
     XCTAssertEqual(history(session), ["user: First", "assistant: One", "user: Second"], "First was not taken back too")
+  }
+
+  func testAnOldReceiptIsNotResentAfterAnotherDeviceMovesOn() async throws {
+    let (app, chat, session) = try await openStored("retry-lost-moved-on", seed: [
+      ("user", "A"), ("assistant", "Answer A"), ("user", "B"), ("assistant", "Answer B"),
+    ])
+    fixture.dropNextMutateAnswer()
+    await chat.retry()
+    XCTAssertEqual(history(session), ["user: A", "assistant: Answer A"], "the rewind landed, its answer was lost")
+    XCTAssertTrue(fixture.submitted.isEmpty)
+
+    fixture.sendFromAnotherDevice(session, "C", reply: "Answer C")
+    try await XCTUnwrap(app.client).rpc.waitUntilReady(timeout: 15)
+    await chat.connectionReady()
+    XCTAssertTrue(chat.state.items.contains { $0.text == "C" })
+    await chat.retry()
+    XCTAssertTrue(fixture.submitted.isEmpty, "B is not sent after C")
+    XCTAssertEqual(history(session), ["user: A", "assistant: Answer A", "user: C", "assistant: Answer C"])
+    XCTAssertEqual(app.toast?.text, ChatModel.retryChanged)
+
+    // That old rewind is done with: the next Try again goes back to C, the turn on screen.
+    await chat.retry()
+    let resent = await eventually { self.fixture.submitted.count == 1 }
+    XCTAssertTrue(resent)
+    XCTAssertEqual(fixture.submitted.map(\.text), ["C"])
+    XCTAssertEqual(history(session), ["user: A", "assistant: Answer A", "user: C"])
+  }
+
+  // MARK: Leaving while the answer is out
+
+  func testReopeningWhileTheAnswerWaitsAndTryingAgainResendsOnce() async throws {
+    let (app, old, session) = try await openStored("retry-reopen", seed: [
+      ("user", "A"), ("assistant", "Answer A"), ("user", "B"), ("assistant", "Answer B"),
+    ])
+    app.chatAppeared(old)
+    fixture.holdNextMutateAnswer()
+    let original = Task { await old.retry() }
+    let committed = await eventually { self.fixture.mutateRequests.count == 1 }
+    XCTAssertTrue(committed)
+    XCTAssertEqual(history(session), ["user: A", "assistant: Answer A"], "the rewind landed, its answer is held")
+
+    app.chatDisappeared(old)
+    let reopened = ChatModel(app: app, profile: "preview", storedID: session, row: nil, live: nil)
+    await reopened.open()
+    app.chatAppeared(reopened)
+    XCTAssertFalse(reopened.isBusy)
+    await reopened.retry()
+    XCTAssertEqual(fixture.submitted.map(\.text), ["B"], "the reopened copy finished the Try again")
+
+    fixture.release()
+    await original.value
+    try? await Task.sleep(for: .milliseconds(300))
+    let mutations = fixture.mutateRequests
+    XCTAssertEqual(Set(mutations.map(\.requestID)).count, 1, "one rewind, sent again")
+    XCTAssertEqual(fixture.submitted.map(\.text), ["B"], "the held answer does not send it a second time")
+    XCTAssertEqual(history(session), ["user: A", "assistant: Answer A", "user: B"])
+  }
+
+  func testAnAnswerThatComesBackAfterLeavingResendsOnceFromTheCopyOnScreen() async throws {
+    let (app, old, session) = try await openStored("retry-reopen-late", seed: [
+      ("user", "A"), ("assistant", "Answer A"), ("user", "B"), ("assistant", "Answer B"),
+    ])
+    app.chatAppeared(old)
+    fixture.holdNextMutateAnswer()
+    let original = Task { await old.retry() }
+    let committed = await eventually { self.fixture.mutateRequests.count == 1 }
+    XCTAssertTrue(committed)
+
+    app.chatDisappeared(old)
+    let reopened = ChatModel(app: app, profile: "preview", storedID: session, row: nil, live: nil)
+    await reopened.open()
+    app.chatAppeared(reopened)
+
+    fixture.release()
+    await original.value
+    let resent = await eventually { self.fixture.submitted.count == 1 }
+    XCTAssertTrue(resent)
+    XCTAssertEqual(fixture.submitted.map(\.text), ["B"])
+    XCTAssertEqual(history(session), ["user: A", "assistant: Answer A", "user: B"])
+    XCTAssertEqual(reopened.state.items.filter { $0.kind == .user }.map(\.text), ["A", "B"], "it shows where the person is")
+    XCTAssertFalse(reopened.state.items.contains { $0.text == "Answer B" }, "the old answer is gone")
+
+    // Nothing is left to replay: Try again now goes back to B, sent once more.
+    fixture.reply(session, "New answer B")
+    reopened.handle(GatewayEvent(type: "message.complete", sessionID: reopened.liveID ?? session, payload: ["text": "New answer B"]))
+    let settled = await eventually { !reopened.isBusy }
+    XCTAssertTrue(settled)
+    await reopened.retry()
+    let again = await eventually { self.fixture.submitted.count == 2 }
+    XCTAssertTrue(again)
+    XCTAssertEqual(Set(fixture.mutateRequests.map(\.requestID)).count, 2, "a new rewind, not the old one again")
+    XCTAssertEqual(history(session), ["user: A", "assistant: Answer A", "user: B"])
   }
 
   // MARK: Nothing to try again
