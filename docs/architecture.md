@@ -41,6 +41,8 @@ HermesKit (Swift package, no UI)
   SlashCommands   `/command` parsing, the `/` menu's rows, which commands stay on the Mac,
                   and SlashRunner, which turns `slash.exec` / `command.dispatch` answers
                   into a turn, a composer prefill or a notice
+  RetryTurn       Try again: the stored message it goes back to, the words it sends again,
+                  the rewind request kept for an exact retry, and the rewind receipt
   RecentChats     the last three chats opened on the phone, and the app icon's
                   shortcuts made from them (QuickAction)
   UserContent     a user message's words and its `@image:` pictures
@@ -477,6 +479,43 @@ runs the production composer and transcript against canned answers (`--scroll-pr
 production `ChatModel` and `HermesClient` against `GatewayFixture`, a loopback stand-in for the
 gateway: leaving or going to sleep while a command is worked out, and finding a sent command
 again on reload.
+
+## Try again
+
+Long-pressing the newest message from the person, or the reply under it, in an idle chat
+offers Copy and Try again (`RetryTurn.offeredItems`; older messages keep plain text
+selection). Typing `/retry` does the same; it runs on the phone, never through `slash.exec`,
+and is not queued: sent while a reply runs, it says in a toast to wait or stop the reply. It
+follows the desktop app's `/retry`
+(`apps/desktop/src/app/session/hooks/use-prompt-actions/slash-session-commands.ts`):
+
+- **Pick:** `session.resume` without `omit_messages` lists the stored rows with their durable
+  `row_id` and the fences (`revision`, `execution_generation`) they were read at. The target is
+  the newest live user row with no display kind other than `steer`, skipping archived rows,
+  compaction markers and notices Hermes stores as user rows (`userTurnFromEnd`). Its words are
+  read losslessly, text parts only (`retryText`): a picture (`@image:` or image part) or an
+  annotated part says it cannot be sent again; no words says there is nothing to try again.
+- **Never on a stale view:** the target must read as the newest message on screen
+  (`RetryTurn.showsSameTurn`), else another device moved the chat on: nothing is rewound, the
+  chat reloads and says "The chat changed on the Mac meanwhile. Try again." The rewind is
+  `session.mutate` `rewind {target_message_id}` at the snapshot's fences, and a stale fence is
+  not retried at fresh ones (`HermesClient.rewind`, unlike `mutate`): the refusal shows the
+  same words and reloads.
+- **A lost answer:** the request (its id and fences) is kept per conversation until the Mac
+  answers. The next Try again sends that exact request first; the gateway answers an exact
+  retry with the receipt it already wrote, so the turn is resent and nothing older is taken
+  back from the shortened transcript (the desktop app's `replay_only` / `derived_target`).
+  Sending any other message drops the kept request, as the desktop's `prompt.submit` does.
+- **Resend:** the receipt (`rewound_count`, `status: nothing`, `target_message {id, content}`)
+  names the words. The turn comes off the screen, the newest page is read afresh (the held
+  history window named rows that are gone), and the words go out through the normal send
+  path, a skill turn showing its invocation. If that send fails, the words land in the
+  composer.
+
+`RetryTurnTests` (HermesKit) covers picking the turn, reading its words and the receipt;
+`RetryDeliveryTests` (hosted) runs Try again against `GatewayFixture`, which rewinds its stored
+copy as the gateway does (fences, exact retries); `RetryTests` (UI) long-presses the reply and
+the message and sends `/retry` against the offline preview (`--scroll-preview`).
 
 ## Pictures
 

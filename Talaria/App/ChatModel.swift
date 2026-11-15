@@ -212,6 +212,8 @@ final class ChatModel: Identifiable {
   #if DEBUG
   /// `--slash-preview`: the `/` menu and commands answer from canned data, with no Mac.
   @ObservationIgnored private(set) var isSlashPreview = false
+  /// `--scroll-preview`: the offline transcript; Try again plays a canned reply.
+  @ObservationIgnored private(set) var isScrollPreview = false
   #endif
 
   private weak var app: AppModel?
@@ -273,6 +275,7 @@ final class ChatModel: Identifiable {
     let chat = ChatModel(app: app, profile: "preview", storedID: "scroll-preview", row: nil, live: nil)
     chat.state.title = "Scroll preview"
     chat.isSlashPreview = ProcessInfo.processInfo.arguments.contains("--slash-preview")
+    chat.isScrollPreview = true
     // Each launch starts with an empty composer: a draft a test left behind is not restored.
     chat.draft = ""
     // `--empty-chat`: a new chat with nothing sent yet (the particle field behind it).
@@ -1037,6 +1040,12 @@ final class ChatModel: Identifiable {
   /// The composer's send. While a reply runs the message waits in the queue; otherwise it goes now.
   func send() async {
     guard !isReadOnly else { return }
+    // `/retry` runs here, never queued or sent as words: while a reply runs it says to wait.
+    if let command = SlashInvocation(draft), isRetry(command) {
+      draft = ""
+      await retry(command: command)
+      return
+    }
     if continuesAsNewVersion {
       // A command the phone leaves to the Mac is answered here, without making a new version.
       if let command = SlashInvocation(draft), command.name.isEmpty || SlashPolicy.isMacOnly(command.name) {
@@ -1068,7 +1077,11 @@ final class ChatModel: Identifiable {
 
   /// A `/command` runs as a command; anything else starts a turn with these words.
   private func goOut(text: String, picked: [ComposerAttachment], origin: Origin) async {
-    if let command = SlashInvocation(text) {
+    if let command = SlashInvocation(text), isRetry(command) {
+      // Nothing is sent with it: what was picked goes back to the composer.
+      attachments = picked + attachments
+      await retry(command: command)
+    } else if let command = SlashInvocation(text) {
       await startSlash(command, picked: picked, origin: origin).value
     } else {
       await deliver(text: text, picked: picked, origin: origin)
@@ -1094,6 +1107,8 @@ final class ChatModel: Identifiable {
     }
     #endif
     guard let client else { return }
+    // A new turn settles any Try again whose answer was lost: it is never replayed after this.
+    Self.unansweredRewinds[rewindKey] = nil
     var item = TranscriptItem.outgoing(text, shown: display, timestamp: now)
     item.attachments = picked.map { attachment in
       AttachmentChip(
@@ -1507,6 +1522,188 @@ final class ChatModel: Identifiable {
     let body = "[IMPORTANT: The user has invoked the \"\(name)\" skill, indicating they want you to follow its instructions."
       + " The full skill content is loaded below.]\n\n# \(name)\n\nThe whole skill, for the model."
     return ["type": "skill", "name": .string(name), "message": .string(body), "display": .string(invocation)]
+  }
+  #endif
+
+  // MARK: Try again
+
+  /// Rewinds sent whose answer never came back, by conversation (`profile/storedID`). The next
+  /// Try again sends that exact request first, as the desktop app does (`replay_only`): the Mac
+  /// answers it with the receipt it already wrote, so a turn is never taken back twice.
+  private static var unansweredRewinds: [String: RewindRequest] = [:]
+  private var rewindKey: String { "\(profile)/\(storedID)" }
+
+  /// Try again is offered here now: an idle chat this phone drives.
+  var canRetry: Bool {
+    !isBusy && !isReadOnly && !continuesAsNewVersion && !isLoading && !isRunningElsewhere && !isBranching
+  }
+
+  /// The messages the transcript offers Try again on: the newest from the person and the reply
+  /// under it, while the chat is idle.
+  var retryOffers: Set<UUID> {
+    canRetry ? RetryTurn.offeredItems(in: state.items) : []
+  }
+
+  static let retryBusy = "Hermes is still replying. Wait for it to finish or stop it, then try again."
+  static let retryNothing = "Nothing to try again yet."
+  static let retryUnsupported = "That message has pictures or attachments, so it can't be sent again as it was."
+  static let retryUnavailable = "Try again isn't available in this chat."
+  static let retryChanged = "The chat changed on the Mac meanwhile. Try again."
+
+  /// Try again on the newest turn (`/retry`, or the transcript's menu): that message and
+  /// everything after it come off the Mac's copy, then the same words go out as a new turn.
+  /// `command` is the typed `/retry`, under which notices show; from the menu they are toasts.
+  /// Never rewinds from a stale view: when the Mac's newest message is not the one on screen, or
+  /// the chat moves on before the rewind lands, nothing is taken back or sent and the chat
+  /// reloads.
+  func retry(command: SlashInvocation? = nil) async {
+    func say(_ text: String, failure: Bool = false) {
+      if let command {
+        addNotice(text, for: command)
+      } else {
+        app?.show(text, kind: failure ? .failure : .info)
+      }
+    }
+    guard !isReadOnly, !continuesAsNewVersion else { return say(Self.retryUnavailable) }
+    // A toast, not a card: a card added now would land in the middle of the running reply.
+    guard !isBusy, !isRunningElsewhere else {
+      app?.show(Self.retryBusy)
+      return
+    }
+    #if DEBUG
+    if isScrollPreview { return await previewRetry() }
+    #endif
+    guard let client else { return say(HermesError.notConnected.localizedDescription, failure: true) }
+    isSending = true
+    var handedOver = false
+    defer {
+      if !handedOver {
+        isSending = false
+        drainQueue()
+      }
+    }
+    let key = rewindKey
+    do {
+      try await ensureLive()
+      guard let liveID else { throw HermesError.notConnected }
+      var receipt: RewindReceipt?
+      // A rewind whose answer was lost goes first: if it landed, its receipt says what came off.
+      if let unanswered = Self.unansweredRewinds[key] {
+        do {
+          let replayed: RewindReceipt
+          do {
+            replayed = try await client.rewind(unanswered, liveID: liveID, profile: profile)
+          } catch let error as HermesError where error.isSessionGone {
+            // This socket is new since (a reconnect): attach again, then send the same request.
+            self.liveID = nil
+            try await ensureLive()
+            guard let again = self.liveID else { throw HermesError.notConnected }
+            replayed = try await client.rewind(unanswered, liveID: again, profile: profile)
+          }
+          Self.unansweredRewinds[key] = nil
+          if replayed.didRewind { receipt = replayed }
+        } catch where Self.macAnswered(error) {
+          // The Mac answered: that request is settled either way, and nothing came off.
+          Self.unansweredRewinds[key] = nil
+        }
+      }
+      if receipt == nil {
+        let snapshot = try await client.rewindSnapshot(liveID: liveID, profile: profile)
+        if !snapshot.subscriptionID.isEmpty { subscriptionID = snapshot.subscriptionID }
+        switch RetryTurn.pick(from: snapshot.rows) {
+        case .nothing:
+          return say(Self.retryNothing)
+        case .unsupported:
+          return say(Self.retryUnsupported)
+        case .target(let rowID, _):
+          guard let row = snapshot.rows.last(where: RetryTurn.isUserTurn),
+            RetryTurn.showsSameTurn(state.items, as: row)
+          else {
+            // The notice goes after the reload, which shows the Mac's copy in place of this one.
+            await reloadAfterRewind()
+            say(Self.retryChanged, failure: true)
+            return
+          }
+          let request = RewindRequest(targetRowID: rowID, fences: snapshot.fences)
+          Self.unansweredRewinds[key] = request
+          do {
+            receipt = try await client.rewind(request, liveID: liveID, profile: profile)
+            Self.unansweredRewinds[key] = nil
+          } catch where Self.macAnswered(error) {
+            Self.unansweredRewinds[key] = nil
+            throw error
+          }
+        }
+      }
+      guard let receipt, receipt.didRewind else { return say(Self.retryNothing) }
+      guard let text = receipt.retryText, !text.isEmpty else {
+        // Rows came off but there are no words to send: show the chat as it is now.
+        await reloadAfterRewind()
+        say(Self.retryNothing)
+        return
+      }
+      state.items = RetryTurn.cut(state.items, text: text)
+      await reloadAfterRewind()
+      isSending = false
+      handedOver = true
+      // Through the normal send path: if it does not go, the words land in the composer.
+      await deliver(text: text, display: RetryTurn.display(for: text), picked: [], origin: .composer)
+    } catch {
+      let wrapped = error as? HermesError ?? .transport(error.localizedDescription)
+      if wrapped.isStaleFence || Self.lostTarget(wrapped) {
+        await reloadAfterRewind()
+        say(Self.retryChanged, failure: true)
+      } else if case .rpc(_, _, "session_busy") = wrapped {
+        say(Self.retryBusy)
+      } else {
+        say("Couldn't try again: \(wrapped.localizedDescription)", failure: true)
+      }
+    }
+  }
+
+  /// The Mac answered the rewind with a refusal, so nothing came off. Anything else (a dropped
+  /// socket, a timeout) leaves its outcome unknown, and the request is kept for an exact retry.
+  private static func macAnswered(_ error: any Error) -> Bool {
+    if case .rpc = error as? HermesError { return true }
+    return false
+  }
+
+  /// The Mac refused the rewind because the message it named is gone (taken back elsewhere).
+  private static func lostTarget(_ error: HermesError) -> Bool {
+    guard case .rpc(_, let message, let reason) = error, reason == "invalid_params" else { return false }
+    return message.contains("no longer in session history")
+  }
+
+  /// Shows the Mac's copy after a rewind (or a refused one): the newest page, read afresh. The held
+  /// window named rows that are gone, so it starts over rather than being extended.
+  private func reloadAfterRewind() async {
+    setWindow(HistoryWindow())
+    try? await reattach()
+  }
+
+  /// `/retry`, which the phone runs itself (`retry`), never as a slash command on the Mac.
+  private func isRetry(_ command: SlashInvocation) -> Bool { command.name == "retry" }
+
+  #if DEBUG
+  /// Offline: Try again on the preview transcript takes its newest turn off and plays a fresh
+  /// reply through the real event handling.
+  private func previewRetry() async {
+    guard let user = state.items.last(where: { $0.kind == .user && !$0.isLocal }) else {
+      app?.show(Self.retryNothing)
+      return
+    }
+    let text = user.sentText ?? user.text
+    state.items = RetryTurn.cut(state.items, text: text)
+    state.items.append(.user(text, timestamp: now))
+    scrollToEnd += 1
+    state.beginTurn(now: now)
+    let answer = "A fresh answer to the same question, written again from the start, one word at a time,"
+      + " so the reply runs for a few seconds."
+    for word in answer.split(separator: " ") {
+      try? await Task.sleep(for: .milliseconds(300))
+      _ = state.apply(event: "message.delta", payload: ["text": .string(word + " ")], now: now)
+    }
+    _ = state.apply(event: "message.complete", payload: ["text": .string(answer)], now: now)
   }
   #endif
 

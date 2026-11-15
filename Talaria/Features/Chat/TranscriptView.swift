@@ -79,8 +79,9 @@ struct TranscriptView: View {
           if hidden > 0 || chat.hasOlder {
             EarlierRow(isLoading: chat.isLoadingOlder) { loadEarlier() }
           }
+          let offers = chat.retryOffers
           ForEach(shown) { row in
-            rowView(row).id(row.id)
+            rowView(row, offers: offers).id(row.id)
           }
           if let activity = chat.activity {
             WorkingRow(activity: activity, startedAt: chat.turnStartedAt)
@@ -259,13 +260,20 @@ struct TranscriptView: View {
     }
   }
 
+  /// Try again, for the newest message from the person and the reply under it while the chat is
+  /// idle (`ChatModel.retryOffers`); nil elsewhere.
+  private func retryAction(_ item: TranscriptItem, offers: Set<UUID>) -> (() -> Void)? {
+    guard offers.contains(item.id) else { return nil }
+    return { [chat] in Task { await chat.retry() } }
+  }
+
   @ViewBuilder
-  private func rowView(_ row: TranscriptRow) -> some View {
+  private func rowView(_ row: TranscriptRow, offers: Set<UUID>) -> some View {
     switch row {
     case .user(let item):
-      UserBubble(item: item, profile: chat.profile, storedID: chat.storedID)
+      UserBubble(item: item, profile: chat.profile, storedID: chat.storedID, retry: retryAction(item, offers: offers))
     case .answer(let item):
-      AnswerView(item: item)
+      AnswerView(item: item, retry: retryAction(item, offers: offers))
     case .commentary(let item):
       CommentaryView(item: item)
     case .work(let group):
@@ -337,6 +345,7 @@ private struct UserBubble: View {
   let item: TranscriptItem
   let profile: String
   let storedID: String
+  var retry: (() -> Void)? = nil
   @Environment(\.palette) private var palette
 
   var body: some View {
@@ -364,6 +373,7 @@ private struct UserBubble: View {
           .padding(.vertical, 10)
           .background(palette.userBubble, in: RoundedRectangle(cornerRadius: Metrics.bubbleRadius, style: .continuous))
           .opacity(item.isPending ? 0.6 : 1)
+          .retryMenu(text: item.text, retry: retry)
           .accessibilityIdentifier("transcript.user")
       }
       HStack(spacing: 0) {
@@ -428,6 +438,7 @@ struct AttachmentThumbnail: View {
 
 private struct AnswerView: View {
   let item: TranscriptItem
+  var retry: (() -> Void)? = nil
   @Environment(\.palette) private var palette
 
   var body: some View {
@@ -435,6 +446,7 @@ private struct AnswerView: View {
       // MEDIA: lines become file chips under the turn, so the answer does not repeat them as text.
       MarkdownView(text: item.isStreaming ? item.text : FileExtraction.hidingMediaLines(item.text))
         .textSelection(.enabled)
+        .retryMenu(text: item.text, retry: retry)
         .accessibilityIdentifier("transcript.answer")
       if !item.isStreaming {
         HStack(spacing: 0) {
@@ -446,6 +458,31 @@ private struct AnswerView: View {
         .padding(.leading, -8)
       }
     }
+  }
+}
+
+/// Long-pressing the newest message or reply of an idle chat: Copy, and Try again, which takes that
+/// turn off the Mac's copy and sends the same words again. Other messages keep no menu.
+private struct RetryMenu: ViewModifier {
+  let text: String
+  let retry: (() -> Void)?
+
+  func body(content: Content) -> some View {
+    // One view either way, so the message keeps its identity when the offer comes and goes; a
+    // menu with no items does not open.
+    content.contextMenu {
+      if let retry {
+        Button("Copy", systemImage: "square.on.square") { UIPasteboard.general.string = text }
+        Button("Try again", systemImage: "arrow.clockwise", action: retry)
+          .accessibilityIdentifier("transcript.retry")
+      }
+    }
+  }
+}
+
+extension View {
+  fileprivate func retryMenu(text: String, retry: (() -> Void)?) -> some View {
+    modifier(RetryMenu(text: text, retry: retry))
   }
 }
 

@@ -134,8 +134,12 @@ mobile app: Connections, Plugins, MCP).
   plain output is a card only the phone shows. Next: argument menus
   (`/personality <name>`), `@` file references (`complete.path`), and the
   commands the desktop app handles itself.
-- Conversation tools: `session.undo`, `session.compress`, `session.branch`,
-  `session.steer`, `prompt.btw`, `prompt.background`
+- Conversation tools: done: Try again on the newest turn (long-press the last
+  reply or message, or `/retry`): `session.mutate` `rewind` at the snapshot's
+  fences, then the same words through the normal send. Next: `session.undo`,
+  `session.compress`, `session.branch`, `session.steer`, `prompt.btw`,
+  `prompt.background`; editing a message before resending it and retrying an
+  older turn.
 
 ## Then: what only a phone can do
 

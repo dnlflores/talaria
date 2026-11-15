@@ -107,7 +107,7 @@ struct SlashCommandTests {
     for name in ["/skin", "/new", "/model", "/resume", "/title", "/status", "/compress", "/exit", "/voice", "skin"] {
       #expect(SlashPolicy.isMacOnly(name), "\(name)")
     }
-    for name in ["/work", "/usage", "/goal", "/skills", "/undo", "/personality"] {
+    for name in ["/work", "/usage", "/goal", "/skills", "/undo", "/personality", "/retry"] {
       #expect(!SlashPolicy.isMacOnly(name), "\(name)")
     }
   }
