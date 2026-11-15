@@ -548,6 +548,15 @@ public final class HermesClient: Sendable {
       ["session_id": .string(liveID), "name": .string(name), "arg": .string(arg), "profile": .string(profile)], timeout: 60)
   }
 
+  /// Starts a `/btw` question or `/bg` task beside the chat (`prompt.btw`, `prompt.background`):
+  /// the gateway answers at once with its task id, and the answer arrives later on this chat's
+  /// event stream (`btw.complete`, `background.complete`).
+  public func startSide(_ command: SideCommand, liveID: String, profile: String) async throws -> String {
+    let json = try await rpc.call(
+      command.method, ["session_id": .string(liveID), "profile": .string(profile), "text": .string(command.text)], timeout: 30)
+    return json["task_id"].scalarText ?? ""
+  }
+
   // MARK: Model and effort (this conversation only)
 
   public func modelCatalog(liveID: String, profile: String) async throws -> [ModelProvider] {

@@ -120,6 +120,14 @@ T3 Tools.
   or stop it first; a message with pictures says it can't be sent again. If
   another device moved the chat on meanwhile, nothing is resent and the chat
   reloads.
+- **Side questions and background tasks:** `/btw what file were you editing?`
+  asks a quick question from what the chat knows so far, and `/bg <task>`
+  (or `/background`) runs a task in a session of its own. Either one goes out
+  right away, even while a reply runs, without stopping, steering or queueing
+  behind it. A notice shows at once, and the answer arrives as its own card
+  (Markdown, long-press to copy), headed with what you asked; a failure says
+  so in plain words. The cards are only on the phone that asked, for as long
+  as the app runs.
 - **Composer:** a card with the text on top and, under it, attach, the model
   in use with its logo and thinking effort ("GPT-6.1 Sol 900K • High", tap to
   change either), dictation and send. Dictation uses Apple's speech
@@ -309,7 +317,9 @@ screenshots the Live Activity in each phase with no Mac;
 `QuickActionTests` presses the app icon on the home screen and taps its
 shortcuts, with made-up chats and no Mac;
 `SlashCommandTests` opens the `/` menu, picks from it and sends a skill and a
-command against canned answers, with no Mac;
+command against canned answers, with no Mac; `SideQuestionTests` sends `/btw`
+while a reply streams and `/bg` (including a failure), with canned answers and
+no Mac;
 `SlashDeliveryTests` (the `TalariaTests` target, `-only-testing:TalariaTests`)
 runs the app's own chat model against a stand-in gateway on loopback: leaving
 or going to sleep while a command is worked out, and what comes back (words,
@@ -318,6 +328,9 @@ files, queued messages) when the chat opens again, with no Mac;
 `/retry` against the offline preview, and `RetryDeliveryTests` (also
 `TalariaTests`) checks what the stand-in gateway's history holds after Try
 again, with no Mac;
+`SideLifecycleTests` (same target) checks `/btw` and `/bg` answers that land
+after leaving a chat, on read-only and watched reopens, and before their task
+id, with no Mac;
 `NotificationSettingsTests` (`TEST_RUNNER_TALARIA_UITEST_PUSH=1`) allows
 notifications and shows what the Mac said; the push plugin has its own tests
 (`python -m unittest discover -s mac/talaria-push/tests` with Hermes' Python).

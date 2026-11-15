@@ -33,7 +33,7 @@ public struct ChatState: Sendable, Equatable {
     guard isStreaming else { return nil }
     if items.contains(where: { $0.tool?.pendingRequest != nil }) { return .waiting }
     if let name = preparingTool { return .running(ToolCall(callID: "preparing", name: name)) }
-    guard let last = items.last else { return .thinking }
+    guard let last = lastTurnIndex.map({ items[$0] }) else { return .thinking }
     if let tool = last.tool, !tool.isDone { return .running(tool) }
     if last.kind == .assistant, last.isStreaming, !last.text.isEmpty { return .writing }
     return .thinking
@@ -64,12 +64,18 @@ public struct ChatState: Sendable, Equatable {
     case sessionsChanged
     case requestCancelled(String)
     case turnFinished
+    /// A side question or background task answered; the card is on screen now.
+    case sideAnswer(TranscriptItem)
   }
 
   // MARK: Stream helpers
 
+  /// The newest item of the conversation itself. Notices and side answers shown only here can
+  /// land after a reply that is still streaming; they must not end it or split it in two.
+  private var lastTurnIndex: Int? { items.lastIndex { !$0.isLocal } }
+
   private var streamIndex: Int? {
-    guard let last = items.indices.last, items[last].kind == .assistant, items[last].isStreaming else { return nil }
+    guard let last = lastTurnIndex, items[last].kind == .assistant, items[last].isStreaming else { return nil }
     return last
   }
 
@@ -239,7 +245,7 @@ public struct ChatState: Sendable, Equatable {
       // Seals the text before a tool call. It was usually streamed already, and may have been
       // settled by `tool.generating`; the interim text replaces it rather than repeating it.
       let text = payload["text"].stringValue
-      if let index = items.indices.last, items[index].kind == .assistant,
+      if let index = lastTurnIndex, items[index].kind == .assistant,
         items[index].isStreaming || items[index].text == text || payload["already_streamed"].truthy
       {
         if !text.isEmpty { items[index].text = text }
@@ -290,13 +296,17 @@ public struct ChatState: Sendable, Equatable {
         if !text.isEmpty { items[index].text = text }
         items[index].isStreaming = false
         items[index].timestamp = now
-      } else if !text.isEmpty, !(items.last?.kind == .assistant && items.last?.text == text) {
+      } else if !text.isEmpty, !(lastTurnIndex.map { items[$0].kind == .assistant && items[$0].text == text } ?? false) {
         items.append(TranscriptItem(kind: .assistant, text: text, timestamp: now))
       }
       isStreaming = false
       status = ""
       if let model = payload["usage"]["model"].string, !model.isEmpty { info.model = model }
       return [.sessionsChanged, .turnFinished]
+
+    case "btw.complete", "background.complete":
+      guard let task = SideTask(event: type, payload: payload) else { break }
+      return addSideAnswer(task, now: now)
 
     case "session.info":
       info.merge(payload)

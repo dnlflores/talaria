@@ -299,6 +299,8 @@ struct TranscriptView: View {
       } else {
         SystemNote(text: item.text)
       }
+    case .side(let item):
+      SideCard(item: item)
     case .files(let turn):
       TurnFilesView(turn: turn, chat: chat)
     }

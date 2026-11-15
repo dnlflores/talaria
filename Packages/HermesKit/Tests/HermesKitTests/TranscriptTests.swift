@@ -80,6 +80,7 @@ import Testing
       case .question: return "question"
       case .edit(let item): return "edit(\(item.tool?.callID ?? ""))"
       case .system: return "system"
+      case .side: return "side"
       case .files(let turn): return "files(\(turn.files.count))"
       }
     }

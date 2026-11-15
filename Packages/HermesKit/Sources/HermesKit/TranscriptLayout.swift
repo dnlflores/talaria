@@ -85,12 +85,14 @@ public enum TranscriptRow: Identifiable, Sendable, Equatable {
   /// than folded into the work log, like the desktop app's edit cards.
   case edit(TranscriptItem)
   case system(TranscriptItem)
+  /// A `/btw` or `/bg` sent from here (`side.answer` nil), or its answer as its own card.
+  case side(TranscriptItem)
   case files(TurnFiles)
 
   public var id: UUID {
     switch self {
     case .user(let item), .answer(let item), .commentary(let item), .question(let item), .edit(let item),
-      .system(let item):
+      .system(let item), .side(let item):
       return item.id
     case .work(let group): return group.id
     case .files(let files): return files.id
@@ -120,7 +122,15 @@ public enum TranscriptLayout {
     var turnStart: Double?
 
     func flush(isLastTurn: Bool) {
-      defer { turn = [] }
+      // Side questions and tasks asked during a turn show after all of it, as the desktop app
+      // shows them after the reply they were asked beside: a reply still running grows above
+      // them instead of pushing them up between its steps.
+      let sides = turn.filter { $0.kind == .side }
+      turn.removeAll { $0.kind == .side }
+      defer {
+        rows.append(contentsOf: sides.map(TranscriptRow.side))
+        turn = []
+      }
       guard !turn.isEmpty else { return }
       let live = isLastTurn && isStreaming
       let answerIndex = live ? nil : turn.lastIndex { $0.kind == .assistant && !$0.isCommentary && !$0.text.isEmpty }
@@ -137,6 +147,9 @@ public enum TranscriptLayout {
         case .system:
           closeGroup()
           emitted.append(.system(item))
+        case .side:
+          // Taken out above; never reached.
+          break
         case .tool where item.tool?.isClarify == true:
           closeGroup()
           emitted.append(.question(item))

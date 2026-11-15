@@ -109,12 +109,13 @@ public enum SlashMenu {
 /// run it on the Mac rather than sending it anywhere.
 public enum SlashPolicy {
   /// The desktop app's own commands, aliases included; `/skills` runs on the gateway there too,
-  /// and `/undo` is left to the gateway, which answers it with words to edit (`prefill`). `/retry`
-  /// runs on the phone itself (`RetryTurn`), never through `slash.exec`.
+  /// and `/undo` is left to the gateway, which answers it with words to edit (`prefill`). `/btw`
+  /// and `/bg` run on the phone through their own calls (`SideCommand`), not `slash.exec`, and
+  /// `/retry` runs on the phone itself (`RetryTurn`).
   static let desktopOwned: Set<String> = [
     "/new", "/reset", "/clear", "/stop", "/branch", "/fork", "/yolo", "/reasoning", "/wake", "/handoff",
     "/profile", "/skin", "/title", "/help", "/commands", "/browser", "/journey", "/learning", "/memory-graph",
-    "/model", "/resume", "/sessions", "/switch", "/compress", "/compact", "/btw", "/bg", "/background",
+    "/model", "/resume", "/sessions", "/switch", "/compress", "/compact",
     "/steer", "/s", "/queue", "/q", "/pet", "/pets", "/hatch", "/generate-pet", "/rollback",
     "/agents", "/tasks", "/config", "/history", "/save", "/export", "/import", "/timestamps", "/ts",
     "/palette", "/status",

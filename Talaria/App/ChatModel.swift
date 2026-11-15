@@ -449,8 +449,10 @@ final class ChatModel: Identifiable {
   var info: SessionInfo { state.info }
   /// A reply is running or a message is on its way, so what is sent now waits in the queue.
   var isBusy: Bool { state.isStreaming || isSending }
-  /// Sending now would queue the message rather than start a turn.
-  var sendQueues: Bool { isBusy && !continuesAsNewVersion }
+  /// Sending now would queue the message rather than start a turn. `/btw` and `/bg` never queue.
+  var sendQueues: Bool {
+    isBusy && !continuesAsNewVersion && SlashInvocation(draft).flatMap(SideCommand.init) == nil
+  }
   var canSend: Bool {
     guard !isReadOnly, !isBranching else { return false }
     // A photo still being shrunk has no bytes yet; it is ready in a moment.
@@ -514,7 +516,7 @@ final class ChatModel: Identifiable {
       // Bind before receipt/history awaits. Events newer than this snapshot wait until its
       // transcript is adopted, rather than disappearing or being overwritten by that adoption.
       liveID = live.liveID
-      app?.noteLive(live.liveID, storedID: storedID)
+      app?.noteLive(live.liveID, storedID: storedID, profile: profile)
       await refreshQueuedReceipts(client: client, liveID: live.liveID)
       var history = try await newest.value
       if isClosed { return }
@@ -542,6 +544,8 @@ final class ChatModel: Identifiable {
         setWindow(history.window)
         isReadOnly = true
       }
+      // Side answers are never in the Mac's history: they stay on a chat that only reads.
+      restoreHeldSideItems(force: true)
       isLoading = false
     }
   }
@@ -564,7 +568,7 @@ final class ChatModel: Identifiable {
   private func adopt(_ live: LiveSession, history: History) {
     liveID = live.liveID
     subscriptionID = live.subscriptionID
-    app?.noteLive(live.liveID, storedID: storedID)
+    app?.noteLive(live.liveID, storedID: storedID, profile: profile)
     if let pending = live.pending { queueState.onMacList = pending }
     var next = state
     next.info.merge(live.info)
@@ -589,9 +593,23 @@ final class ChatModel: Identifiable {
       fold(newest: page, items: fresh, pageWindow: pageWindow, into: &next, inflight: live.inflight, turnStartedAt: live.turnStartedAt)
     }
     next.applyLiveStatus(isRunning: live.isRunning, startedAt: turnStartedAt, now: now)
+    // Side answers are never in the Mac's history: put back the ones this app holds.
+    next.restoreSideItems(app?.sideItems(profile: profile, storedID: storedID) ?? [])
     state = next
     lastEventAt = Date()
     for request in live.openRequests { app?.deliver(request) }
+  }
+
+  /// Puts the `/btw` and `/bg` notices and answers the app holds for this chat back on screen, or
+  /// their newer copies in place of older ones: after its history is read afresh, and when one
+  /// lands for it elsewhere. Opening does it itself when it adopts the history (`force` is for
+  /// the opening paths that end without adopting).
+  func restoreHeldSideItems(force: Bool = false) {
+    guard !isClosed, force || !isLoading, let held = app?.sideItems(profile: profile, storedID: storedID), !held.isEmpty
+    else { return }
+    var next = state
+    next.restoreSideItems(held)
+    if next != state { state = next }
   }
 
   // MARK: Stored history, a page at a time
@@ -710,12 +728,15 @@ final class ChatModel: Identifiable {
       if isClosed { return }
       state.items = history.items
       setWindow(history.window)
+      restoreHeldSideItems(force: true)
       return
     }
     // Only the newest page: polling a long chat must not read all of it every few seconds.
     guard case .newest(let page, let fresh, let pageWindow) = try await readNewestPage(client: client), !isClosed else { return }
     var next = state
     fold(newest: page, items: fresh, pageWindow: pageWindow, into: &next, inflight: nil, turnStartedAt: nil)
+    // A page that does not line up replaces the transcript, side answers held here included.
+    next.restoreSideItems(app?.sideItems(profile: profile, storedID: storedID) ?? [])
     if next != state { state = next }
   }
 
@@ -965,6 +986,7 @@ final class ChatModel: Identifiable {
       case .sessionsChanged: app?.scheduleReload()
       case .requestCancelled(let id): app?.requestWithdrawn(id)
       case .turnFinished: UINotificationFeedbackGenerator().notificationOccurred(.success)
+      case .sideAnswer(let item): app?.keepSideItem(item, profile: profile, storedID: storedID)
       }
     }
   }
@@ -1044,6 +1066,12 @@ final class ChatModel: Identifiable {
     if let command = SlashInvocation(draft), isRetry(command) {
       draft = ""
       await retry(command: command)
+      return
+    }
+    if let command = SlashInvocation(draft), let side = SideCommand(command) {
+      // Beside the reply: never queued behind it, sent into it, or stopping it. Picked files stay.
+      draft = ""
+      await startSide(side, for: command)
       return
     }
     if continuesAsNewVersion {
@@ -1287,6 +1315,13 @@ final class ChatModel: Identifiable {
   /// the composer; anything else is a notice in the chat that only this phone shows. The command
   /// itself never goes to the model as words.
   private func runSlash(_ command: SlashInvocation, picked: [ComposerAttachment], origin: Origin) async {
+    if let side = SideCommand(command) {
+      // Queued before the phone ran these itself: it runs beside the chat, and the queue moves on.
+      attachments = picked + attachments
+      await startSide(side, for: command)
+      drainQueue()
+      return
+    }
     isSending = true
     let result: SlashResult
     #if DEBUG
@@ -1437,6 +1472,59 @@ final class ChatModel: Identifiable {
     scrollToEnd += 1
   }
 
+  // MARK: Side questions and background tasks
+
+  /// `/btw` and `/bg` run beside the chat (`prompt.btw`, `prompt.background`), never through
+  /// `slash.exec`: the slash worker prints their answer after its capture window, so it would
+  /// never arrive. A notice shows at once; the answer lands later on this chat's events as its own
+  /// card (`ChatState.addSideAnswer`). Both are held by the app (`AppModel.keepSideItem`), so a
+  /// chat left and opened again still shows them.
+  private func startSide(_ side: SideCommand, for command: SlashInvocation) async {
+    guard !side.text.isEmpty else {
+      addNotice(side.usage, for: command)
+      return
+    }
+    guard !continuesAsNewVersion else {
+      addNotice("This chat runs somewhere else, so \(side.name) can't run beside it from here.", for: command)
+      return
+    }
+    let notice = TranscriptItem.sideNotice(side, timestamp: now)
+    state.items.append(notice)
+    app?.keepSideItem(notice, profile: profile, storedID: storedID)
+    scrollToEnd += 1
+    let taskID: String
+    do {
+      #if DEBUG
+      if isSlashPreview {
+        taskID = previewSide(side)
+      } else {
+        taskID = try await startSideOnMac(side)
+      }
+      #else
+      taskID = try await startSideOnMac(side)
+      #endif
+    } catch {
+      state.items.removeAll { $0.id == notice.id }
+      app?.dropSideItem(notice.id, profile: profile, storedID: storedID)
+      addNotice("Could not start \(side.name): \(error.localizedDescription)", for: command)
+      return
+    }
+    // The answer can land before the task id does: it then takes this notice's words too.
+    var next = state
+    next.items.noteSideStarted(noticeID: notice.id, taskID: taskID, prompt: side.text)
+    if next != state { state = next }
+    app?.sideStarted(noticeID: notice.id, taskID: taskID, prompt: side.text, profile: profile, storedID: storedID, by: self)
+  }
+
+  /// The task id the gateway gave it.
+  private func startSideOnMac(_ side: SideCommand) async throws -> String {
+    let profile = profile
+    let answer = try await onLive { client, liveID in
+      .string(try await client.startSide(side, liveID: liveID, profile: profile))
+    }
+    return answer.stringValue
+  }
+
   /// The composer's text changed: show, narrow or hide the `/` menu.
   private func slashDraftChanged() {
     let query = SlashMenu.query(in: draft)
@@ -1492,6 +1580,8 @@ final class ChatModel: Identifiable {
       ["text": "review", "display": "/review", "meta": "⚡ Review a pull request", "kind": "skill"],
       ["text": "usage", "display": "/usage", "meta": "Show token usage and cost for this session", "kind": "command"],
       ["text": "goal", "display": "/goal", "meta": "Set a standing goal for this chat", "kind": "command"],
+      ["text": "btw", "display": "/btw", "meta": "Ask a quick side question without interrupting", "kind": "command"],
+      ["text": "background", "display": "/background", "meta": "Run a task in the background", "kind": "command"],
       ["text": "personality", "display": "/personality", "meta": "Set a personality overlay", "kind": "command"],
       ["text": "skin", "display": "/skin", "meta": "Switch the desktop theme", "kind": "command"],
     ],
@@ -1522,6 +1612,30 @@ final class ChatModel: Identifiable {
     let body = "[IMPORTANT: The user has invoked the \"\(name)\" skill, indicating they want you to follow its instructions."
       + " The full skill content is loaded below.]\n\n# \(name)\n\nThe whole skill, for the model."
     return ["type": "skill", "name": .string(name), "message": .string(body), "display": .string(invocation)]
+  }
+
+  /// A side question or task in the preview: its answer lands after a moment through the real
+  /// event handling, delivered twice the way a reconnect can, and shows once. A task starting
+  /// with "fail" fails.
+  private func previewSide(_ side: SideCommand) -> String {
+    let taskID = "\(side.kind == .btw ? "btw" : "bg")_\(UUID().uuidString.prefix(6).lowercased())"
+    let failed = side.text.lowercased().hasPrefix("fail")
+    let text = failed
+      ? "error: The model provider refused the request (rate limited)."
+      : side.kind == .btw
+        ? "You were editing **Greeting.swift**:\n\n- added the `excited` flag\n- left `Strings.swift` alone"
+        : "Done. Tidied **3 notes** and pushed them."
+    var payload: [String: JSONValue] = ["task_id": .string(taskID), "text": .string(text)]
+    if side.kind == .btw { payload["question"] = .string(side.text) }
+    let event = GatewayEvent(
+      type: side.kind == .btw ? "btw.complete" : "background.complete", sessionID: "", payload: .object(payload))
+    let delay = Double(ProcessInfo.processInfo.environment["TALARIA_SIDE_PREVIEW_DELAY"] ?? "") ?? 1.5
+    Task { [weak self] in
+      try? await Task.sleep(for: .seconds(delay))
+      self?.handle(event)
+      self?.handle(event)
+    }
+    return taskID
   }
   #endif
 

@@ -43,6 +43,8 @@ HermesKit (Swift package, no UI)
                   into a turn, a composer prefill or a notice
   RetryTurn       Try again: the stored message it goes back to, the words it sends again,
                   the rewind request kept for an exact retry, and the rewind receipt
+  SideAgents      `/btw` and `/bg`: the command, its `*.complete` answer, and the cards
+                  (one per task id) that only this device shows
   RecentChats     the last three chats opened on the phone, and the app icon's
                   shortcuts made from them (QuickAction)
   UserContent     a user message's words and its `@image:` pictures
@@ -469,7 +471,8 @@ words:
   front. "Send now" cannot put a command into the running reply, so it stops the reply and
   runs the command next; handing the queue to the Mac stops at a command, which waits for the
   phone, and waits for a command that already left the queue until its turn has been taken,
-  so nothing queued after it reaches the Mac first.
+  so nothing queued after it reaches the Mac first. `/btw` and `/bg` are the exception: they
+  never queue (below).
 
 `SlashCommandTests` (HermesKit) covers parsing, every directive, plain output, errors, the
 rule that no answer turns the typed command into a message, and matching a sent skill or
@@ -480,6 +483,47 @@ production `ChatModel` and `HermesClient` against `GatewayFixture`, a loopback s
 gateway: leaving or going to sleep while a command is worked out, and finding a sent command
 again on reload.
 
+### Side questions and background tasks
+
+`/btw <question>` and `/bg <task>` (alias `/background`) run beside the chat, the desktop
+app's way (`slash.ts` handlers, `gateway-event/status.ts`). They never go through `slash.exec`,
+whose slash worker prints their answer after its capture window, so it would never arrive.
+
+- **Sending:** the composer sends them at once, running or idle: not queued, not redirected
+  into the reply, not stopping it (`ChatModel.startSide`; the send button says Send). A bare
+  `/btw` or `/bg` shows the usage line as a notice and sends nothing. Otherwise a `.side`
+  notice ("Asking on the side" / "Running in the background") goes in the transcript and
+  `prompt.btw` / `prompt.background {session_id, profile, text}` runs against the live session
+  (`onLive`, so a socket the gateway no longer knows in the chat re-attaches once). The answer
+  `{task_id}` is written onto the notice. The gateway starts the side agent before it replies,
+  so the answer can land first: the task id then also gives that card the notice's words as its
+  heading, on screen and in the app's held copy (`noteSideStarted`, `AppModel.sideStarted`).
+  An error removes the notice and says why.
+- **The answer** arrives on the chat's own event stream as `btw.complete {task_id, question,
+  text}` or `background.complete {task_id, text}`, `text` starting `error: ` when it failed.
+  `ChatState` adds it as a `.side` card once per task id (a second delivery adds nothing);
+  `background.complete` takes its task from the notice with the same id. Failures show as a
+  failed card with the words after `error:`.
+- **Placement:** notices and cards are local items (`isLocal`), so the stream helpers skip
+  them: a reply still streaming keeps writing into its own message rather than starting a
+  second one after the card. The layout shows a turn's side rows after all of its other rows,
+  so a running reply grows above them.
+- **Keeping them:** the Mac never stores side answers; only an app attached when one lands
+  can show it. `AppModel` holds each chat's notices and cards while the app runs
+  (`keepSideItem`). A chat left while its reply runs stays followed, so an answer for it that
+  no open chat takes is held by the app's event pump (`keepSideAnswer`, by the live id's stored
+  id and bot). Every history read puts them back by time (`ChatState.restoreSideItems`): live
+  adoption, the read-only fallback when resume fails, and watched chats (first read and each
+  poll), so leaving and reopening a chat still shows them.
+
+`SideAgentTests` (HermesKit) covers the policy change, parsing both payloads (with and without
+`question`, errors), one card per task id, the task taken from the notice, a reply streaming
+on around a card, restoring held items, and either order of answer and task id. The hosted
+`SideLifecycleTests` drive the real `AppModel` pump against `GatewayFixture`: an answer after
+leaving a running chat, read-only and watched reopens, and both orders of answer and task id.
+The UI test `SideQuestionTests` runs the production
+composer and transcript with `--slash-preview`, which plays each answer back through
+`ChatModel.handle` twice; with `--live-turns` it sends `/btw` mid-reply.
 ## Try again
 
 Long-pressing the newest message from the person, or the reply under it, in an idle chat

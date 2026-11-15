@@ -19,6 +19,7 @@ import Testing
       case .question: return "question"
       case .edit: return "edit"
       case .system: return "system"
+      case .side: return "side"
       case .files: return "files"
       }
     }
