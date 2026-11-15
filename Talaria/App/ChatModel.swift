@@ -34,7 +34,20 @@ final class ChatQueueState {
     let sent: TranscriptItem
   }
 
-  var prompts = PromptQueue<ComposerAttachment>()
+  var prompts = PromptQueue<ComposerAttachment>(device: ChatQueueState.deviceKind)
+  /// The Mac's queue for this chat as the gateway last listed it: every device's messages.
+  var onMacList: [QueuedOnMac] = []
+  /// Messages this app handed to the Mac that it is taking back (Edit, Remove, Send now). The
+  /// cancellation that brings one back is ours, not a Stop: it must not hold the queue.
+  var takingBack: Set<UUID> = []
+  /// Other devices' queued messages with an Edit, Remove or Send now on its way to the Mac.
+  var actingOn: Set<String> = []
+  /// This app's messages handed to the running reply from the Mac's queue (Send now), by
+  /// admission, with the bubble shown for each. Until the reply takes one in it can bounce back
+  /// to the queue (the reply ended or was stopped first); then it is tracked again.
+  @ObservationIgnored var steered: [String: (entry: PromptQueue<ComposerAttachment>.Entry, shown: UUID?)] = [:]
+  /// Of those, the ones a Stop came after: if one bounces back it must not run.
+  @ObservationIgnored var stoppedSteers: Set<String> = []
   @ObservationIgnored var handoff: Task<Void, Never>?
   @ObservationIgnored var recovery: Task<Void, Never>?
   @ObservationIgnored var cancellation: Task<Void, Never>?
@@ -49,6 +62,12 @@ final class ChatQueueState {
   /// One rendered prompt per admission, retained so a fresh history read can claim each
   /// matching stored row once instead of letting later equal-text admissions reuse it.
   @ObservationIgnored var renderedAdmissions: [(id: String, sent: TranscriptItem)] = []
+
+  /// Written into every queued message's submission id, so any app reading the Mac's queue can
+  /// tell which device it came from. An unfolded iPhone Duo is still an iPhone.
+  static var deviceKind: String {
+    UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
+  }
 }
 
 /// One open conversation: its transcript, its live session on the Mac, and the composer.
@@ -107,6 +126,64 @@ final class ChatModel: Identifiable {
   private(set) var queue: PromptQueue<ComposerAttachment> {
     get { queueState.prompts }
     set { queueState.prompts = newValue }
+  }
+
+  /// Messages waiting in the Mac's queue that this app is not tracking: sent from another
+  /// device or app (or from this one before it restarted). Shown with where they came from.
+  var othersOnMac: [QueuedOnMac] {
+    let mine = Set(queue.entries.map(\.submissionID) + queue.onMac.map(\.submissionID)
+      + queueState.pendingAdmissions.values.map(\.submissionID) + queueState.steered.values.map(\.entry.submissionID))
+    let admitted = Set(queueState.receipts.values.compactMap { $0["admission_id"].string } + queueState.steered.keys)
+    return queueState.onMacList.filter { $0.isWaiting && !mine.contains($0.inputID) && !admitted.contains($0.admissionID) }
+  }
+
+  /// Something queued to show above the composer, from this device or any other.
+  var hasQueue: Bool { queue.isShowing || !othersOnMac.isEmpty }
+
+  /// This device's kind, as other devices' queues name it.
+  var deviceKind: String { queue.device ?? ChatQueueState.deviceKind }
+
+  /// What the Mac lets anyone do with one of this app's handed-over messages.
+  func macRow(for entry: PromptQueue<ComposerAttachment>.Entry) -> QueuedOnMac? {
+    guard let admissionID = queueState.receipts[entry.id]?["admission_id"].string else { return nil }
+    return queueState.onMacList.first { $0.admissionID == admissionID }
+  }
+
+  func isTakingBack(_ id: UUID) -> Bool { queueState.takingBack.contains(id) }
+  func isActing(on row: QueuedOnMac) -> Bool { queueState.actingOn.contains(row.admissionID) }
+  #if DEBUG
+  var queueStateForTests: ChatQueueState { queueState }
+  #endif
+
+  /// One message waiting on the Mac, as the queue panel lists it.
+  enum MacQueueRow: Identifiable {
+    /// Handed over by this app; still tracked here with its photos and files.
+    case mine(PromptQueue<ComposerAttachment>.Entry)
+    /// Sent from another device or app.
+    case other(QueuedOnMac)
+
+    var id: String {
+      switch self {
+      case .mine(let entry): entry.id.uuidString
+      case .other(let row): row.admissionID
+      }
+    }
+  }
+
+  /// Everything waiting on the Mac, in the order it will run there.
+  var macQueue: [MacQueueRow] {
+    let rank = Dictionary(queueState.onMacList.enumerated().map { ($1.admissionID, $0) }, uniquingKeysWith: min)
+    let steering = Set(queueState.onMacList.filter(\.isSteering).map(\.admissionID))
+    let mine = queue.onMac.filter {
+      // Being handed to the reply by another device: on its way, not waiting.
+      !steering.contains(queueState.receipts[$0.id]?["admission_id"].string ?? "")
+    }.map { entry -> (Int, MacQueueRow) in
+      // Not listed yet: handed over before anything the list shows.
+      let admissionID = queueState.receipts[entry.id]?["admission_id"].string ?? ""
+      return (rank[admissionID] ?? -1, .mine(entry))
+    }
+    let others = othersOnMac.map { (rank[$0.admissionID] ?? Int.max, MacQueueRow.other($0)) }
+    return (mine + others).enumerated().sorted { ($0.element.0, $0.offset) < ($1.element.0, $1.offset) }.map(\.element.1)
   }
 
   private weak var app: AppModel?
@@ -448,6 +525,7 @@ final class ChatModel: Identifiable {
     liveID = live.liveID
     subscriptionID = live.subscriptionID
     app?.noteLive(live.liveID, storedID: storedID)
+    if let pending = live.pending { queueState.onMacList = pending }
     var next = state
     next.info.merge(live.info)
     if next.title.isEmpty { next.title = next.info.title }
@@ -807,6 +885,11 @@ final class ChatModel: Identifiable {
       return
     }
     lastEventAt = Date()
+    // The gateway lists the whole queue again whenever it changes.
+    if event.type == "session.info", let pending = QueuedOnMac.list(event.payload["pending"]) {
+      queueState.onMacList = pending
+      reconcileSteered()
+    }
     var next = state
     // Cancelling a waiting admission publishes message.complete, but does not finish the
     // unrelated execution currently streaming in this conversation.
@@ -814,7 +897,8 @@ final class ChatModel: Identifiable {
        event.payload["status"].string != "interrupted", let admissionID = event.admissionID {
       // A queued cancellation owns no execution. It can come from any viewer, even when
       // this phone never held its receipt. Executed interruptions carry status=interrupted.
-      if let entry = queue.onMac.first(where: { queueState.receipts[$0.id]?["admission_id"].string == admissionID }) {
+      if let entry = queue.onMac.first(where: { queueState.receipts[$0.id]?["admission_id"].string == admissionID }),
+         !queueState.takingBack.contains(entry.id) {
         queueState.receipts[entry.id] = ["admission_id": .string(admissionID), "status": "terminal", "outcome": "cancelled"]
         if queueState.cancellation == nil { settleHandedOffQueue(in: &next.items) }
       }
@@ -827,7 +911,7 @@ final class ChatModel: Identifiable {
       startHandedOffPrompt(admissionID, in: &next.items)
     }
     if event.type == "message.complete", let admissionID = event.admissionID,
-       (["completed", "failed"].contains(event.payload["outcome"].stringValue) || event.payload["status"].string == "interrupted") {
+       (["completed", "failed", "steered"].contains(event.payload["outcome"].stringValue) || event.payload["status"].string == "interrupted") {
       // A terminal event is also proof of execution when the matching start was missed.
       startHandedOffPrompt(admissionID, in: &next.items)
     }
@@ -1065,6 +1149,7 @@ final class ChatModel: Identifiable {
 
   /// Stop the reply. Whatever is queued waits until sent by hand or resumed: stopping means stop.
   func stop() async {
+    queueState.stoppedSteers.formUnion(queueState.steered.keys)
     queueState.cancelRequested.formUnion(queue.onMac.map(\.id))
     queueState.cancelRequested.formUnion(queueState.pendingAdmissions.keys)
     queue.pause()
@@ -1128,7 +1213,7 @@ final class ChatModel: Identifiable {
   /// Receipts, not matching words or an arbitrary next turn, decide which entries left the queue.
   private func settleHandedOffQueue(in items: inout [TranscriptItem]) {
     var cancelled: [PromptQueue<ComposerAttachment>.Entry] = []
-    for entry in queue.onMac {
+    for entry in queue.onMac where !queueState.takingBack.contains(entry.id) {
       guard let receipt = queueState.receipts[entry.id], let admissionID = receipt["admission_id"].string else { continue }
       switch receipt["status"].stringValue {
       case "started":
@@ -1140,7 +1225,7 @@ final class ChatModel: Identifiable {
           queueState.receipts[entry.id] = nil
           queueState.sentItems[entry.id] = nil
           queueState.cancelRequested.remove(entry.id)
-        } else if ["completed", "failed", "interrupted"].contains(receipt["outcome"].stringValue) {
+        } else if ["completed", "failed", "interrupted", "steered"].contains(receipt["outcome"].stringValue) {
           startHandedOffPrompt(admissionID, in: &items)
         }
       default:
@@ -1264,6 +1349,177 @@ final class ChatModel: Identifiable {
   func deleteQueued(_ id: UUID) {
     guard queue.entries.contains(where: { $0.id == id && !$0.isDelivering && !$0.isAwaitingReceipt }) else { return }
     queue.remove(id)
+  }
+
+  // MARK: Messages waiting on the Mac
+
+  /// Edit on a message this app handed to the Mac: it leaves the Mac's queue and comes back into
+  /// the composer.
+  func editOnMac(_ id: UUID) async {
+    if await takeBack(id) != nil { editQueued(id) }
+  }
+
+  func removeOnMac(_ id: UUID) async {
+    if await takeBack(id) != nil { queue.remove(id) }
+  }
+
+  /// Send now on a message this app handed to the Mac. Words go into the running reply straight
+  /// from the Mac's queue (`prompt.steer_queued`); a message with photos, or one the reply cannot
+  /// take, comes back here and goes the way a local Send now does.
+  func sendNowOnMac(_ id: UUID) async {
+    guard let entry = queue.onMac.first(where: { $0.id == id }), !queueState.takingBack.contains(id) else { return }
+    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    if isBusy, state.isStreaming, entry.attachments.isEmpty, !entry.text.isEmpty, macRow(for: entry)?.canSteer != false,
+       let admissionID = queueState.receipts[id]?["admission_id"].string {
+      queueState.takingBack.insert(id)
+      do {
+        try await ensureLive()
+        guard let client, let liveID else { throw HermesError.notConnected }
+        _ = try await client.steerQueued(liveID: liveID, profile: profile, admissionID: admissionID)
+        queueState.takingBack.remove(id)
+        queue.removeOnMac(id)
+        queueState.receipts[id] = nil
+        queueState.sentItems[id] = nil
+        queueState.cancelRequested.remove(id)
+        queueState.steered[admissionID] = (entry, showCorrection(entry.text))
+        return
+      } catch {
+        queueState.takingBack.remove(id)
+        let wrapped = error as? HermesError ?? .transport(error.localizedDescription)
+        if wrapped.isConnectionLoss || wrapped == .notConnected {
+          app?.show("Not sent: \(wrapped.localizedDescription)", kind: .failure)
+          return
+        }
+        // Refused (the reply cannot take messages in, or it just ended): send it another way.
+      }
+    }
+    if await takeBack(id) != nil { await sendNow(id) }
+  }
+
+  /// Send now on another device's message in the Mac's queue: the running reply takes it in.
+  func sendNowFromMac(_ row: QueuedOnMac) async {
+    guard row.canSteer, isBusy, !queueState.actingOn.contains(row.admissionID) else { return }
+    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    queueState.actingOn.insert(row.admissionID)
+    defer { queueState.actingOn.remove(row.admissionID) }
+    do {
+      try await ensureLive()
+      guard let client, let liveID else { throw HermesError.notConnected }
+      _ = try await client.steerQueued(liveID: liveID, profile: profile, admissionID: row.admissionID)
+      showCorrection(row.text)
+    } catch {
+      app?.show("Your Mac could not hand it to the reply. It stays queued.", kind: .failure)
+    }
+  }
+
+  /// Edit on another device's message: it leaves the Mac's queue and its words come into this
+  /// composer, to go from here.
+  func editFromMac(_ row: QueuedOnMac) async {
+    guard row.canSteer, !queueState.actingOn.contains(row.admissionID) else { return }
+    // The words come over first: if the Mac cancels it but the answer is lost, they are not.
+    let before = draft
+    let current = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    draft = [row.text, current].filter { !$0.isEmpty }.joined(separator: "\n\n")
+    if await withdraw(row) == .stillQueuedOrSent { draft = before }
+  }
+
+  func removeFromMac(_ row: QueuedOnMac) async {
+    _ = await withdraw(row)
+  }
+
+  private enum Withdrawal { case cancelled, stillQueuedOrSent, unknown }
+
+  @discardableResult
+  private func showCorrection(_ text: String) -> UUID? {
+    var next = state
+    next.insertCorrection(text, now: now)
+    let shown = next.items.last?.id
+    state = next
+    hasSpoken = true
+    scrollToEnd += 1
+    return shown
+  }
+
+  /// A message this app sent now from the Mac's queue goes back to waiting there when the reply
+  /// never took it in. Track it again, and take back the bubble that said it was sent. After a
+  /// Stop it must not run: cancel it, and it comes back here held.
+  private func reconcileSteered() {
+    for (admissionID, steered) in queueState.steered {
+      let row = queueState.onMacList.first { $0.admissionID == admissionID }
+      guard let row else {
+        // Taken in, or settled: nothing more to follow.
+        queueState.steered[admissionID] = nil
+        queueState.stoppedSteers.remove(admissionID)
+        continue
+      }
+      guard row.isWaiting else { continue }
+      queueState.steered[admissionID] = nil
+      if let shown = steered.shown { state.items.removeAll { $0.id == shown } }
+      queue.restoreOnMac(steered.entry)
+      queueState.receipts[steered.entry.id] = ["admission_id": .string(admissionID), "status": "queued"]
+      if queueState.stoppedSteers.remove(admissionID) != nil {
+        queueState.cancelRequested.insert(steered.entry.id)
+        queue.pause()
+        Task { await cancelStoppedAdmissions() }
+      }
+    }
+  }
+
+  /// Cancels one message still waiting in the Mac's queue. Checks first that it is still
+  /// waiting: `prompt.cancel` on one that started would stop that reply.
+  private func cancelWaiting(admissionID: String) async throws -> Bool {
+    try await ensureLive()
+    guard let client, let liveID else { throw HermesError.notConnected }
+    let before = try await client.receipt(liveID: liveID, profile: profile, admissionID: admissionID)
+    guard before["status"].string == "queued" else { return false }
+    try await client.cancelAdmission(liveID: liveID, profile: profile, admissionID: admissionID)
+    let after = try await client.receipt(liveID: liveID, profile: profile, admissionID: admissionID)
+    return after["status"].string == "terminal" && after["outcome"].string == "cancelled"
+  }
+
+  private func withdraw(_ row: QueuedOnMac) async -> Withdrawal {
+    guard !queueState.actingOn.contains(row.admissionID) else { return .stillQueuedOrSent }
+    queueState.actingOn.insert(row.admissionID)
+    defer { queueState.actingOn.remove(row.admissionID) }
+    do {
+      if try await cancelWaiting(admissionID: row.admissionID) {
+        queueState.onMacList.removeAll { $0.admissionID == row.admissionID }
+        return .cancelled
+      }
+      app?.show("It already went out.")
+      return .stillQueuedOrSent
+    } catch {
+      app?.show("Could not confirm with your Mac. Check the queue before sending.", kind: .failure)
+      return .unknown
+    }
+  }
+
+  /// Takes one of this app's messages back out of the Mac's queue, keeping its photos and files.
+  /// Nil when it already went out (then it shows in the conversation as usual).
+  private func takeBack(_ id: UUID) async -> PromptQueue<ComposerAttachment>.Entry? {
+    guard queue.onMac.contains(where: { $0.id == id }), !queueState.takingBack.contains(id),
+          let admissionID = queueState.receipts[id]?["admission_id"].string else { return nil }
+    queueState.takingBack.insert(id)
+    defer { queueState.takingBack.remove(id) }
+    do {
+      if try await cancelWaiting(admissionID: admissionID) {
+        queueState.receipts[id] = nil
+        queueState.sentItems[id] = nil
+        queueState.cancelRequested.remove(id)
+        queueState.onMacList.removeAll { $0.admissionID == admissionID }
+        return queue.takeBackFromMac(id)
+      }
+      if let client, let liveID,
+         let receipt = try? await client.receipt(liveID: liveID, profile: profile, admissionID: admissionID) {
+        queueState.receipts[id] = receipt
+      }
+      queueState.takingBack.remove(id)
+      settleHandedOffQueue(in: &state.items)
+      app?.show("It already went out.")
+    } catch {
+      app?.show("Could not reach your Mac. The message is still queued there.", kind: .failure)
+    }
+    return nil
   }
 
   func resumeQueue() {

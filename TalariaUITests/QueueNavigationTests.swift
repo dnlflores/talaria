@@ -98,4 +98,64 @@ final class QueueNavigationTests: XCTestCase {
     XCTAssertTrue(answer.waitForExistence(timeout: 10))
     try shoot("queue-follow-up-delivered-once")
   }
+
+  func testQueueNamesWhereEachMessageCameFromAndHandedOverOnesCanBeEdited() async throws {
+    try await post("/__control", [
+      "open_gate": true, "gateway_running": true, "active_status": "starting", "fresh_heartbeat": true,
+      "others": [
+        ["text": "Queued from the iPad", "submission_id": "talaria.ipad.0f0e4c8a-7e5b-4bb8-a0b6-2a1c3d4e5f60"],
+        ["text": "Queued from the desktop app", "submission_id": "8a1f2b3c-4d5e-4f60-8a7b-9c0d1e2f3a4b"],
+      ],
+    ])
+    app = XCUIApplication()
+    app.launchEnvironment["TALARIA_SERVER"] = base
+    app.launchEnvironment["TALARIA_SIGNIN_FILE"] = "/fixture/no-signin.json"
+    app.launchEnvironment["TALARIA_REMEMBER_SIGNIN_FILE"] = "0"
+    app.launchEnvironment["TALARIA_OPEN_CHAT"] = "selected/fixture"
+    if UIDevice.current.userInterfaceIdiom == .pad { XCUIDevice.shared.orientation = .landscapeLeft }
+    app.launch()
+    defer {
+      app.terminate()
+      XCUIDevice.shared.orientation = .portrait
+    }
+    let device = UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
+    let others = app.descendants(matching: .any).matching(identifier: "queue.other")
+    XCTAssertTrue(others.firstMatch.waitForExistence(timeout: 20), "other devices' queued messages are not shown")
+    XCTAssertTrue(others.matching(NSPredicate(format: "label CONTAINS 'from iPad'")).firstMatch.exists)
+    XCTAssertTrue(others.matching(NSPredicate(format: "label CONTAINS 'from Hermes desktop'")).firstMatch.exists)
+
+    let input = app.textViews["composer.input"].firstMatch
+    XCTAssertTrue(input.waitForExistence(timeout: 20))
+    input.tap()
+    input.typeText("Edit me when I come back")
+    app.buttons["Queue"].tap()
+    XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "queue.row").firstMatch.waitForExistence(timeout: 5))
+
+    if app.buttons["area.agents"].exists {
+      app.openAgents()
+      app.openChats()
+    } else {
+      let back = app.navigationBars.buttons["BackButton"]
+      if back.exists { back.tap() } else { app.navigationBars.buttons.element(boundBy: 0).tap() }
+    }
+    let row = app.buttons.matching(NSPredicate(format: "identifier == 'session.row' AND label CONTAINS 'Queue navigation fixture'")).firstMatch
+    XCTAssertTrue(row.waitForExistence(timeout: 10))
+    row.tap()
+
+    let mine = app.descendants(matching: .any).matching(identifier: "queue.onMac").firstMatch
+    XCTAssertTrue(mine.waitForExistence(timeout: 10), "queued follow-up disappeared after navigation")
+    XCTAssertTrue(mine.label.contains("from This \(device)"), "the handed-over message does not say it came from this \(device)")
+    XCTAssertEqual(others.count, 2)
+    try shoot("queue-origins")
+
+    mine.tap()
+    XCTAssertTrue(mine.waitForNonExistence(timeout: 10), "Edit did not take the message back")
+    let typed = app.textViews["composer.input"].firstMatch
+    XCTAssertTrue(((typed.value as? String) ?? "").contains("Edit me when I come back"), "the words did not come back to the composer")
+    XCTAssertEqual(others.count, 2, "taking ours back must leave other devices' messages alone")
+    let calls = try await metrics()
+    XCTAssertEqual(calls.filter { $0["method"] as? String == "prompt.cancel" }.count, 1)
+    XCTAssertEqual(calls.filter { $0["method"] as? String == "session.interrupt" }.count, 0, "editing must not stop the reply")
+    try shoot("queue-origins-edited")
+  }
 }

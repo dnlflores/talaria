@@ -388,6 +388,36 @@ on the phone (`PromptQueue`, HermesKit, unit-tested):
   buffers newer events until adoption; replay retains the running admission ID,
   and a matching terminal completion can settle a missed start. Unknown receipt
   states/outcomes remain visible without being automatically resubmitted.
+- Every device and app adds to one queue per chat on the Mac, and the gateway
+  records nothing about who sent a row: a `pending` row (in the resume snapshot
+  and in every `session.info` that changes the queue) carries only its sender's
+  chosen `input_id`. So Talaria writes its device into the submission id,
+  `talaria.<iphone|ipad>.<uuid>` (`QueueOrigin`, kept on renewal), and reads the
+  origin back from every row: bare UUID = Hermes desktop, 32-digit hex =
+  terminal, anything else = another app. The panel shows this device's
+  handed-over entries ("This iPhone · in your Mac's queue") and other devices'
+  rows in the Mac's FIFO order. Rows Talaria tracks itself are matched by
+  submission or admission id, so its own row never shows twice.
+- Any row on the Mac can be changed, removed or sent now from the phone. Edit
+  and Remove read `prompt.receipt` first and call `prompt.cancel` only while it
+  is still `queued` (cancel on a started admission stops that reply), then this
+  device's entry comes back with its attachments (`takeBackFromMac`, which does
+  not pause the queue; `takingBack` keeps the cancel's own `message.complete`
+  from treating it as a Stop). Send now uses `prompt.steer_queued` for rows
+  offering the `steer` control (text only); a row with photos comes back and
+  goes the local Send now way. Another device's row with photos offers Remove
+  only.
+- A steer is a transfer, not delivery: until the reply takes the text in, the
+  Mac can put it back in its queue (the reply ended or was stopped first).
+  Talaria keeps each of its sent-now entries (`steered`) until the `pending`
+  list stops naming it; one that comes back waiting is tracked again and its
+  bubble removed, and after a Stop it is cancelled and returns held. A row
+  this device handed over that another device sends now hides while it is
+  `steering` and settles on the `steered` outcome like a started turn.
+- Known limits: the receipt check before `prompt.cancel` narrows but does not
+  close the window in which the admission starts and the cancel stops it. A
+  handed-over entry that another device cancels comes back here held (paused,
+  visible), the same as any cancellation this device did not ask for.
 
 ## Pictures
 

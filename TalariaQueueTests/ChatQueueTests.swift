@@ -398,6 +398,7 @@ final class ChatQueueTests: XCTestCase {
       await chat.send()
     }
     let ids = chat.queue.entries.map(\.id)
+    let submissionIDs = chat.queue.entries.map(\.submissionID)
     await chat.handOffQueue()
     XCTAssertTrue(chat.queue.entries.isEmpty)
     await chat.stop()
@@ -407,7 +408,7 @@ final class ChatQueueTests: XCTestCase {
     let recorded = try await calls()
     let cancels = recorded.filter { $0["method"].string == "prompt.cancel" }
     XCTAssertEqual(cancels.count, 2)
-    XCTAssertEqual(cancels.map { $0["params"]["admission_id"].stringValue }, ids.map { "admitted-" + $0.uuidString.lowercased() })
+    XCTAssertEqual(cancels.map { $0["params"]["admission_id"].stringValue }, submissionIDs.map { "admitted-" + $0 })
     app.chatDisappeared(chat)
     let reopened = await openChat()
     XCTAssertEqual(reopened.queue.entries.map(\.id), ids)
@@ -616,6 +617,7 @@ final class ChatQueueTests: XCTestCase {
     chat.attachments.append(ComposerAttachment(kind: .image, name: "example.jpg", data: Data([1, 2]), status: .ready))
     await chat.send()
     let id = try XCTUnwrap(chat.queue.entries.first?.id)
+    let submissionID = try XCTUnwrap(chat.queue.entries.first?.submissionID)
     await chat.handOffQueue()
     XCTAssertTrue(chat.queue.isPaused, "uncertain admission must be held, not offered to the ordinary drain")
     app.chatDisappeared(chat)
@@ -632,7 +634,7 @@ final class ChatQueueTests: XCTestCase {
     let submissions = recorded.filter { $0["method"].string == "prompt.submit" }
     XCTAssertEqual(submissions.count, 2)
     XCTAssertEqual(submissions.first?["params"], submissions.last?["params"], "recovery must replay the exact original payload and ID")
-    XCTAssertEqual(submissions.last?["params"]["submission_id"].string, id.uuidString.lowercased())
+    XCTAssertEqual(submissions.last?["params"]["submission_id"].string, submissionID)
     XCTAssertEqual(recorded.filter { $0["method"].string == "fixture.committed" }.count, 1, "lost ACK must not create a second admission")
     XCTAssertEqual(recorded.filter { $0["method"].string == "file.attach" }.count, 1)
     XCTAssertEqual(recorded.filter { $0["method"].string == "image.attach_bytes" }.count, 1)
@@ -684,6 +686,7 @@ final class ChatQueueTests: XCTestCase {
     chat.draft = "Hold until receipt recovery"
     await chat.send()
     let id = try XCTUnwrap(chat.queue.entries.first?.id)
+    let submissionID = try XCTUnwrap(chat.queue.entries.first?.submissionID)
     await chat.handOffQueue()
     XCTAssertTrue(chat.queue.entries.first?.isAwaitingReceipt ?? false)
     XCTAssertFalse(chat.queue.entries.first?.isDelivering ?? true, "unconfirmed is a held state, not an endless active send")
@@ -707,7 +710,7 @@ final class ChatQueueTests: XCTestCase {
     let recorded = try await calls()
     let submissions = recorded.filter { $0["method"].string == "prompt.submit" }
     XCTAssertGreaterThan(submissions.count, 1, "recovery must actually retry the original admission")
-    XCTAssertEqual(Set(submissions.map { $0["params"]["submission_id"].stringValue }), [id.uuidString.lowercased()])
+    XCTAssertEqual(Set(submissions.map { $0["params"]["submission_id"].stringValue }), [submissionID])
     XCTAssertTrue(submissions.allSatisfy { $0["params"] == submissions.first?["params"] })
     XCTAssertEqual(recorded.filter { $0["method"].string == "fixture.committed" }.count, 1)
     XCTAssertFalse(recorded.contains { $0["method"].string == "session.redirect" })
@@ -891,5 +894,150 @@ final class ChatQueueTests: XCTestCase {
     let submissions = try await calls().filter { $0["method"].string == "prompt.submit" }
     XCTAssertEqual(submissions.count, 1)
     app.chatDisappeared(reopened)
+  }
+
+  // MARK: Where queued messages came from
+
+  /// Leaves the chat with one follow-up queued, so it goes to the Mac, and opens it again.
+  private func handOverAndReopen(_ text: String, photo: Bool = false) async throws -> (ChatModel, UUID) {
+    // An open gate lets the app reach Ready, which starts the event pump these tests drive.
+    try await configure(["open_gate": true])
+    try await app.connect(to: base)
+    let chat = await openChat()
+    chat.draft = text
+    if photo {
+      chat.attachments.append(ComposerAttachment(kind: .image, name: "example.jpg", data: Data([1, 2]), status: .ready))
+    }
+    await chat.send()
+    let entryID = try XCTUnwrap(chat.queue.entries.first?.id)
+    app.chatDisappeared(chat)
+    try await waitUntil("handoff was acknowledged") { chat.queue.onMac.count == 1 }
+    let reopened = await openChat()
+    XCTAssertEqual(reopened.queue.onMac.map(\.id), [entryID])
+    return (reopened, entryID)
+  }
+
+  func testQueuedMessagesNameTheDeviceTheyCameFrom() async throws {
+    let (chat, _) = try await handOverAndReopen("Tagged with this phone")
+    let recordedCalls = try await calls()
+    let submission = try XCTUnwrap(recordedCalls.first { $0["method"].string == "prompt.submit" })
+    let submissionID = submission["params"]["submission_id"].stringValue
+    XCTAssertEqual(QueueOrigin(inputID: submissionID), .talaria(device: ChatQueueState.deviceKind))
+    // The Mac's list holds this phone's own message; it is shown once, as this phone's.
+    try await waitUntil("the Mac's queue list arrived") { chat.queueStateForTests.onMacList.count == 1 }
+    XCTAssertTrue(chat.othersOnMac.isEmpty, "this phone's own message showed twice")
+    XCTAssertEqual(chat.macQueue.count, 1)
+    app.chatDisappeared(chat)
+  }
+
+  func testHandedOverFollowUpCanBeEditedAfterReopening() async throws {
+    let (chat, entryID) = try await handOverAndReopen("Change me after coming back", photo: true)
+    await chat.editOnMac(entryID)
+    XCTAssertTrue(chat.queue.onMac.isEmpty)
+    XCTAssertTrue(chat.queue.entries.isEmpty)
+    XCTAssertEqual(chat.draft, "Change me after coming back")
+    XCTAssertEqual(chat.attachments.count, 1, "the photo must come back with the words")
+    XCTAssertFalse(chat.queue.isPaused, "taking one message back is not a Stop")
+    let recorded = try await calls()
+    XCTAssertEqual(recorded.filter { $0["method"].string == "prompt.cancel" }.count, 1)
+    XCTAssertTrue(chat.isStreaming, "taking a queued message back must not stop the running reply")
+    app.chatDisappeared(chat)
+  }
+
+  func testHandedOverFollowUpCanBeRemovedAfterReopening() async throws {
+    let (chat, entryID) = try await handOverAndReopen("Remove me after coming back")
+    await chat.removeOnMac(entryID)
+    XCTAssertFalse(chat.hasQueue)
+    XCTAssertTrue(chat.draft.isEmpty)
+    app.chatDisappeared(chat)
+  }
+
+  func testHandedOverFollowUpSendNowGoesIntoTheRunningReply() async throws {
+    let (chat, entryID) = try await handOverAndReopen("Take this in now")
+    try await emit("message.start", admissionID: "original-turn")
+    try await emit("message.delta", admissionID: "original-turn", payload: ["text": "Still working"])
+    try await waitUntil("the reply is streaming") { chat.state.items.contains { $0.text == "Still working" } }
+    await chat.sendNowOnMac(entryID)
+    XCTAssertTrue(chat.queue.onMac.isEmpty)
+    XCTAssertEqual(chat.state.items.filter { $0.text == "Take this in now" }.count, 1)
+    let recorded = try await calls()
+    let steers = recorded.filter { $0["method"].string == "prompt.steer_queued" }
+    XCTAssertEqual(steers.count, 1)
+    XCTAssertEqual(recorded.filter { $0["method"].string == "prompt.cancel" }.count, 0)
+    XCTAssertEqual(recorded.filter { $0["method"].string == "prompt.submit" }.count, 1, "Send now must not submit it again")
+    app.chatDisappeared(chat)
+  }
+
+  func testSendNowThatBouncesBackAfterStopDoesNotRun() async throws {
+    let (chat, entryID) = try await handOverAndReopen("Sent now, then stopped")
+    try await emit("message.start", admissionID: "original-turn")
+    try await emit("message.delta", admissionID: "original-turn", payload: ["text": "Busy"])
+    try await waitUntil("the reply is streaming") { chat.state.items.contains { $0.text == "Busy" } }
+    await chat.sendNowOnMac(entryID)
+    XCTAssertEqual(chat.state.items.filter { $0.text == "Sent now, then stopped" }.count, 1)
+    let steerCalls = try await calls()
+    let admissionID = try XCTUnwrap(steerCalls.first { $0["method"].string == "prompt.steer_queued" }?["params"]["admission_id"].string)
+    await chat.stop()
+    // The reply never took it in: the Mac puts it back in its queue.
+    var request = URLRequest(url: URL(string: base + "/__requeue")!)
+    request.httpMethod = "POST"
+    request.httpBody = JSONValue.object(["admission_id": .string(admissionID)]).data()
+    _ = try await URLSession.shared.data(for: request)
+    try await waitUntil("it came back here, held") { chat.queue.entries.map(\.id) == [entryID] }
+    XCTAssertTrue(chat.queue.isPaused, "after Stop it must not go out on its own")
+    XCTAssertTrue(chat.queue.onMac.isEmpty)
+    XCTAssertEqual(chat.state.items.filter { $0.text == "Sent now, then stopped" }.count, 0, "the sent bubble stayed for a message that was not sent")
+    let cancels = try await calls().filter { $0["method"].string == "prompt.cancel" }
+    XCTAssertEqual(cancels.map { $0["params"]["admission_id"].stringValue }, [admissionID])
+    app.chatDisappeared(chat)
+  }
+
+  func testAnotherDeviceSendingOurMessageNowClearsItHere() async throws {
+    let (chat, entryID) = try await handOverAndReopen("Sent now from the desktop")
+    let committed = try await calls()
+    let admissionID = try XCTUnwrap(committed.first { $0["method"].string == "fixture.committed" }?["admission_id"].string)
+    let client = try XCTUnwrap(app.client)
+    _ = try await client.rpc.call("prompt.steer_queued", ["session_id": "fixture", "profile": "selected", "admission_id": .string(admissionID)])
+    try await waitUntil("its row is on its way, not waiting") { chat.macQueue.isEmpty }
+    try await emit("message.complete", admissionID: admissionID, payload: ["outcome": "steered"])
+    try await waitUntil("it left the queue") { chat.queue.onMac.isEmpty }
+    XCTAssertFalse(chat.queue.entries.contains { $0.id == entryID }, "a message another device sent came back here")
+    XCTAssertEqual(chat.state.items.filter { $0.text == "Sent now from the desktop" }.count, 1)
+    app.chatDisappeared(chat)
+  }
+
+  func testOtherDevicesQueuedMessagesShowWithWhereTheyCameFrom() async throws {
+    try await control([
+      "gateway_running": true, "open_gate": true,
+      "others": [
+        ["text": "From the iPad", "submission_id": "talaria.ipad.0f0e4c8a-7e5b-4bb8-a0b6-2a1c3d4e5f60"],
+        ["text": "From the desktop", "submission_id": "8a1f2b3c-4d5e-4f60-8a7b-9c0d1e2f3a4b"],
+        ["text": "", "submission_id": "1b2c3d4e-5f60-4a7b-8c9d-0e1f2a3b4c5d", "attachments": [["path": "/fixture/p.jpg"]]],
+      ],
+    ])
+    try await app.connect(to: base)
+    let chat = await openChat()
+    let others = chat.othersOnMac
+    XCTAssertEqual(others.map(\.origin.label), ["iPad", "Hermes desktop", "Hermes desktop"])
+    XCTAssertTrue(chat.hasQueue)
+    XCTAssertTrue(others[0].canSteer)
+    XCTAssertFalse(others[2].canSteer, "a message with photos cannot be edited or steered, only removed")
+
+    await chat.editFromMac(others[0])
+    XCTAssertEqual(chat.draft, "From the iPad")
+    await chat.removeFromMac(others[2])
+    try await waitUntil("the Mac's list caught up") { chat.othersOnMac.map(\.text) == ["From the desktop"] }
+
+    try await emit("message.start", admissionID: "original-turn")
+    try await emit("message.delta", admissionID: "original-turn", payload: ["text": "Working"])
+    try await waitUntil("the reply is streaming") { chat.state.items.contains { $0.text == "Working" } }
+    await chat.sendNowFromMac(chat.othersOnMac[0])
+    try await waitUntil("the desktop's message left the queue") { chat.othersOnMac.isEmpty }
+    XCTAssertEqual(chat.state.items.filter { $0.text == "From the desktop" }.count, 1)
+    let recorded = try await calls()
+    XCTAssertEqual(recorded.filter { $0["method"].string == "prompt.cancel" }.count, 2)
+    XCTAssertEqual(recorded.filter { $0["method"].string == "prompt.steer_queued" }.count, 1)
+    XCTAssertTrue(chat.isStreaming)
+    app.chatDisappeared(chat)
   }
 }

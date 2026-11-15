@@ -20,7 +20,7 @@ struct ComposerView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
-      if chat.queue.isShowing {
+      if chat.hasQueue {
         QueuePanel(chat: chat)
           .transition(.move(edge: .bottom).combined(with: .opacity))
       }
@@ -76,7 +76,7 @@ struct ComposerView: View {
     .padding(.horizontal, 12)
     .padding(.top, 6)
     .padding(.bottom, 8)
-    .animation(.snappy(duration: 0.25), value: chat.queue.entries.map(\.id) + chat.queue.onMac.map(\.id))
+    .animation(.snappy(duration: 0.25), value: chat.queue.entries.map(\.id.uuidString) + chat.macQueue.map(\.id))
     .photosPicker(isPresented: $showsPhotos, selection: $photoItems, maxSelectionCount: 6, matching: .images)
     .onChange(of: photoItems) { _, items in
       guard !items.isEmpty else { return }

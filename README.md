@@ -63,7 +63,10 @@ T3 Tools.
   and the agent answers it right away. Tap a queued message to edit it; Stop
   pauses the queue. Leaving and reopening a chat preserves its queue, order and
   attachments. If the phone sleeps or the chat closes first, waiting messages
-  are handed to the Mac and remain visible until their own turns start.
+  are handed to the Mac and remain visible until their own turns start; they
+  can still be edited, removed or sent now from there. Messages queued from
+  another device or app (the iPad, Hermes desktop, a terminal) show in the same
+  queue, each named by where it came from.
 - **Pictures:** pictures sent in a chat show as pictures, from any app (the
   desktop app, a terminal, the phone), and so do pictures a reply delivers or
   names by path. Tap one to see it full screen and share it.

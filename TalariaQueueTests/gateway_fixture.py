@@ -14,6 +14,7 @@ next_socket = 0
 stored_tail = []
 admissions = {}
 receipts = {}
+steering = set()
 active_admission = 'original-turn'
 active_generation = 1
 
@@ -25,6 +26,37 @@ def receipt_for(admission):
     if status is not None:
         receipt.update(status=status, outcome=config.get('receipt_outcome', 'completed'))
     return dict(receipt)
+
+
+def pending_rows():
+    """The Mac's queue as the gateway lists it: every viewer's waiting admissions."""
+    rows = []
+    for admission, receipt in receipts.items():
+        if receipt['status'] != 'queued' and admission not in steering:
+            continue
+        params = admissions[admission]
+        controls = [] if params.get('attachments') else ['steer', 'replace']
+        rows.append({'admission_id': admission, 'input_id': params.get('submission_id', ''),
+                     'text': params.get('text', ''), 'status': receipt['status'], 'controls': controls,
+                     'steering': admission in steering, 'sequence': receipt['sequence']})
+    return sorted(rows, key=lambda row: row['sequence'])
+
+
+async def publish_pending(session_id='fixture'):
+    await publish({'jsonrpc': '2.0', 'method': 'event', 'params': {
+        'type': 'session.info', 'session_id': session_id, 'authority_epoch': 1,
+        'payload': {'stored_session_id': session_id, 'pending': pending_rows(),
+                    'running': bool(config.get('gateway_running'))}}})
+
+
+def add_admission(params, profile='selected'):
+    admission = 'admitted-' + params.get('submission_id', '')
+    admissions[admission] = params
+    receipts[admission] = {
+        'admission_id': admission, 'ref': {'profile_id': profile, 'session_id': params.get('session_id', 'fixture')},
+        'sequence': len(admissions), 'status': 'queued', 'outcome': None,
+        'authority_epoch': 1, 'execution_generation': None}
+    return admission
 
 
 async def publish(frame):
@@ -39,9 +71,20 @@ def log(method, **fields):
     print(json.dumps(entry), flush=True)
 
 
+async def requeue(request):
+    """A steered admission the reply never took in goes back to waiting in the queue."""
+    admission = (await request.json())['admission_id']
+    steering.discard(admission)
+    receipts[admission].update(status='queued', outcome=None, execution_generation=None)
+    log('fixture.requeued', admission_id=admission)
+    await publish_pending()
+    return web.json_response({})
+
+
 async def control(request):
     global config, calls, started, resumed, stored_tail, admissions, receipts, active_admission, active_generation
     config = await request.json()
+    steering.clear()
     calls = []
     resumed = False
     stored_tail = []
@@ -50,6 +93,10 @@ async def control(request):
     active_admission = 'original-turn'
     active_generation = 1
     started = time.monotonic()
+    # Other devices' messages already waiting in the Mac's queue.
+    for other in config.get('others', []):
+        add_admission({'session_id': 'fixture', 'text': other['text'], 'submission_id': other['submission_id'],
+                       **({'attachments': other['attachments']} if other.get('attachments') else {})})
     return web.json_response({})
 
 
@@ -79,11 +126,15 @@ async def emit(request):
             config['gateway_running'] = True
             if admission in receipts:
                 receipts[admission].update(status='started', outcome=None, execution_generation=active_generation)
+                await publish_pending()
         elif event.get('type') == 'message.complete':
             if admission in receipts:
                 payload = event.get('payload', {})
                 outcome = 'interrupted' if payload.get('status') == 'interrupted' else payload.get('outcome', 'completed')
                 receipts[admission].update(status='terminal', outcome=outcome)
+                if admission in steering:
+                    steering.discard(admission)
+                    await publish_pending()
             if admission == active_admission:
                 config['gateway_running'] = False
         payload = event.get('payload', {})
@@ -140,12 +191,9 @@ async def websocket(request):
                 await ws.send_json({'jsonrpc':'2.0','id':frame['id'],'error':{'code':-32000,'message':'admission_conflict','data':{'reason':'admission_conflict'}}})
                 return
             if admission not in admissions:
-                admissions[admission] = params
-                receipts[admission] = {
-                    'admission_id': admission, 'ref': {'profile_id': profile, 'session_id': params['session_id']},
-                    'sequence': len(admissions), 'status': 'queued', 'outcome': None,
-                    'authority_epoch': 1, 'execution_generation': None}
+                add_admission(params, profile)
                 log('fixture.committed', admission_id=admission)
+                await publish_pending(params['session_id'])
             if config.get('submit_commit_disconnect'):
                 await ws.close()
                 return
@@ -181,7 +229,19 @@ async def websocket(request):
                     'type': 'message.complete', 'session_id': params['session_id'],
                     'authority_epoch': 1, 'admission_id': admission,
                     'payload': {'text': '', 'content': '', 'admission_id': admission, 'outcome': 'cancelled'}}})
+                await publish_pending(params['session_id'])
             log('fixture.cancelled', admission_id=admission, receipt=result)
+        elif method == 'prompt.steer_queued':
+            admission = params['admission_id']
+            if config.get('steer_error') or not config.get('gateway_running'):
+                reason = 'session_idle' if not config.get('gateway_running') else 'steer_unavailable'
+                await ws.send_json({'jsonrpc': '2.0', 'id': frame['id'], 'error': {'code': -32000, 'message': reason, 'data': {'reason': reason}}})
+                return
+            receipts[admission].update(status='started', outcome=None, execution_generation=active_generation)
+            steering.add(admission)
+            log('fixture.steered', admission_id=admission)
+            await publish_pending(params['session_id'])
+            result = dict(receipts[admission])
         elif method == 'session.interrupt':
             # Interrupt is execution-scoped: queued admissions remain runnable until cancelled.
             config['gateway_running'] = False
@@ -203,6 +263,7 @@ async def websocket(request):
             result = {'session_id':'fixture','subscription_id':'fixture-sub','running':config.get('gateway_running',False),'messages':[],'info':{}}
             result.update(authority_epoch=1, execution_generation=active_generation)
             result['prompts'] = config.get('prompts', [])
+            result['pending'] = pending_rows()
             if config.get('replay_events'):
                 result.update(replay_epoch='fixture-epoch', execution_generation=1)
             if config.get('emit_on_resume'):
@@ -275,6 +336,7 @@ app.router.add_post('/__configure',configure)
 app.router.add_get('/__metrics',metrics)
 app.router.add_post('/__emit',emit)
 app.router.add_post('/__disconnect',disconnect)
+app.router.add_post('/__requeue',requeue)
 app.router.add_get('/api/ws',websocket)
 app.router.add_route('*','/{path:.*}',http)
 if __name__ == '__main__':

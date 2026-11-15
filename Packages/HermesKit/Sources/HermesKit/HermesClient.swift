@@ -17,6 +17,9 @@ public struct LiveSession: Sendable {
   public let turnStartedAt: Double?
   /// This socket's attachment to the chat; `HermesClient.detach` ends it.
   public let subscriptionID: String
+  /// Messages waiting in the Mac's queue for this chat, from any device; nil from a gateway
+  /// that does not list them.
+  public let pending: [QueuedOnMac]?
 
   init(json: JSONValue, fallbackStoredID: String = "", inflight: JSONValue? = nil) {
     liveID = json["session_id"].string ?? fallbackStoredID
@@ -28,6 +31,7 @@ public struct LiveSession: Sendable {
     isRunning = json["running"].truthy || ["working", "streaming", "waiting"].contains(status)
     turnStartedAt = json["turn_started_at"].double
     subscriptionID = json["subscription_id"].stringValue
+    pending = QueuedOnMac.list(json["pending"])
     let liveID = self.liveID
     // Questions still waiting: the gateway's own requests (sudo, secret) and the chat's prompts.
     let requests = (json["open_requests"].array ?? []).compactMap { item -> ServerRequest? in
@@ -379,6 +383,16 @@ public final class HermesClient: Sendable {
   /// Cancels this exact waiting admission, not the unrelated turn currently running.
   public func cancelAdmission(liveID: String, profile: String, admissionID: String) async throws {
     _ = try await rpc.call("prompt.cancel", [
+      "session_id": .string(liveID), "profile": .string(profile), "admission_id": .string(admissionID),
+    ], timeout: 15)
+  }
+
+  /// Hands a message waiting in the Mac's queue to the running reply, which takes it in after
+  /// the step it is on (`prompt.steer_queued`). Works on any device's text-only message. Refused
+  /// (`steer_unavailable`, `session_idle`, `admission_started`, `unsupported_control`) leaves it
+  /// queued.
+  public func steerQueued(liveID: String, profile: String, admissionID: String) async throws -> JSONValue {
+    try await rpc.call("prompt.steer_queued", [
       "session_id": .string(liveID), "profile": .string(profile), "admission_id": .string(admissionID),
     ], timeout: 15)
   }

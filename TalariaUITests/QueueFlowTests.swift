@@ -70,6 +70,32 @@ final class QueueFlowTests: XCTestCase {
     app.descendants(matching: .any).matching(identifier: "queue.row")
   }
 
+  /// Back into the chat this test made, from the inbox. Its row by the title it was renamed to;
+  /// the gateway's own title can replace that, and then the bot's group row, whose lead chat is
+  /// the newest one (keep other chats with this bot quiet while the live tests run).
+  private func reopenChat(marker: String) {
+    let titled = app.buttons.matching(NSPredicate(format: "identifier == 'session.row' AND label CONTAINS %@", marker)).firstMatch
+    let row = titled.waitForExistence(timeout: 10) ? titled : app.buttons.matching(
+      NSPredicate(format: "identifier == 'session.row' AND label BEGINSWITH %@", "\(bot), ")).firstMatch
+    XCTAssertTrue(row.waitForExistence(timeout: 20))
+    row.tap()
+  }
+
+  /// Renames the open chat, so the test can find it again in the inbox.
+  private func rename(to title: String) {
+    app.buttons["More"].firstMatch.tap()
+    app.buttons["Rename"].firstMatch.tap()
+    let alert = app.alerts["Rename chat"]
+    XCTAssertTrue(alert.waitForExistence(timeout: 5))
+    let field = alert.textFields.firstMatch
+    field.tap()
+    if let value = field.value as? String {
+      field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: value.count))
+    }
+    field.typeText(title)
+    alert.buttons["Rename"].tap()
+  }
+
   func testQueuedMessagesWaitAndSendNowJoinsTheReply() throws {
     XCTAssertTrue(app.waitForHome(), "home did not load")
     app.startNewChat(with: bot)
@@ -212,12 +238,7 @@ final class QueueFlowTests: XCTestCase {
       let back = app.navigationBars.buttons["BackButton"]
       if back.exists { back.tap() } else { app.navigationBars.buttons.element(boundBy: 0).tap() }
     }
-    // The gateway's own title can replace the rename, so also accept the bot's group row, whose
-    // lead chat is the one this test just made.
-    let row = app.buttons.matching(NSPredicate(
-      format: "identifier == 'session.row' AND (label CONTAINS %@ OR label BEGINSWITH %@)", marker, "\(bot), ")).firstMatch
-    XCTAssertTrue(row.waitForExistence(timeout: 20))
-    row.tap()
+    reopenChat(marker: marker)
     let handedOff = app.descendants(matching: .any).matching(identifier: "queue.onMac").firstMatch
     XCTAssertTrue(handedOff.waitForExistence(timeout: 15), "follow-up disappeared after leaving the chat")
     XCTAssertTrue(handedOff.label.contains("PAPAYA"))
@@ -227,6 +248,45 @@ final class QueueFlowTests: XCTestCase {
     XCTAssertTrue(handedOff.waitForNonExistence(timeout: 10))
     XCTAssertEqual(userMessage(containing: "PAPAYA").count, 1)
     shoot("navigation-live-delivered")
+    app.buttons["More"].firstMatch.tap()
+    app.buttons["Archive"].firstMatch.tap()
+  }
+
+  /// After leaving and coming back, this phone's message in the Mac's queue says where it came
+  /// from and still takes Send now: the running reply takes it in from the Mac's queue.
+  func testHandedOverFollowUpSendNowJoinsTheReply() throws {
+    XCTAssertTrue(app.waitForHome(), "home did not load")
+    app.startNewChat(with: bot)
+    let marker = "queue-steer-\(UUID().uuidString.prefix(8))"
+    type("Disposable UI regression test \(marker). Run this terminal command, wait for its result, then reply ORIGINAL: sleep 45; printf original", then: "Send")
+    let running = app.descendants(matching: .any).matching(
+      NSPredicate(format: "identifier == 'transcript.working' AND label CONTAINS 'Running a command'")).firstMatch
+    XCTAssertTrue(running.waitForExistence(timeout: 90))
+    rename(to: marker)
+    type("Also reply with exactly GUAVA.", then: "Queue")
+    XCTAssertTrue(queueRows.firstMatch.waitForExistence(timeout: 5))
+    if app.buttons["area.agents"].exists {
+      app.openAgents()
+      app.openChats()
+    } else {
+      let back = app.navigationBars.buttons["BackButton"]
+      if back.exists { back.tap() } else { app.navigationBars.buttons.element(boundBy: 0).tap() }
+    }
+    reopenChat(marker: marker)
+    let handedOff = app.descendants(matching: .any).matching(identifier: "queue.onMac").firstMatch
+    XCTAssertTrue(handedOff.waitForExistence(timeout: 15), "follow-up disappeared after leaving the chat")
+    let device = UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
+    XCTAssertTrue(handedOff.label.contains("from This \(device)"), "it does not say it came from this \(device)")
+    shoot("steer-live-reopened")
+    let sendNow = app.descendants(matching: .any).matching(identifier: "queue.onMac.row").buttons["queue.sendNow"]
+    XCTAssertTrue(sendNow.waitForExistence(timeout: 5), "no Send now on the handed-over message")
+    sendNow.tap()
+    XCTAssertTrue(handedOff.waitForNonExistence(timeout: 15), "Send now did not take it out of the queue")
+    XCTAssertTrue(userMessage(containing: "GUAVA").firstMatch.waitForExistence(timeout: 20), "the sent message is not in the transcript")
+    shoot("steer-live-sent")
+    XCTAssertTrue(answer(containing: "GUAVA").waitForExistence(timeout: 150), "the reply did not answer it")
+    XCTAssertEqual(userMessage(containing: "GUAVA").count, 1, "the message shows twice")
+    shoot("steer-live-answered")
     app.buttons["More"].firstMatch.tap()
     app.buttons["Archive"].firstMatch.tap()
   }

@@ -6,21 +6,26 @@ import SwiftUI
 /// Each one goes out as the next turn when the reply ends. "Send now" puts it into the running
 /// reply instead, so the agent takes it in and answers it right away. Tapping the words takes the
 /// message back into the composer to change it.
+///
+/// The Mac keeps one queue per chat that every device adds to, so the panel shows that queue
+/// too: this app's messages it handed over, and any other device's or app's, each named by
+/// where it came from. All of them can be sent now, changed or removed from here.
 struct QueuePanel: View {
   let chat: ChatModel
   @Environment(\.palette) private var palette
 
   var body: some View {
     let entries = chat.queue.entries
-    let onMac = chat.queue.onMac
+    let onMac = chat.macQueue
+    let count = entries.count + onMac.count
     VStack(alignment: .leading, spacing: 0) {
-      header(count: entries.count + onMac.count)
+      header(count: count)
       Hairline()
-      if entries.count + onMac.count > 3 {
+      if count > 3 {
         ScrollView {
           rows(entries, onMac: onMac)
         }
-        .frame(maxHeight: 196)
+        .frame(maxHeight: 220)
       } else {
         rows(entries, onMac: onMac)
       }
@@ -65,12 +70,15 @@ struct QueuePanel: View {
     .frame(minHeight: 34)
   }
 
-  private func rows(_ entries: [PromptQueue<ComposerAttachment>.Entry], onMac: [PromptQueue<ComposerAttachment>.Entry]) -> some View {
+  private func rows(_ entries: [PromptQueue<ComposerAttachment>.Entry], onMac: [ChatModel.MacQueueRow]) -> some View {
     VStack(spacing: 0) {
-      // Handed to the Mac first, so they run first.
-      ForEach(Array(onMac.enumerated()), id: \.element.id) { offset, entry in
+      // Already in the Mac's queue, so they run first.
+      ForEach(Array(onMac.enumerated()), id: \.element.id) { offset, row in
         if offset > 0 { Hairline().padding(.leading, 14) }
-        OnMacRow(entry: entry)
+        switch row {
+        case .mine(let entry): OnMacRow(chat: chat, entry: entry)
+        case .other(let queued): OtherDeviceRow(chat: chat, row: queued)
+        }
       }
       ForEach(Array(entries.enumerated()), id: \.element.id) { offset, entry in
         if offset > 0 || !onMac.isEmpty { Hairline().padding(.leading, 14) }
@@ -80,70 +88,76 @@ struct QueuePanel: View {
   }
 }
 
-/// A message the Mac holds in its own queue (handed over when the phone went to sleep). It runs
-/// after the reply; nothing to do here but wait.
-private struct OnMacRow: View {
-  let entry: PromptQueue<ComposerAttachment>.Entry
+// MARK: Rows
+
+/// Where a queued message came from: "This iPhone", "iPad", "Hermes desktop".
+private struct OriginLabel: View {
+  let title: String
+  let symbol: String
+  var onMac = false
   @Environment(\.palette) private var palette
 
   var body: some View {
-    HStack(spacing: 8) {
-      Text(entry.text.isEmpty ? "Attachments" : entry.text)
-        .font(AppFont.footnote)
-        .foregroundStyle(palette.foregroundSecondary)
-        .lineLimit(2)
-        .fixedSize(horizontal: false, vertical: true)
-        .frame(maxWidth: .infinity, alignment: .leading)
-      Label("On your Mac", systemImage: "macbook")
+    HStack(spacing: 4) {
+      Image(systemName: symbol)
+        .font(.system(size: 10, weight: .semibold))
+      Text(onMac ? "\(title) · in your Mac's queue" : title)
         .font(AppFont.caption)
-        .foregroundStyle(palette.foregroundMuted)
-        .labelStyle(.titleAndIcon)
+        .lineLimit(1)
     }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 12)
-    .accessibilityElement(children: .combine)
-    .accessibilityIdentifier("queue.onMac")
+    .foregroundStyle(palette.foregroundMuted)
+  }
+
+  static func symbol(for origin: QueueOrigin) -> String {
+    switch origin {
+    case .talaria(let device): device.lowercased().hasPrefix("ipad") ? "ipad" : "iphone"
+    case .desktop: "desktopcomputer"
+    case .terminal: "terminal"
+    case .unknown: "app.dashed"
+    }
+  }
+
+  @MainActor static func thisDevice(_ chat: ChatModel, onMac: Bool = false) -> OriginLabel {
+    let device = chat.deviceKind
+    return OriginLabel(title: "This \(device)", symbol: symbol(for: .talaria(device: device)), onMac: onMac)
   }
 }
 
-private struct QueueRow: View {
-  let chat: ChatModel
-  let entry: PromptQueue<ComposerAttachment>.Entry
+/// The layout every queued row shares: words (tap to change), where it came from, Send now, ✕.
+private struct QueueRowLayout<Words: View>: View {
+  let accessibilityText: String
+  let origin: OriginLabel
+  let canEdit: Bool
+  let canSendNow: Bool
+  let isWorking: Bool
+  let sendNowHint: String
+  let textID: String
+  let rowID: String
+  let edit: () -> Void
+  let sendNow: () -> Void
+  let remove: () -> Void
+  @ViewBuilder let words: () -> Words
   @Environment(\.palette) private var palette
 
   var body: some View {
     HStack(alignment: .center, spacing: 8) {
-      Button {
-        chat.editQueued(entry.id)
-      } label: {
-        VStack(alignment: .leading, spacing: 2) {
-          if !entry.text.isEmpty {
-            Text(entry.text)
-              .font(AppFont.footnote)
-              .foregroundStyle(palette.foreground)
-              .lineLimit(2)
-              .multilineTextAlignment(.leading)
-              .fixedSize(horizontal: false, vertical: true)
-          }
-          if !entry.attachments.isEmpty {
-            Label(attachmentWords, systemImage: entry.attachments.contains { $0.kind == .image } ? "photo" : "doc")
-              .font(AppFont.caption)
-              .foregroundStyle(palette.foregroundMuted)
-              .labelStyle(.titleAndIcon)
-          }
+      Button(action: edit) {
+        VStack(alignment: .leading, spacing: 3) {
+          words()
+          origin
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
+      .disabled(!canEdit || isWorking)
       .accessibilityLabel(accessibilityText)
-      .accessibilityHint("Moves it back into the message field to change it")
+      .accessibilityHint(canEdit ? "Moves it back into the message field to change it" : "")
+      .accessibilityIdentifier(textID)
 
-      sendNowButton
+      if canSendNow { sendNowButton }
 
-      Button {
-        chat.deleteQueued(entry.id)
-      } label: {
+      Button(action: remove) {
         Image(systemName: "xmark")
           .font(.system(size: 11, weight: .bold))
           .foregroundStyle(palette.iconMuted)
@@ -151,7 +165,7 @@ private struct QueueRow: View {
           .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .disabled(entry.isDelivering)
+      .disabled(isWorking)
       .accessibilityLabel("Remove from queue")
       .accessibilityIdentifier("queue.delete")
     }
@@ -159,34 +173,24 @@ private struct QueueRow: View {
     .padding(.trailing, 6)
     .padding(.vertical, 8)
     .contextMenu {
-      Button {
-        Task { await chat.sendNow(entry.id) }
-      } label: {
-        Label("Send now", systemImage: "arrow.up.circle")
+      if canSendNow {
+        Button(action: sendNow) { Label("Send now", systemImage: "arrow.up.circle") }
       }
-      Button {
-        chat.editQueued(entry.id)
-      } label: {
-        Label("Edit", systemImage: "pencil")
+      if canEdit {
+        Button(action: edit) { Label("Edit", systemImage: "pencil") }
       }
-      Button(role: .destructive) {
-        chat.deleteQueued(entry.id)
-      } label: {
-        Label("Remove", systemImage: "trash")
-      }
+      Button(role: .destructive, action: remove) { Label("Remove", systemImage: "trash") }
     }
     .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("queue.row")
+    .accessibilityIdentifier(rowID)
   }
 
   private var sendNowButton: some View {
-    Button {
-      Task { await chat.sendNow(entry.id) }
-    } label: {
+    Button(action: sendNow) {
       ZStack {
         // Keeps the capsule's width while the spinner shows.
-        Text("Send now").opacity(entry.isDelivering ? 0 : 1)
-        if entry.isDelivering {
+        Text("Send now").opacity(isWorking ? 0 : 1)
+        if isWorking {
           ProgressView().controlSize(.mini).tint(palette.primaryForeground)
         }
       }
@@ -199,13 +203,36 @@ private struct QueueRow: View {
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    .disabled(entry.isDelivering)
-    .accessibilityLabel(entry.isDelivering ? "Sending" : "Send now")
-    .accessibilityHint(chat.isBusy ? "The agent takes this message in now and answers it" : "Sends this message")
+    .disabled(isWorking)
+    .accessibilityLabel(isWorking ? "Sending" : "Send now")
+    .accessibilityHint(sendNowHint)
     .accessibilityIdentifier("queue.sendNow")
   }
+}
 
-  private var attachmentWords: String {
+/// Words plus a line naming the photos and files that go with them.
+private struct EntryWords: View {
+  let entry: PromptQueue<ComposerAttachment>.Entry
+  @Environment(\.palette) private var palette
+
+  var body: some View {
+    if !entry.text.isEmpty {
+      Text(entry.text)
+        .font(AppFont.footnote)
+        .foregroundStyle(palette.foreground)
+        .lineLimit(2)
+        .multilineTextAlignment(.leading)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    if !entry.attachments.isEmpty {
+      Label(Self.attachmentWords(entry), systemImage: entry.attachments.contains { $0.kind == .image } ? "photo" : "doc")
+        .font(AppFont.caption)
+        .foregroundStyle(palette.foregroundMuted)
+        .labelStyle(.titleAndIcon)
+    }
+  }
+
+  static func attachmentWords(_ entry: PromptQueue<ComposerAttachment>.Entry) -> String {
     let photos = entry.attachments.count { $0.kind == .image }
     let files = entry.attachments.count - photos
     var parts: [String] = []
@@ -214,7 +241,78 @@ private struct QueueRow: View {
     return parts.joined(separator: ", ")
   }
 
-  private var accessibilityText: String {
-    [entry.text, attachmentWords].filter { !$0.isEmpty }.joined(separator: ", ")
+  static func spoken(_ entry: PromptQueue<ComposerAttachment>.Entry) -> String {
+    [entry.text, attachmentWords(entry)].filter { !$0.isEmpty }.joined(separator: ", ")
+  }
+}
+
+/// Waiting here on this device.
+private struct QueueRow: View {
+  let chat: ChatModel
+  let entry: PromptQueue<ComposerAttachment>.Entry
+
+  var body: some View {
+    QueueRowLayout(
+      accessibilityText: EntryWords.spoken(entry), origin: OriginLabel.thisDevice(chat),
+      canEdit: !entry.isAwaitingReceipt, canSendNow: true, isWorking: entry.isDelivering,
+      sendNowHint: chat.isBusy ? "The agent takes this message in now and answers it" : "Sends this message",
+      textID: "queue.text", rowID: "queue.row",
+      edit: { chat.editQueued(entry.id) },
+      sendNow: { Task { await chat.sendNow(entry.id) } },
+      remove: { chat.deleteQueued(entry.id) }
+    ) {
+      EntryWords(entry: entry)
+    }
+  }
+}
+
+/// Sent from this device and handed to the Mac's queue (when the chat closed or the app went
+/// to sleep). Still this device's message: it can be changed, removed or sent now.
+private struct OnMacRow: View {
+  let chat: ChatModel
+  let entry: PromptQueue<ComposerAttachment>.Entry
+
+  var body: some View {
+    let origin = OriginLabel.thisDevice(chat, onMac: true)
+    QueueRowLayout(
+      accessibilityText: "\(EntryWords.spoken(entry)), from \(origin.title)", origin: origin,
+      canEdit: true, canSendNow: chat.isBusy, isWorking: chat.isTakingBack(entry.id),
+      sendNowHint: "The agent takes this message in now and answers it",
+      textID: "queue.onMac", rowID: "queue.onMac.row",
+      edit: { Task { await chat.editOnMac(entry.id) } },
+      sendNow: { Task { await chat.sendNowOnMac(entry.id) } },
+      remove: { Task { await chat.removeOnMac(entry.id) } }
+    ) {
+      EntryWords(entry: entry)
+    }
+  }
+}
+
+/// Another device's or app's message in the Mac's queue for this chat.
+private struct OtherDeviceRow: View {
+  let chat: ChatModel
+  let row: QueuedOnMac
+  @Environment(\.palette) private var palette
+
+  var body: some View {
+    let origin = OriginLabel(title: row.origin.label, symbol: OriginLabel.symbol(for: row.origin))
+    let words = row.text.isEmpty ? "Attachments" : row.text
+    QueueRowLayout(
+      accessibilityText: "\(words), from \(origin.title)", origin: origin,
+      // Messages with photos carry no controls: the Mac can only drop them, not hand them on.
+      canEdit: row.canSteer, canSendNow: row.canSteer && chat.isBusy, isWorking: chat.isActing(on: row),
+      sendNowHint: "The agent takes this message in now and answers it",
+      textID: "queue.other", rowID: "queue.other.row",
+      edit: { Task { await chat.editFromMac(row) } },
+      sendNow: { Task { await chat.sendNowFromMac(row) } },
+      remove: { Task { await chat.removeFromMac(row) } }
+    ) {
+      Text(words)
+        .font(AppFont.footnote)
+        .foregroundStyle(palette.foreground)
+        .lineLimit(2)
+        .multilineTextAlignment(.leading)
+        .fixedSize(horizontal: false, vertical: true)
+    }
   }
 }

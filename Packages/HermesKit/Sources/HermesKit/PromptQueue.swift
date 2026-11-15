@@ -28,9 +28,11 @@ public struct PromptQueue<Attachment: Sendable>: Sendable {
     /// Preserve admission FIFO even when cancellations return in separate batches.
     fileprivate var handoffSequence: Int?
 
-    public init(id: UUID = UUID(), text: String, attachments: [Attachment] = [], queuedAt: Double) {
+    public init(
+      id: UUID = UUID(), text: String, attachments: [Attachment] = [], queuedAt: Double, submissionID: String? = nil
+    ) {
       self.id = id
-      submissionID = id.uuidString.lowercased()
+      self.submissionID = submissionID ?? id.uuidString.lowercased()
       self.text = text
       self.attachments = attachments
       self.queuedAt = queuedAt
@@ -44,8 +46,13 @@ public struct PromptQueue<Attachment: Sendable>: Sendable {
   /// them after the reply; they show here until their turn starts.
   public private(set) var onMac: [Entry] = []
   private var nextHandoffSequence = 0
+  /// This device's kind ("iPhone", "iPad"), written into each entry's submission id so every
+  /// app reading the Mac's queue can tell where the message came from (`QueueOrigin`).
+  public var device: String?
 
-  public init() {}
+  public init(device: String? = nil) {
+    self.device = device
+  }
 
   /// Nothing waits on this phone (entries on the Mac aside).
   public var isEmpty: Bool { entries.isEmpty }
@@ -70,6 +77,17 @@ public struct PromptQueue<Attachment: Sendable>: Sendable {
     return onMac.remove(at: index)
   }
 
+  /// An entry that left for the running reply is back in the Mac's queue (the reply never took
+  /// it in), at the back as the Mac has it.
+  public mutating func restoreOnMac(_ entry: Entry) {
+    guard !onMac.contains(where: { $0.id == entry.id }), !entries.contains(where: { $0.id == entry.id }) else { return }
+    var entry = entry
+    entry.isDelivering = false
+    entry.handoffSequence = nextHandoffSequence
+    nextHandoffSequence += 1
+    onMac.append(entry)
+  }
+
   /// The Mac started the turn for what it was holding, or it no longer holds it.
   public mutating func takeOnMac() -> [Entry] {
     defer { onMac = [] }
@@ -82,7 +100,7 @@ public struct PromptQueue<Attachment: Sendable>: Sendable {
     for var entry in dropped {
       entry.isDelivering = false
       entry.isAwaitingReceipt = false
-      entry.submissionID = UUID().uuidString.lowercased()
+      entry.submissionID = QueueOrigin.renewed(entry.submissionID)
       let index = entries.firstIndex {
         guard let order = $0.handoffSequence else { return true }
         return order > (entry.handoffSequence ?? -1)
@@ -94,8 +112,22 @@ public struct PromptQueue<Attachment: Sendable>: Sendable {
 
   @discardableResult
   public mutating func enqueue(text: String, attachments: [Attachment] = [], now: Double) -> Entry {
-    let entry = Entry(text: text, attachments: attachments, queuedAt: now)
+    let entry = Entry(text: text, attachments: attachments, queuedAt: now, submissionID: QueueOrigin.submissionID(device: device))
     entries.append(entry)
+    return entry
+  }
+
+  /// Takes back one entry the Mac was holding, after its admission there was cancelled, so it
+  /// can be changed, removed or sent another way. Unlike `returnFromMac` this does not pause the
+  /// queue: the person picked this one message, they did not stop the agent.
+  @discardableResult
+  public mutating func takeBackFromMac(_ id: UUID) -> Entry? {
+    guard var entry = removeOnMac(id) else { return nil }
+    entry.isDelivering = false
+    entry.isAwaitingReceipt = false
+    entry.handoffSequence = nil
+    entry.submissionID = QueueOrigin.renewed(entry.submissionID)
+    entries.insert(entry, at: 0)
     return entry
   }
 
