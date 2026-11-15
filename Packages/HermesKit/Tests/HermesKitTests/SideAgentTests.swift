@@ -156,5 +156,58 @@ import Testing
     // Already on screen: nothing added, even as a copy with another identity.
     state.restoreSideItems([notice, card, .sideAnswer(card.side!, timestamp: 30)])
     #expect(state.items.count == 6)
+    // A newer held copy (the task id arrived) takes the place of the one on screen.
+    var started = notice
+    started.side?.taskID = "btw_1"
+    state.restoreSideItems([started])
+    #expect(state.items.count == 6)
+    #expect(state.items[2].side?.taskID == "btw_1")
+  }
+
+  /// The gateway starts the side agent before it answers with the task id, so a fast answer (an
+  /// error, mostly) can land first. Either order ends with the card headed by the task.
+  @Test func theTaskHeadingSurvivesEitherOrderOfAnswerAndTaskID() throws {
+    let command = try #require(side("/bg tidy the notes"))
+    let answer: JSONValue = ["task_id": "bg_1", "text": "error: provider refused"]
+
+    // Answer first, then the task id.
+    var early = ChatState()
+    let notice = TranscriptItem.sideNotice(command, timestamp: 5)
+    early.items.append(notice)
+    _ = early.apply(event: "background.complete", payload: answer, now: 6)
+    #expect(early.items[1].side?.prompt == "")
+    var held = early.items
+    let changed = early.items.noteSideStarted(noticeID: notice.id, taskID: "bg_1", prompt: "tidy the notes")
+    #expect(changed.count == 2)
+    #expect(early.items[0].side?.taskID == "bg_1")
+    #expect(early.items[1].side == SideTask(kind: .background, taskID: "bg_1", prompt: "tidy the notes", answer: "error: provider refused"))
+    #expect(early.items[1].side?.isFailed == true)
+    // The app's held copy is put right the same way.
+    held.noteSideStarted(noticeID: notice.id, taskID: "bg_1", prompt: "tidy the notes")
+    #expect(held == early.items)
+    // Said again, nothing changes.
+    let again = early.items.noteSideStarted(noticeID: notice.id, taskID: "bg_1", prompt: "tidy the notes")
+    #expect(again.isEmpty)
+
+    // Task id first, then the answer.
+    var late = ChatState()
+    late.items.append(notice)
+    late.items.noteSideStarted(noticeID: notice.id, taskID: "bg_1", prompt: "tidy the notes")
+    _ = late.apply(event: "background.complete", payload: answer, now: 6)
+    #expect(late.items[1].side == early.items[1].side)
+  }
+
+  /// A chat left while its reply runs is still followed: its answer is held by the app, once.
+  @Test func heldAnswersAddOncePerTask() throws {
+    let command = try #require(side("/bg tidy the notes"))
+    var notice = TranscriptItem.sideNotice(command, timestamp: 5)
+    notice.side?.taskID = "bg_1"
+    var held = [notice]
+    let task = SideTask(kind: .background, taskID: "bg_1", prompt: "", answer: "Tidied.")
+    let card = held.addSideAnswer(task, timestamp: 9)
+    #expect(card?.side?.prompt == "tidy the notes")
+    let repeated = held.addSideAnswer(task, timestamp: 10)
+    #expect(repeated == nil)
+    #expect(held.count == 2)
   }
 }

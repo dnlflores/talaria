@@ -513,7 +513,7 @@ final class ChatModel: Identifiable {
       // Bind before receipt/history awaits. Events newer than this snapshot wait until its
       // transcript is adopted, rather than disappearing or being overwritten by that adoption.
       liveID = live.liveID
-      app?.noteLive(live.liveID, storedID: storedID)
+      app?.noteLive(live.liveID, storedID: storedID, profile: profile)
       await refreshQueuedReceipts(client: client, liveID: live.liveID)
       var history = try await newest.value
       if isClosed { return }
@@ -541,6 +541,8 @@ final class ChatModel: Identifiable {
         setWindow(history.window)
         isReadOnly = true
       }
+      // Side answers are never in the Mac's history: they stay on a chat that only reads.
+      restoreHeldSideItems(force: true)
       isLoading = false
     }
   }
@@ -563,7 +565,7 @@ final class ChatModel: Identifiable {
   private func adopt(_ live: LiveSession, history: History) {
     liveID = live.liveID
     subscriptionID = live.subscriptionID
-    app?.noteLive(live.liveID, storedID: storedID)
+    app?.noteLive(live.liveID, storedID: storedID, profile: profile)
     if let pending = live.pending { queueState.onMacList = pending }
     var next = state
     next.info.merge(live.info)
@@ -593,6 +595,18 @@ final class ChatModel: Identifiable {
     state = next
     lastEventAt = Date()
     for request in live.openRequests { app?.deliver(request) }
+  }
+
+  /// Puts the `/btw` and `/bg` notices and answers the app holds for this chat back on screen, or
+  /// their newer copies in place of older ones: after its history is read afresh, and when one
+  /// lands for it elsewhere. Opening does it itself when it adopts the history (`force` is for
+  /// the opening paths that end without adopting).
+  func restoreHeldSideItems(force: Bool = false) {
+    guard !isClosed, force || !isLoading, let held = app?.sideItems(profile: profile, storedID: storedID), !held.isEmpty
+    else { return }
+    var next = state
+    next.restoreSideItems(held)
+    if next != state { state = next }
   }
 
   // MARK: Stored history, a page at a time
@@ -711,12 +725,15 @@ final class ChatModel: Identifiable {
       if isClosed { return }
       state.items = history.items
       setWindow(history.window)
+      restoreHeldSideItems(force: true)
       return
     }
     // Only the newest page: polling a long chat must not read all of it every few seconds.
     guard case .newest(let page, let fresh, let pageWindow) = try await readNewestPage(client: client), !isClosed else { return }
     var next = state
     fold(newest: page, items: fresh, pageWindow: pageWindow, into: &next, inflight: nil, turnStartedAt: nil)
+    // A page that does not line up replaces the transcript, side answers held here included.
+    next.restoreSideItems(app?.sideItems(profile: profile, storedID: storedID) ?? [])
     if next != state { state = next }
   }
 
@@ -1477,10 +1494,11 @@ final class ChatModel: Identifiable {
       addNotice("Could not start \(side.name): \(error.localizedDescription)", for: command)
       return
     }
-    update(notice.id) { $0.side?.taskID = taskID }
-    if let started = state.items.first(where: { $0.id == notice.id }) {
-      app?.keepSideItem(started, profile: profile, storedID: storedID)
-    }
+    // The answer can land before the task id does: it then takes this notice's words too.
+    var next = state
+    next.items.noteSideStarted(noticeID: notice.id, taskID: taskID, prompt: side.text)
+    if next != state { state = next }
+    app?.sideStarted(noticeID: notice.id, taskID: taskID, prompt: side.text, profile: profile, storedID: storedID, by: self)
   }
 
   /// The task id the gateway gave it.

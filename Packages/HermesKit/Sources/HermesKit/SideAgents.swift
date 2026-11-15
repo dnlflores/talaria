@@ -108,28 +108,62 @@ extension TranscriptItem {
   public var isSideAnswer: Bool { side?.answer != nil }
 }
 
-extension ChatState {
+extension Array where Element == TranscriptItem {
   /// Adds a side answer as its own card, once per task: the same event delivered again (a
-  /// reconnect, a second socket) adds nothing.
-  public mutating func addSideAnswer(_ task: SideTask, now: Double) -> [Effect] {
+  /// reconnect, a second socket) adds nothing and returns nil. A `background.complete` names no
+  /// task, so it takes the words from the notice sent with the same task id, when there is one.
+  public mutating func addSideAnswer(_ task: SideTask, timestamp: Double?) -> TranscriptItem? {
     var task = task
-    if !task.taskID.isEmpty, items.contains(where: { $0.isSideAnswer && $0.side?.taskID == task.taskID }) { return [] }
+    if !task.taskID.isEmpty, contains(where: { $0.isSideAnswer && $0.side?.taskID == task.taskID }) { return nil }
     if task.prompt.isEmpty, !task.taskID.isEmpty,
-      let asked = items.last(where: { !$0.isSideAnswer && $0.side?.taskID == task.taskID })?.side?.prompt
+      let asked = last(where: { !$0.isSideAnswer && $0.side?.taskID == task.taskID })?.side?.prompt
     {
       task.prompt = asked
     }
-    let item = TranscriptItem.sideAnswer(task, timestamp: now)
-    items.append(item)
+    let item = TranscriptItem.sideAnswer(task, timestamp: timestamp)
+    append(item)
+    return item
+  }
+
+  /// The gateway said which task the notice `noticeID` started. The answer can land before that
+  /// does (the gateway starts the side agent before it replies), so an answer already here for
+  /// the task takes the notice's words as its heading. Returns the items that changed.
+  @discardableResult
+  public mutating func noteSideStarted(noticeID: UUID, taskID: String, prompt: String) -> [TranscriptItem] {
+    guard !taskID.isEmpty else { return [] }
+    var changed: [TranscriptItem] = []
+    for index in indices {
+      guard self[index].side != nil else { continue }
+      if self[index].id == noticeID, self[index].side?.taskID != taskID {
+        self[index].side?.taskID = taskID
+        changed.append(self[index])
+      } else if self[index].isSideAnswer, self[index].side?.taskID == taskID, self[index].side?.prompt.isEmpty == true,
+        !prompt.isEmpty
+      {
+        self[index].side?.prompt = prompt
+        changed.append(self[index])
+      }
+    }
+    return changed
+  }
+}
+
+extension ChatState {
+  /// Adds a side answer as its own card, once per task (`[TranscriptItem].addSideAnswer`).
+  public mutating func addSideAnswer(_ task: SideTask, now: Double) -> [Effect] {
+    guard let item = items.addSideAnswer(task, timestamp: now) else { return [] }
     return [.sideAnswer(item)]
   }
 
   /// Puts back side notices and answers this device held for the chat (it was left and opened
   /// again, or its history was read afresh), each by its time among the rest. Ones already on
-  /// screen are left alone.
+  /// screen take the held copy, which may be newer (the task id or heading arrived meanwhile).
   public mutating func restoreSideItems(_ held: [TranscriptItem]) {
     for item in held {
-      if items.contains(where: { $0.id == item.id }) { continue }
+      if let index = items.firstIndex(where: { $0.id == item.id }) {
+        if items[index] != item { items[index] = item }
+        continue
+      }
       if item.isSideAnswer, let taskID = item.side?.taskID, !taskID.isEmpty,
         items.contains(where: { $0.isSideAnswer && $0.side?.taskID == taskID })
       {

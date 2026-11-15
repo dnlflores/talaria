@@ -318,6 +318,9 @@ no Mac;
 runs the app's own chat model against a stand-in gateway on loopback: leaving
 or going to sleep while a command is worked out, and what comes back (words,
 files, queued messages) when the chat opens again, with no Mac;
+`SideLifecycleTests` (same target) checks `/btw` and `/bg` answers that land
+after leaving a chat, on read-only and watched reopens, and before their task
+id, with no Mac;
 `NotificationSettingsTests` (`TEST_RUNNER_TALARIA_UITEST_PUSH=1`) allows
 notifications and shows what the Mac said; the push plugin has its own tests
 (`python -m unittest discover -s mac/talaria-push/tests` with Hermes' Python).
