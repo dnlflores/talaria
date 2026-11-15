@@ -114,6 +114,12 @@ T3 Tools.
   `/undo` puts the message back in the composer to edit. Commands the desktop
   app handles itself (`/skin`, `/new`, ...) say to run them on the Mac. Sent
   while a reply runs, a command waits in the queue like any message.
+- **Try again:** long-press the bot's last reply (or your last message) and
+  pick Try again, or type `/retry`: the Mac drops that turn and sends the same
+  words again, and a fresh reply streams in. While a reply runs it says to wait
+  or stop it first; a message with pictures says it can't be sent again. If
+  another device moved the chat on meanwhile, nothing is resent and the chat
+  reloads.
 - **Side questions and background tasks:** `/btw what file were you editing?`
   asks a quick question from what the chat knows so far, and `/bg <task>`
   (or `/background`) runs a task in a session of its own. Either one goes out
@@ -318,6 +324,10 @@ no Mac;
 runs the app's own chat model against a stand-in gateway on loopback: leaving
 or going to sleep while a command is worked out, and what comes back (words,
 files, queued messages) when the chat opens again, with no Mac;
+`RetryTests` long-presses the last reply and message, picks Try again and sends
+`/retry` against the offline preview, and `RetryDeliveryTests` (also
+`TalariaTests`) checks what the stand-in gateway's history holds after Try
+again, with no Mac;
 `SideLifecycleTests` (same target) checks `/btw` and `/bg` answers that land
 after leaving a chat, on read-only and watched reopens, and before their task
 id, with no Mac;

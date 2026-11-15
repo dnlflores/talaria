@@ -88,6 +88,11 @@ public struct ServerRequest: Sendable, Equatable, Identifiable {
 public struct SessionFences: Sendable, Equatable {
   public var revision: Int?
   public var generation: Int?
+
+  public init(revision: Int? = nil, generation: Int? = nil) {
+    self.revision = revision
+    self.generation = generation
+  }
 }
 
 /// JSON-RPC over the Hermes gateway's WebSocket (`/api/ws` on its own listener), with reconnect.

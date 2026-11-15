@@ -137,8 +137,11 @@ mobile app: Connections, Plugins, MCP).
 - Done: side questions and background tasks. `/btw` and `/bg` go out right
   away with `prompt.btw` / `prompt.background`, even mid-reply, and their
   `btw.complete` / `background.complete` answers show as cards on the phone.
-- Conversation tools: `session.undo`, `session.compress`, `session.branch`,
-  `session.steer`
+- Conversation tools: done: Try again on the newest turn (long-press the last
+  reply or message, or `/retry`): `session.mutate` `rewind` at the snapshot's
+  fences, then the same words through the normal send. Next: `session.undo`,
+  `session.compress`, `session.branch`, `session.steer`; editing a message
+  before resending it and retrying an older turn.
 
 ## Then: what only a phone can do
 

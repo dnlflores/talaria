@@ -19,6 +19,8 @@ struct TranscriptScrollFixture: View {
       NavigationStack {
         ChatView(chat: chat)
       }
+      // As over the real app, so what a chat says in a toast shows here too.
+      .overlay { ToastOverlay() }
     }
     .environment(app)
     .task {

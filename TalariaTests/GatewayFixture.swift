@@ -14,10 +14,20 @@ final class GatewayFixture: @unchecked Sendable {
     let queued: Bool
   }
 
-  /// How the fixture answers a call: a result, or a JSON-RPC error.
+  /// How the fixture answers a call: a result, or a JSON-RPC error (with the gateway's typed
+  /// `data.reason` when it has one).
   enum Answer: Sendable {
     case result(JSONValue)
     case error(code: Int, message: String)
+    case refusal(code: Int, message: String, data: JSONValue)
+  }
+
+  /// A `session.mutate` that arrived.
+  struct Mutation: Equatable, Sendable {
+    let session: String
+    let requestID: String
+    let operation: String
+    let target: Int?
   }
 
   private let queue = DispatchQueue(label: "talaria.tests.gateway-fixture")
@@ -40,6 +50,23 @@ final class GatewayFixture: @unchecked Sendable {
   private var submitAnswer: @Sendable (String) -> Answer? = { _ in nil }
   private var isHoldingSubmits = false
   private var submitCalls = 0
+  /// The Mac's copy of each chat: stored rows with durable ids, as the gateway lists them.
+  private var transcripts: [String: [JSONValue]] = [:]
+  private var nextRowID = 1
+  private var revisions: [String: Int] = [:]
+  private var generations: [String: Int] = [:]
+  /// Rewind receipts by request id: an exact retry gets the receipt already written.
+  private var receipts: [String: JSONValue] = [:]
+  private var mutations: [Mutation] = []
+  /// The next rewind is applied, then the socket drops before its answer goes out.
+  private var dropsNextMutateAnswer = false
+  /// The next `session.mutate` is applied, but its answer waits until `release()`.
+  private var holdsNextMutateAnswer = false
+  /// The next `session.resume` with `omit_messages` (a reattach) waits until `release()`.
+  private var holdsNextReattach = false
+  private var heldReattaches = 0
+  /// Another device moves the chat on between the snapshot and the next rewind.
+  private var movesOnBeforeNextMutate = false
   /// Every JSON-RPC method called, in order.
   private var methodCalls: [String] = []
   /// `/api/status` asks for a sign-in (the app stays off its inbox and its event pump).
@@ -123,6 +150,49 @@ final class GatewayFixture: @unchecked Sendable {
   var submitAttempts: Int { locked { submitCalls } }
   /// `slash.exec` commands and `command.dispatch` names, in the order they arrived.
   var slashRequests: [String] { locked { slashCalls } }
+  /// Every `session.mutate`, in the order it arrived.
+  var mutateRequests: [Mutation] { locked { mutations } }
+
+  /// The Mac's copy of a chat as (role, words), oldest first.
+  func transcript(_ session: String) -> [(role: String, text: String)] {
+    locked { (transcripts[session] ?? []).map { ($0["role"].stringValue, $0["content"].stringValue) } }
+  }
+
+  /// Rows already stored when the chat opens.
+  func seed(_ session: String, _ rows: [(role: String, content: JSONValue)]) {
+    locked { for row in rows { append(row.role, row.content, to: session) } }
+  }
+
+  /// The reply to the running turn is stored (deliver it to the chat with `handle`).
+  func reply(_ session: String, _ text: String) {
+    locked { append("assistant", .string(text), to: session) }
+  }
+
+  /// Another device sent a message and got a reply, with no event reaching this app.
+  func sendFromAnotherDevice(_ session: String, _ text: String, reply: String) {
+    locked {
+      append("user", .string(text), to: session)
+      append("assistant", .string(reply), to: session)
+      generations[session, default: 1] += 1
+    }
+  }
+
+  func dropNextMutateAnswer() { locked { dropsNextMutateAnswer = true } }
+  func holdNextMutateAnswer() { locked { holdsNextMutateAnswer = true } }
+  func holdNextReattach() { locked { holdsNextReattach = true } }
+  /// Reattaches held by `holdNextReattach` so far.
+  var reattachesHeld: Int { locked { heldReattaches } }
+  func moveOnBeforeNextMutate() { locked { movesOnBeforeNextMutate = true } }
+
+  /// Call with `lock` held.
+  private func append(_ role: String, _ content: JSONValue, to session: String) {
+    let id = nextRowID
+    nextRowID += 1
+    transcripts[session, default: []].append([
+      "id": .number(Double(id)), "row_id": .number(Double(id)), "role": .string(role), "content": content,
+      "timestamp": .number(Date().timeIntervalSince1970),
+    ])
+  }
 
   /// Waits until `condition` holds, up to `timeout` seconds.
   func wait(_ timeout: Double = 5, until condition: @Sendable () -> Bool) async -> Bool {
@@ -190,9 +260,7 @@ final class GatewayFixture: @unchecked Sendable {
       ]
     case let path where path.hasPrefix("/api/sessions/") && path.hasSuffix("/messages"):
       let session = String(path.dropFirst("/api/sessions/".count).dropLast("/messages".count))
-      let rows: [JSONValue] = submitted.filter { $0.session == session }.enumerated().map { index, prompt in
-        ["id": .number(Double(index + 1)), "role": "user", "content": .string(prompt.text)]
-      }
+      let rows: [JSONValue] = locked { transcripts[session] ?? [] }
       body = ["messages": .array(rows), "total": .number(Double(rows.count)), "has_more": false]
     case let path where path.hasPrefix("/api/sessions/") && !path.dropFirst("/api/sessions/".count).contains("/"):
       let session = String(path.dropFirst("/api/sessions/".count))
@@ -218,6 +286,10 @@ final class GatewayFixture: @unchecked Sendable {
       case .result(let result): connection.send(["jsonrpc": "2.0", "id": id, "result": result])
       case .error(let code, let message):
         connection.send(["jsonrpc": "2.0", "id": id, "error": ["code": .number(Double(code)), "message": .string(message)]])
+      case .refusal(let code, let message, let data):
+        connection.send(["jsonrpc": "2.0", "id": id, "error": [
+          "code": .number(Double(code)), "message": .string(message), "data": data,
+        ]])
       }
     }
     locked { methodCalls.append(call["method"].stringValue) }
@@ -225,12 +297,28 @@ final class GatewayFixture: @unchecked Sendable {
     case "session.resume" where locked({ refusesResumes }):
       answer(.error(code: -32603, message: "resume unavailable"))
     case "session.create", "session.resume":
-      let isRunning = locked { running.contains(session) }
-      answer(.result([
+      let (isRunning, rows, revision, generation) = locked {
+        (running.contains(session), transcripts[session] ?? [], revisions[session] ?? 1, generations[session] ?? 1)
+      }
+      let omit = call["method"].stringValue == "session.create" || params["omit_messages"].truthy
+      let result: Answer = .result([
         "session_id": .string(session), "stored_session_id": .string(session), "subscription_id": "fixture",
-        "running": .bool(isRunning), "messages": [], "execution_generation": 1, "session_revision": 1,
+        "running": .bool(isRunning), "messages": omit ? [] : .array(rows),
+        "execution_generation": .number(Double(generation)), "revision": .number(Double(revision)),
         "profile": "preview",
-      ]))
+      ])
+      let holds = locked {
+        guard holdsNextReattach, call["method"].stringValue == "session.resume", params["omit_messages"].truthy else {
+          return false
+        }
+        holdsNextReattach = false
+        heldReattaches += 1
+        held.append { [queue] in queue.async { answer(result) } }
+        return true
+      }
+      if !holds { answer(result) }
+    case "session.mutate":
+      answerMutate(params, session: session, on: connection, answer: answer)
     case "slash.exec", "command.dispatch":
       let isExec = call["method"].stringValue == "slash.exec"
       let command = isExec ? params["command"].stringValue : params["name"].stringValue
@@ -251,7 +339,11 @@ final class GatewayFixture: @unchecked Sendable {
         if let failure {
           answer(failure)
         } else {
-          locked { prompts.append(prompt) }
+          locked {
+            prompts.append(prompt)
+            append("user", .string(prompt.text), to: session)
+            generations[session, default: 1] += 1
+          }
           answer(.result(["admission_id": .string(UUID().uuidString)]))
         }
       }
@@ -277,6 +369,66 @@ final class GatewayFixture: @unchecked Sendable {
       answer(.result(["sessions": []]))
     default:
       answer(.result([:]))
+    }
+  }
+
+  /// `session.mutate`: the rewind as the gateway runs it (fenced by revision and generation, an
+  /// exact retry answered with its receipt, the target and everything after it taken off); any
+  /// other operation is accepted.
+  private func answerMutate(
+    _ params: JSONValue, session: String, on connection: Connection, answer: @escaping @Sendable (Answer) -> Void
+  ) {
+    let requestID = params["request_id"].stringValue
+    let operation = params["operation"].stringValue
+    let target = params["payload"]["target_message_id"].int
+    let (result, drop): (Answer, Bool) = locked {
+      mutations.append(Mutation(session: session, requestID: requestID, operation: operation, target: target))
+      if let receipt = receipts[requestID] { return (.result(receipt), false) }
+      guard operation == "rewind", let target else { return (.result(["session_id": .string(session)]), false) }
+      if movesOnBeforeNextMutate {
+        movesOnBeforeNextMutate = false
+        append("user", "Sent meanwhile", to: session)
+        append("assistant", "Answered meanwhile", to: session)
+        generations[session, default: 1] += 1
+      }
+      let revision = revisions[session] ?? 1
+      let generation = generations[session] ?? 1
+      guard params["expected_revision"].int == revision, params["expected_generation"].int == generation else {
+        let reason = params["expected_revision"].int == revision ? "stale_generation" : "revision_conflict"
+        return (.refusal(code: 4009, message: reason, data: [
+          "reason": .string(reason), "revision": .number(Double(revision)), "execution_generation": .number(Double(generation)),
+        ]), false)
+      }
+      var rows = transcripts[session] ?? []
+      guard let index = rows.firstIndex(where: { $0["row_id"].int == target && $0["role"] == "user" }) else {
+        return (.refusal(code: 4000, message: "target user message is no longer in session history", data: [
+          "reason": "invalid_params",
+        ]), false)
+      }
+      let taken = rows[index]
+      let count = rows.count - index
+      rows.removeSubrange(index...)
+      transcripts[session] = rows
+      revisions[session] = revision + 1
+      let receipt: JSONValue = [
+        "session_id": .string(session), "rewound_count": .number(Double(count)), "revision": .number(Double(revision + 1)),
+        "target_message": ["id": taken["row_id"], "content": taken["content"], "timestamp": taken["timestamp"]],
+        "new_head_id": rows.last?["row_id"] ?? .null,
+      ]
+      receipts[requestID] = receipt
+      defer { dropsNextMutateAnswer = false }
+      return (.result(receipt), dropsNextMutateAnswer)
+    }
+    if drop {
+      // Applied, but the answer is lost with the socket.
+      connection.connection.cancel()
+    } else {
+      let hold = locked {
+        defer { holdsNextMutateAnswer = false }
+        if holdsNextMutateAnswer { held.append { [queue] in queue.async { answer(result) } } }
+        return holdsNextMutateAnswer
+      }
+      if !hold { answer(result) }
     }
   }
 }

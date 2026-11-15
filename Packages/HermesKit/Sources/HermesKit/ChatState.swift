@@ -395,6 +395,8 @@ public struct ChatState: Sendable, Equatable {
       let index = settledIndices[common]
       // Matching words keep their identity, but the stored projection determines their role.
       if items[index].kind == .assistant { items[index].isCommentary = fresh[common].isCommentary }
+      // ... and the stored row names which turn a message is.
+      if let rowID = fresh[common].rowID { items[index].rowID = rowID }
       common += 1
     }
     if common == settledIndices.count {
@@ -403,6 +405,7 @@ public struct ChatState: Sendable, Equatable {
           let pendingIndex = items.firstIndex(where: { $0.isPending && !$0.hasLanded && $0.signature == item.signature })
         {
           items[pendingIndex].hasLanded = true
+          if let rowID = item.rowID { items[pendingIndex].rowID = rowID }
           continue
         }
         items.append(item)
@@ -452,12 +455,14 @@ public struct ChatState: Sendable, Equatable {
       if next.items[index].kind == .assistant {
         next.items[index].isCommentary = fresh[start - overlap + offset].isCommentary
       }
+      if let rowID = fresh[start - overlap + offset].rowID { next.items[index].rowID = rowID }
     }
     for item in fresh[start...] {
       if item.kind == .user,
         let pendingIndex = next.items.firstIndex(where: { $0.isPending && !$0.hasLanded && $0.signature == item.signature })
       {
         next.items[pendingIndex].hasLanded = true
+        if let rowID = item.rowID { next.items[pendingIndex].rowID = rowID }
         continue
       }
       next.items.append(item)

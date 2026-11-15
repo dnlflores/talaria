@@ -460,6 +460,44 @@ public final class HermesClient: Sendable {
     }
   }
 
+  // MARK: Try again
+
+  /// The chat's stored rows, each with its durable `row_id`, and the fences they were read at:
+  /// what Try again picks the message to go back to from (`RetryTurn.pick`). The desktop app reads
+  /// the same snapshot for `/retry`. Resuming again re-attaches this socket: `subscriptionID` is
+  /// the attachment to detach from from now on.
+  public func rewindSnapshot(
+    liveID: String, profile: String
+  ) async throws -> (rows: [JSONValue], fences: SessionFences, subscriptionID: String) {
+    let json = try await rpc.call(
+      "session.resume", ["session_id": .string(liveID), "profile": .string(profile), "cols": 100], timeout: 90)
+    let fences = SessionFences(revision: json["revision"].int, generation: json["execution_generation"].int)
+    return (json["messages"].array ?? [], fences, json["subscription_id"].stringValue)
+  }
+
+  /// Takes the chat back to before `request.targetRowID` (that message and everything after it)
+  /// with `session.mutate` `rewind`, fenced by the snapshot the target was picked from. Unlike
+  /// `mutate`, a stale fence is not retried at fresh fences: the chat changed since the target was
+  /// picked, so the refusal goes to the caller. Sending the same request again after a lost
+  /// answer gets the receipt the Mac already wrote.
+  public func rewind(_ request: RewindRequest, liveID: String, profile: String) async throws -> RewindReceipt {
+    let json = try await rpc.call("session.mutate", JSONValue.fields([
+      "session_id": .string(liveID), "profile": .string(profile), "request_id": .string(request.requestID),
+      "expected_revision": .number(Double(request.fences.revision ?? 0)),
+      "expected_generation": .number(Double(request.fences.generation ?? 0)),
+      "operation": "rewind", "payload": ["target_message_id": .number(Double(request.targetRowID))],
+    ]), timeout: 60)
+    return RewindReceipt(json)
+  }
+
+  /// The id of the newest stored row of a conversation (nil when it holds none): what a rewind
+  /// receipt is checked against before the words it took back go out again
+  /// (`RewindReceipt.isCurrent`).
+  public func newestRowID(storedID: String, profile: String) async throws -> Int? {
+    let rows = try await latestMessages(storedID: storedID, profile: profile, limit: 1)
+    return rows.compactMap { $0["id"].int }.max()
+  }
+
   /// Stages a picture for the next turn of this session; pass the result to `submit`.
   public func attachImage(liveID: String, profile: String, data: Data, filename: String) async throws -> StagedImage {
     let result = try await rpc.call(
