@@ -36,6 +36,9 @@ HermesKit (Swift package, no UI)
   PromptQueue     messages waiting for the running reply
   PushRegistration  what the phone tells the Mac's push plugin; SigningFacts
   ComposerKey     what a hardware key does in the composer
+  SlashCommands   `/command` parsing, the `/` menu's rows, which commands stay on the Mac,
+                  and SlashRunner, which turns `slash.exec` / `command.dispatch` answers
+                  into a turn, a composer prefill or a notice
   RecentChats     the last three chats opened on the phone, and the app icon's
                   shortcuts made from them (QuickAction)
   UserContent     a user message's words and its `@image:` pictures
@@ -348,7 +351,13 @@ on the phone (`PromptQueue`, HermesKit, unit-tested):
   goes to the front and the reply is stopped, so it goes out next.
 - Stop pauses the queue. Leaving the chat or the app going to the background
   hands the queue to the Mac (`queued: true`), which runs it after the reply
-  with the phone asleep; what cannot be handed over becomes the chat's draft.
+  with the phone asleep. What cannot be handed over (a paused queue, a
+  command and what follows it, a failed handover) stays queued for the next
+  time the chat opens, each message its own entry with its files
+  (`AppModel.leaveBehind`): it waits for a reply still running then, and is
+  held until sent by hand if none is. Picked files left in the composer come
+  back too. Queued words are saved on the phone and outlast the app; files
+  are kept only while it runs.
 - The Mac's queue merges text entries into one turn and writes each queued row
   into the history at once, right after the running turn's message, moving it
   to the end when its turn starts. So the visible queue stays on the phone, and
@@ -357,6 +366,55 @@ on the phone (`PromptQueue`, HermesKit, unit-tested):
   the Mac starts shows them as its message, and a resume after the reply puts
   back in the queue (held) whatever the Mac dropped, for a stopped reply clears
   its queue.
+
+## Slash commands
+
+A message that starts with `/name` (a bare name, then a space or the end; `/usr/local` is
+words) is a command, run the way the desktop app runs one
+(`apps/desktop/src/app/session/hooks/use-prompt-actions/slash.ts`), never sent to the model as
+words:
+
+- **The menu:** while the composer holds just `/` and one word, `complete.slash {text,
+  session_id | profile}` fills a list above the composer card, 150 ms after the last
+  keystroke, stale answers dropped and each answer kept for the chat. A chat attached here
+  names its session (project skills follow its folder); a new chat nothing was sent in yet
+  names its bot. Rows carry the item's `kind` (skill or command); an answer completing an
+  argument (`replace_from` past the slash) gives no rows. Tapping one leaves `/name ` in the
+  composer.
+- **Running one:** `slash.exec {session_id, command}` first; when it refuses (skills and
+  bundles are refused on purpose), `command.dispatch {session_id, name, arg}`. A `skill` or
+  `send` directive's `message` goes out with `prompt.submit` like any turn, and the bubble
+  shows `display`, else what was typed: never the expanded skill or the words a command
+  composed. What it is matched against the Mac's copy by is kept apart from what it shows:
+  `sentText` is how the Mac's history reads the exact text sent back (a skill turn as its
+  invocation, anything else with its `@file:` references), so a lost acknowledgement or a
+  reload finds it rather than adding a second copy. `prefill` fills the composer (`/undo`,
+  after which the chat re-reads the Mac's copy). `alias` runs its target. Plain `output`
+  (with `warning`) and every error become a notice card under the command, in this app only
+  (`TranscriptItem.isLocal`): not sent, not stored, gone on the next full reload.
+- **Leaving while one is worked out:** a skill or send directive still goes out, as a message
+  sent just before leaving does. What does not go out comes back when the chat opens again,
+  as it would have with the chat open: words to edit, or a command typed in the composer that
+  failed, become the saved draft with the files picked; a queued command that failed goes
+  back to its place in the queue, held, with its files. A message that fails to send after
+  leaving comes back the same way.
+- **Desktop-owned commands:** the commands the desktop app handles itself (a new chat, the
+  theme, pickers, its own dedicated calls) and those Hermes gives no app surface are left off
+  the menu, and sending one says to run it on the Mac (`SlashPolicy`).
+- **While a reply runs** a command waits in the phone's queue and runs when it reaches the
+  front. "Send now" cannot put a command into the running reply, so it stops the reply and
+  runs the command next; handing the queue to the Mac stops at a command, which waits for the
+  phone, and waits for a command that already left the queue until its turn has been taken,
+  so nothing queued after it reaches the Mac first.
+
+`SlashCommandTests` (HermesKit) covers parsing, every directive, plain output, errors, the
+rule that no answer turns the typed command into a message, and matching a sent skill or
+composed message (files included) against the Mac's stored copy; the UI test of the same name
+runs the production composer and transcript against canned answers (`--scroll-preview
+--slash-preview`). `SlashDeliveryTests` (the hosted `TalariaTests` target) drives the
+production `ChatModel` and `HermesClient` against `GatewayFixture`, a loopback stand-in for the
+gateway: leaving or going to sleep while a command is worked out, and finding a sent command
+again on reload.
 
 ## Pictures
 
@@ -599,6 +657,7 @@ Kanban rows switch to those areas instead (Cron filtered to the bot through
 
 ## What is deliberately not here yet
 
-- Slash commands typed into the composer are sent as plain text.
+- Argument menus for commands (`/personality <name>`), `@` file references, and the slash
+  commands the desktop app handles itself.
 - Rolling an edit back (`rollback.*`) and the working-folder picker.
 - Actions on notifications (approve, answer, reply from the banner).

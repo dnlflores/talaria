@@ -81,17 +81,36 @@ targets:
         TEST_TARGET_NAME: Talaria
         TARGETED_DEVICE_FAMILY: "1,2"
 
+  # Tests of the app's own models hosted in the app, against a loopback stand-in for the gateway.
+  TalariaTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: TalariaTests
+    dependencies:
+      - target: Talaria
+      - package: HermesKit
+        product: HermesKit
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: $(TALARIA_BUNDLE_ID).tests
+        TEST_TARGET_NAME: Talaria
+        TARGETED_DEVICE_FAMILY: "1,2"
+
 schemes:
   Talaria:
     build:
       targets:
         Talaria: all
+        TalariaTests: [test]
         TalariaUITests: [test]
     run:
       config: Debug
     test:
       config: Debug
       targets:
+        - TalariaTests
         - TalariaUITests
     archive:
       config: Release

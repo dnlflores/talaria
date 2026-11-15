@@ -118,8 +118,13 @@ mobile app: Connections, Plugins, MCP).
 - Configuration: `config.get`, `config.set`, `config.show`
 - Memory and learning: `learning.*`, `insights.get`
 - Usage and billing: `usage.bars`, `session.usage`, `billing.*`
-- Slash commands in the composer: `commands.catalog`, `slash.exec`,
-  `command.dispatch`, `complete.slash`
+- Done: slash commands in the composer. `complete.slash` fills the `/` menu
+  (per chat, or per bot for a new chat); sending runs `slash.exec`, then
+  `command.dispatch` when it refuses, like the desktop app. Skills and send
+  directives start a turn showing what was typed, prefill fills the composer,
+  plain output is a card only the phone shows. Next: argument menus
+  (`/personality <name>`), `@` file references (`complete.path`), and the
+  commands the desktop app handles itself.
 - Conversation tools: `session.undo`, `session.compress`, `session.branch`,
   `session.steer`, `prompt.btw`, `prompt.background`
 

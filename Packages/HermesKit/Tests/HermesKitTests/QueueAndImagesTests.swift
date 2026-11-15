@@ -197,6 +197,24 @@ import Testing
     #expect(queue.entries.map(\.text) == ["one"])
     #expect(queue.isPaused)
   }
+
+  @Test func takenBackEntriesKeepTheirOwnPlaceInWrittenOrder() {
+    var closed = PromptQueue<Int>()
+    let command = closed.enqueue(text: "/usage", now: 1)
+    let words = closed.enqueue(text: "Implement the fix", attachments: [7], now: 2)
+    // A copy of the chat opened since has a message of its own, written later.
+    var reopened = PromptQueue<Int>()
+    reopened.enqueue(text: "Newer", now: 5)
+    // The later entry comes back first (it was left when the chat closed), the failed command after.
+    reopened.takeBack([words], paused: false)
+    reopened.takeBack([command], paused: false)
+    #expect(reopened.entries.map(\.text) == ["/usage", "Implement the fix", "Newer"])
+    #expect(reopened.entries[1].attachments == [7])
+    #expect(!reopened.isPaused)
+    reopened.takeBack([command], paused: true)
+    #expect(reopened.entries.map(\.text) == ["/usage", "Implement the fix", "Newer"], "taken back once")
+    #expect(reopened.isPaused)
+  }
 }
 
 /// Messages handed to the Mac's queue while the phone sleeps. Recorded: a second client resumed
