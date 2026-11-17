@@ -253,6 +253,10 @@ final class ChatModel: Identifiable {
   @ObservationIgnored private var window = HistoryWindow.complete
   /// Bumped whenever `window` changes outside `loadOlder`, so a page read for an older window is dropped.
   @ObservationIgnored private var windowGeneration = 0
+  /// Bumped when the held history is started over rather than extended (opening, a reattach whose
+  /// newest page does not line up, a rewind): what is older than the window is not what it was.
+  /// Find reads the rest of the chat again then.
+  private(set) var historyEpoch = 0
 
   /// Rows read when a chat opens and on each look for news, and per older page while scrolling up.
   /// A long agentic turn runs to a hundred rows and more, most of them tool output.
@@ -698,16 +702,18 @@ final class ChatModel: Identifiable {
     {
       var updated = window
       if unnamed { updated.identify(newest: page) } else { updated.absorb(newest: page) }
-      setWindow(updated)
+      setWindow(updated, extending: true)
     } else {
       next.replace(with: fresh, inflight: inflight, turnStartedAt: turnStartedAt, now: now)
       setWindow(pageWindow)
     }
   }
 
-  private func setWindow(_ new: HistoryWindow) {
+  /// `extending`: the same history with more of it held, at either end; else it starts over.
+  private func setWindow(_ new: HistoryWindow, extending: Bool = false) {
     window = new
     windowGeneration += 1
+    if !extending { historyEpoch += 1 }
     if hasOlder != new.hasOlder { hasOlder = new.hasOlder }
   }
 
@@ -727,9 +733,10 @@ final class ChatModel: Identifiable {
         into: &older, firstLimit: Self.olderPageRows, nextLimit: Self.olderPageRows, wholeTurns: true,
         fetch: fetch, until: { $0.contains(where: HistoryWindow.startsTurn) })
       await untilStill()
-      // The transcript was replaced meanwhile: this page belongs to the old one.
-      guard generation == windowGeneration, !isClosed else { return false }
-      setWindow(older)
+      // Whoever asked has moved on (Find closed or searching something else), or the transcript
+      // was replaced meanwhile and this page belongs to the old one: it does not land.
+      guard !Task.isCancelled, generation == windowGeneration, !isClosed else { return false }
+      setWindow(older, extending: true)
       let items = TranscriptItem.items(fromStoredRows: rows)
       guard !items.isEmpty else { return true }
       var next = state
@@ -737,7 +744,10 @@ final class ChatModel: Identifiable {
       state = next
       return true
     } catch {
-      if !isClosed { app?.show("Could not load earlier messages: \(error.localizedDescription)", kind: .failure) }
+      // A read given up on is not a failure to tell anyone about.
+      if !isClosed, !Task.isCancelled, !(error is CancellationError) {
+        app?.show("Could not load earlier messages: \(error.localizedDescription)", kind: .failure)
+      }
       return false
     }
   }
@@ -770,20 +780,26 @@ final class ChatModel: Identifiable {
 
   /// Every stored row older than what is held, laid out as the transcript lays it out, for Find
   /// to search. What is on screen, and where the next older page starts, stay as they are.
-  func readOlderForFind() async throws -> [TranscriptRow] {
-    guard hasOlder, let fetch = olderPages() else { return [] }
+  /// Throws `CancellationError` when the held history was started over while it read
+  /// (`historyEpoch`): those rows were older than a window that is gone.
+  func readOlderForFind() async throws -> (rows: [TranscriptRow], reachedStart: Bool) {
+    guard hasOlder, let fetch = olderPages() else { return ([], true) }
+    let epoch = historyEpoch
     var rest = window
     let rows = try await HistoryWindow.readOlder(
       into: &rest, firstLimit: Self.olderPageRows, nextLimit: Self.olderPageRows, fetch: fetch, until: { _ in false })
-    return TranscriptLayout.rows(for: TranscriptItem.items(fromStoredRows: rows), isStreaming: false)
+    guard epoch == historyEpoch, !Task.isCancelled else { throw CancellationError() }
+    return (TranscriptLayout.rows(for: TranscriptItem.items(fromStoredRows: rows), isStreaming: false), rest.reachedStart)
   }
 
   /// Loads older pages, one at a time as scrolling up would, until `found` holds. False when the
-  /// start was reached first or a page could not be read.
+  /// start was reached first, a page could not be read, or the caller was cancelled (then nothing
+  /// more lands).
   func loadOlder(until found: () -> Bool, untilStill: () async -> Void) async -> Bool {
     while !found() {
       // A page the transcript asked for lands first.
-      while isLoadingOlder, !isClosed { try? await Task.sleep(for: .milliseconds(50)) }
+      while isLoadingOlder, !isClosed, !Task.isCancelled { try? await Task.sleep(for: .milliseconds(50)) }
+      guard !Task.isCancelled else { return false }
       if found() { return true }
       guard hasOlder, !isClosed, await loadOlder(untilStill: untilStill) else { return false }
     }

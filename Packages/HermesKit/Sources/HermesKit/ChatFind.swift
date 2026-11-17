@@ -21,10 +21,14 @@ public enum ChatFind {
     public var turn: Int?
     /// Position among the turn's searchable rows; the person's message is 0.
     public var ordinal: Int
+    /// Before the chat's first message from the person (a greeting), in a copy that holds the
+    /// chat's start. Such rows are the same in every copy that holds it, by `ordinal`.
+    public var opensChat: Bool
 
-    public init(turn: Int?, ordinal: Int) {
+    public init(turn: Int?, ordinal: Int, opensChat: Bool = false) {
       self.turn = turn
       self.ordinal = ordinal
+      self.opensChat = opensChat
     }
   }
 
@@ -46,9 +50,11 @@ public enum ChatFind {
       self.place = place
     }
 
-    /// The same message, found in this list or another copy of it.
+    /// The same message, found in this list or another copy of it. Rows of a turn the Mac has not
+    /// named yet only match themselves: two of those can share a place.
     public func isSame(as other: Hit) -> Bool {
       if let turn = place.turn, other.place.turn == turn { return place.ordinal == other.place.ordinal }
+      if place.opensChat, other.place.opensChat { return place.ordinal == other.place.ordinal }
       return row == other.row
     }
   }
@@ -108,10 +114,11 @@ public enum ChatFind {
 
   // MARK: Searching
 
-  /// The searchable rows of a transcript, oldest first, each with its place.
-  public static func entries(_ rows: [TranscriptRow]) -> [Entry] {
+  /// The searchable rows of a transcript, oldest first, each with its place. `holdsStart`: the
+  /// rows begin where the chat does, so any before the first message from the person open it.
+  public static func entries(_ rows: [TranscriptRow], holdsStart: Bool = true) -> [Entry] {
     var index = Index()
-    return index.entries(rows)
+    return index.entries(rows, holdsStart: holdsStart)
   }
 
   /// The messages `query` appears in, newest first. An empty query finds nothing.
@@ -132,16 +139,18 @@ public enum ChatFind {
 
     public init() {}
 
-    public mutating func entries(_ rows: [TranscriptRow]) -> [Entry] {
+    public mutating func entries(_ rows: [TranscriptRow], holdsStart: Bool = true) -> [Entry] {
       var entries: [Entry] = []
       var seen = Set<UUID>()
       var turn: Int?
       var ordinal = 0
+      var opensChat = holdsStart
       for row in rows {
         guard let source = ChatFind.source(row) else { continue }
         if case .user(let item) = row {
           turn = item.rowID
           ordinal = 0
+          opensChat = false
         } else {
           ordinal += 1
         }
@@ -153,7 +162,7 @@ public enum ChatFind {
           folded[row.id] = (source, text)
         }
         seen.insert(row.id)
-        entries.append(Entry(row: row.id, place: Place(turn: turn, ordinal: ordinal), text: text))
+        entries.append(Entry(row: row.id, place: Place(turn: turn, ordinal: ordinal, opensChat: opensChat), text: text))
       }
       if folded.count > seen.count { folded = folded.filter { seen.contains($0.key) } }
       return entries

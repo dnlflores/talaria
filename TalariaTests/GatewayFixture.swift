@@ -77,6 +77,11 @@ final class GatewayFixture: @unchecked Sendable {
   /// Chats another process is running: their row carries a fresh heartbeat the gateway's live list lacks.
   private var elsewhere: Set<String> = []
   private var sideCount = 0
+  /// Stored-message reads answer 503 while this is set.
+  private var failsHistory = false
+  /// Seconds each stored-message read waits before it answers.
+  private var historyDelay = 0.0
+  private var historyReads = 0
 
   private(set) var port: UInt16 = 0
   var address: String { "http://127.0.0.1:\(port)" }
@@ -183,6 +188,12 @@ final class GatewayFixture: @unchecked Sendable {
   /// Reattaches held by `holdNextReattach` so far.
   var reattachesHeld: Int { locked { heldReattaches } }
   func moveOnBeforeNextMutate() { locked { movesOnBeforeNextMutate = true } }
+  /// Stored-message reads fail (503) until this is called with false.
+  func failHistory(_ fails: Bool) { locked { failsHistory = fails } }
+  /// Each stored-message read waits `seconds` before answering.
+  func delayHistory(_ seconds: Double) { locked { historyDelay = seconds } }
+  /// Stored-message reads so far.
+  var historyReadCount: Int { locked { historyReads } }
 
   /// Call with `lock` held.
   private func append(_ role: String, _ content: JSONValue, to session: String) {
@@ -260,8 +271,29 @@ final class GatewayFixture: @unchecked Sendable {
       ]
     case let path where path.hasPrefix("/api/sessions/") && path.hasSuffix("/messages"):
       let session = String(path.dropFirst("/api/sessions/".count).dropLast("/messages".count))
-      let rows: [JSONValue] = locked { transcripts[session] ?? [] }
-      body = ["messages": .array(rows), "total": .number(Double(rows.count)), "has_more": false]
+      let (rows, failing, delay): ([JSONValue], Bool, Double) = locked {
+        historyReads += 1
+        return (transcripts[session] ?? [], failsHistory, historyDelay)
+      }
+      if failing {
+        connection.respond(["error": "history unavailable"], status: 503)
+        return
+      }
+      // A page of the newest rows: `limit` rows `offset` back from the newest (`order=latest`).
+      if let limit = request.query["limit"].flatMap(Int.init) {
+        let offset = request.query["offset"].flatMap(Int.init) ?? 0
+        let end = max(0, rows.count - offset)
+        let start = max(0, end - limit)
+        body = [
+          "messages": .array(Array(rows[start..<end])), "total": .number(Double(rows.count)), "has_more": .bool(start > 0),
+        ]
+      } else {
+        body = ["messages": .array(rows), "total": .number(Double(rows.count)), "has_more": false]
+      }
+      if delay > 0 {
+        queue.asyncAfter(deadline: .now() + delay) { connection.respond(body) }
+        return
+      }
     case let path where path.hasPrefix("/api/sessions/") && !path.dropFirst("/api/sessions/".count).contains("/"):
       let session = String(path.dropFirst("/api/sessions/".count))
       let busy = locked { elsewhere.contains(session) }
@@ -450,6 +482,7 @@ private final class OnceFlag: @unchecked Sendable {
 private final class Connection: @unchecked Sendable {
   struct Request {
     let path: String
+    let query: [String: String]
     let headers: [String: String]
   }
 
@@ -504,12 +537,15 @@ private final class Connection: @unchecked Sendable {
     buffer.removeSubrange(..<(end.upperBound + length))
     let target = requestLine.count > 1 ? String(requestLine[1]) : "/"
     let path = String(target.prefix { $0 != "?" })
-    onRequest?(Request(path: path.removingPercentEncoding ?? path, headers: headers))
+    let items = URLComponents(string: target)?.queryItems ?? []
+    let query = Dictionary(items.map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { _, last in last })
+    onRequest?(Request(path: path.removingPercentEncoding ?? path, query: query, headers: headers))
   }
 
-  func respond(_ body: JSONValue) {
+  func respond(_ body: JSONValue, status: Int = 200) {
     let data = body.data()
-    let head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(data.count)\r\nConnection: close\r\n\r\n"
+    let reason = status == 200 ? "OK" : "Error"
+    let head = "HTTP/1.1 \(status) \(reason)\r\nContent-Type: application/json\r\nContent-Length: \(data.count)\r\nConnection: close\r\n\r\n"
     connection.send(content: Data(head.utf8) + data, completion: .contentProcessed { [weak self] _ in
       self?.connection.cancel()
     })

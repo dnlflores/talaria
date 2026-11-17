@@ -152,6 +152,13 @@ struct TranscriptView: View {
     .onChange(of: finder?.reveal) { _, reveal in
       if let reveal { self.reveal(reveal.row) }
     }
+    .onChange(of: finder == nil) { _, closed in
+      // Done: a step still settling must not move the view after the bar has gone.
+      if closed {
+        tracker.pendingReveal = nil
+        tracker.revealed = nil
+      }
+    }
     .onChange(of: chat.scrollToEnd) {
       isFollowing = true
       withAnimation(.snappy(duration: 0.3)) { position.scrollTo(edge: .bottom) }

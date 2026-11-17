@@ -157,6 +157,36 @@ struct ChatFindTests {
     #expect(!a.isSame(as: b))
   }
 
+  @Test func aGreetingBeforeTheFirstMessageIsFoundAgainWhenTheStartLoads() throws {
+    let json = """
+      [
+        {"id": 1, "role": "assistant", "content": "Hello, ask me about the **lighthouse**."},
+        {"id": 2, "role": "user", "content": "What lighthouse?"},
+        {"id": 3, "role": "assistant", "content": "The old one."}
+      ]
+      """
+    let searched = try rows(json)
+    let loaded = try rows(json)
+    let older = try #require(ChatFind.hits(in: searched, query: "lighthouse").last)
+    let onScreen = try #require(ChatFind.hits(in: ChatFind.entries(loaded), query: "lighthouse").last)
+    #expect(older.place == ChatFind.Place(turn: nil, ordinal: 1, opensChat: true))
+    #expect(older.row != onScreen.row)
+    #expect(older.isSame(as: onScreen))
+    #expect(!older.isSame(as: try #require(ChatFind.hits(in: loaded, query: "what lighthouse").first)))
+    // Rows that do not begin at the chat's start never open it, so they match by row alone.
+    let midway = try #require(ChatFind.hits(in: ChatFind.entries(loaded, holdsStart: false), query: "lighthouse").last)
+    #expect(!midway.place.opensChat)
+    #expect(!older.isSame(as: midway))
+  }
+
+  @Test func unnamedTurnRowsNeverMatchAGreeting() {
+    // An answer to a message sent from here sits at (no turn, 1), as a greeting does.
+    let answer = ChatFind.Hit(row: UUID(), place: ChatFind.Place(turn: nil, ordinal: 1))
+    let greeting = ChatFind.Hit(row: UUID(), place: ChatFind.Place(turn: nil, ordinal: 1, opensChat: true))
+    #expect(!answer.isSame(as: greeting))
+    #expect(!greeting.isSame(as: answer))
+  }
+
   @Test func indexKeepsUpWithAStreamingReply() {
     var index = ChatFind.Index()
     var answer = TranscriptItem(kind: .assistant, text: "Writing about")
