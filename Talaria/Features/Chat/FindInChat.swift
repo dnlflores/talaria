@@ -115,6 +115,13 @@ final class ChatFinder {
     return hits.count == 1 ? "1 match" : "\(hits.count) matches"
   }
 
+  /// The status as VoiceOver reads it: a count that leaves out the older messages says so.
+  var statusLabel: String {
+    let status = status
+    guard olderUnread, !isReadingOlder, !hits.isEmpty else { return status }
+    return "\(status), older messages not searched"
+  }
+
   /// The older messages could not be read for this word and can be tried again.
   var canRetry: Bool { hasQuery && olderUnread && !isReadingOlder }
 
@@ -361,7 +368,7 @@ struct FindBar: View {
           .foregroundStyle(palette.foregroundMuted)
           .lineLimit(1)
           .fixedSize()
-          .accessibilityLabel(finder.olderUnread ? "\(status), older messages not searched" : status)
+          .accessibilityLabel(finder.statusLabel)
           .accessibilityIdentifier("find.count")
       }
       if finder.canRetry {

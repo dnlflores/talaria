@@ -126,7 +126,8 @@ T3 Tools.
   one, outlined for a moment. Your messages, answers and progress notes count,
   ignoring case, accents and Markdown; tool output and thinking do not. Older
   messages still on the Mac are searched too ("Searching..." while it reads),
-  and stepping to one loads the chat back to it.
+  and stepping to one loads the chat back to it. If those can't be read, the
+  bar says "Older not searched" with a button to try again.
 - **Side questions and background tasks:** `/btw what file were you editing?`
   asks a quick question from what the chat knows so far, and `/bg <task>`
   (or `/background`) runs a task in a session of its own. Either one goes out

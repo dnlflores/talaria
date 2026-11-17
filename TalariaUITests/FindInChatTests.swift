@@ -19,7 +19,9 @@ final class FindInChatTests: XCTestCase {
     continueAfterFailure = false
     app = XCUIApplication()
     app.launchArguments = ["--scroll-preview", "--older-pages"]
-    app.launchEnvironment["TALARIA_UITEST_PAGE_DELAY"] = "1.5"
+    app.launchEnvironment["TALARIA_UITEST_PAGE_DELAY"] = "2.5"
+    // The first read of the older messages fails (no connection), for the retry test.
+    if name.contains("TriedAgain") { app.launchEnvironment["TALARIA_UITEST_HISTORY_FAILS"] = "1" }
     // Screenshot runs: `TALARIA_UITEST_LANDSCAPE=1`, `TALARIA_UITEST_APPEARANCE=light`,
     // `TALARIA_UITEST_HIGHLIGHT_HOLD=<seconds>` (keeps the outline for the shots).
     let environment = ProcessInfo.processInfo.environment
@@ -155,9 +157,13 @@ final class FindInChatTests: XCTestCase {
   }
 
   func testNoMatchesAndCommandF() {
-    // A hardware keyboard's Cmd-F opens the bar, as on the Mac.
-    app.typeKey("f", modifierFlags: .command)
-    XCTAssertTrue(field.waitForExistence(timeout: 3))
+    // A hardware keyboard's Cmd-F opens the bar, as on the Mac. Sent again if the first press
+    // arrived before the chat was ready for keys.
+    for _ in 0..<3 where !field.exists {
+      app.typeKey("f", modifierFlags: .command)
+      _ = field.waitForExistence(timeout: 3)
+    }
+    XCTAssertTrue(field.exists)
     field.typeText("quokka")
     waitForCount("No matches")
     XCTAssertFalse(older.isEnabled)
@@ -166,5 +172,28 @@ final class FindInChatTests: XCTestCase {
     app.buttons["find.done"].tap()
     XCTAssertTrue(field.waitForNonExistence(timeout: 3))
     XCTAssertTrue(latest.isHittable, "closing with no match leaves the chat where it was")
+  }
+
+  func testAFailedSearchOfOlderMessagesSaysSoAndCanBeTriedAgain() {
+    openFindFromMenu()
+    field.typeText("zephyr")
+    // Nothing on the phone matches, and the older messages could not be read: not "No matches".
+    waitForCount("Older not searched")
+    let retry = app.buttons["find.retry"]
+    XCTAssertTrue(retry.waitForExistence(timeout: 3))
+    // The failure's toast covers the bar for about three seconds.
+    Thread.sleep(forTimeInterval: 3.8)
+    XCTAssertTrue(retry.exists, "still offered once the toast has gone")
+    shoot("find-older-not-searched")
+    // Tap until the read starts, in case a toast still swallows the first tap.
+    for _ in 0..<5 where retry.exists {
+      retry.tap()
+      Thread.sleep(forTimeInterval: 1)
+    }
+    XCTAssertFalse(retry.exists, "the retry button goes once the read starts")
+    waitForCount("1 of 2")
+    XCTAssertTrue(app.staticTexts[newestMatch].waitForExistence(timeout: 20))
+    assertInView(newestMatch, "the newest match after trying again")
+    shoot("find-retried")
   }
 }

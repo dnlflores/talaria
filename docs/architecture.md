@@ -136,10 +136,16 @@ The chat's ••• menu (or Cmd-F with a hardware keyboard) opens a find bar u
 the title: a field, a count ("3 of 12", newest first), older and newer arrows,
 and Done. `ChatFinder` searches two lists with `ChatFind` (HermesKit): the rows
 on the phone, re-read as they change (`ChatFind.Index` keeps each row's folded
-text until its words change), and the rest of the chat, read once from the Mac
+text until its words change), and the rest of the chat, read from the Mac
 by `ChatModel.readOlderForFind` (`HistoryWindow.readOlder` on a copy of the
 window, so neither the rows on screen nor where the next older page starts
-change). The count says "Searching..." while that read runs.
+change). The count says "Searching..." while that read runs. When the held
+history is started over rather than extended (a reattach whose newest page does
+not line up, a rewind), `ChatModel.historyEpoch` moves on: the older list stops
+counting and is read again, a read begun for the old window is dropped, and a
+step that was loading pages picks up once it is back. A read that fails says
+"Older not searched" (not "No matches") with a retry button, and the next word
+typed reads again.
 
 Only the person's messages, answers and progress notes count, on the text as it
 reads on screen: Markdown is reduced to its words with the same block parser
@@ -150,15 +156,25 @@ A match in the older list is found again after its page loads by its place: the
 stored row id of the person's message that starts its turn, and its position
 among that turn's searchable rows. Pages start at a turn, so a turn reads the
 same in both lists, and a turn already loaded is counted once, on the phone.
+Rows before the chat's first message from the person (a greeting) have no turn;
+in a list that holds the chat's start they match by position instead, while the
+rows of a turn the Mac has not named yet only ever match themselves.
 Stepping to such a match calls `ChatModel.loadOlder` page by page, each landing
-only once the scroll is still, until the turn is held. `TranscriptView.reveal`
+only once the scroll is still, until the turn is held. Done, another step or a
+new word cancels that: a page read or waiting for the scroll to stop is then
+dropped, not landed, and no failure is shown. `TranscriptView.reveal`
 then stops following, widens the window down to the row if it was above it,
 waits for `keepPlace` to settle the rows that came in, scrolls the row to the
 top of the visible area and outlines it for a moment (`FindHighlight`, faded
 from a `TimelineView` clock). Done closes the bar and leaves the view there.
 
 `FindInChatTests` runs this offline: `--older-pages` puts forty older turns on a
-stand-in Mac for the `--scroll-preview` chat, read through the same paging code.
+stand-in Mac for the `--scroll-preview` chat, read through the same paging code
+(`TALARIA_UITEST_HISTORY_FAILS=<n>` fails the first reads). `FindInChatModelTests`
+drives the production `ChatFinder` and `ChatModel` against the loopback
+`GatewayFixture`, which serves stored messages a page at a time and can fail or
+slow them: pages given up on, history replaced under an open search, a failed
+read retried, and a greeting stepped to.
 
 ## Connecting to Hermes
 

@@ -224,6 +224,8 @@ final class ChatModel: Identifiable {
   /// rows it counts as held.
   @ObservationIgnored private var previewOlderRows: [JSONValue]?
   @ObservationIgnored private var previewHeldRows = 0
+  /// `TALARIA_UITEST_HISTORY_FAILS=<n>`: the first `n` reads of those rows fail.
+  @ObservationIgnored private var previewFailuresLeft = 0
   #endif
 
   private weak var app: AppModel?
@@ -326,6 +328,7 @@ final class ChatModel: Identifiable {
     if ProcessInfo.processInfo.arguments.contains("--older-pages") {
       chat.previewOlderRows = olderPagesPreview()
       chat.previewHeldRows = chat.state.items.count
+      chat.previewFailuresLeft = ProcessInfo.processInfo.environment["TALARIA_UITEST_HISTORY_FAILS"].flatMap(Int.init) ?? 0
       let held: [JSONValue] = (0..<chat.previewHeldRows).map { ["id": .string("held-\($0)"), "role": "assistant"] }
       var window = HistoryWindow()
       _ = window.take(page: held, limit: held.count)
@@ -760,8 +763,12 @@ final class ChatModel: Identifiable {
       if let stored = previewOlderRows {
         // `--older-pages`: older pages come from canned rows held before what is on screen.
         let held = previewHeldRows
-        return { offset, limit in
+        return { [weak self] offset, limit in
           if let delay { try await Task.sleep(for: .seconds(delay)) }
+          if let self, self.previewFailuresLeft > 0 {
+            self.previewFailuresLeft -= 1
+            throw URLError(.notConnectedToInternet)
+          }
           let end = max(0, stored.count - (offset - held))
           return Array(stored[max(0, end - limit)..<end])
         }
