@@ -50,7 +50,9 @@ struct ComposerView: View {
       }
 
       VStack(alignment: .leading, spacing: 8) {
-        ComposerInput(text: $chat.draft, placeholder: placeholder, focusRequest: chat.focusComposer) {
+        ComposerInput(
+          text: $chat.draft, placeholder: placeholder, focusRequest: chat.focusComposer, isLocked: chat.isSendingEdit
+        ) {
           // Return on a hardware keyboard; Shift-Return adds a line (ComposerInput).
           if chat.canSend { send() }
         }
@@ -236,12 +238,15 @@ struct ComposerView: View {
       .contentShape(Circle())
     }
     .buttonStyle(.plain)
+    // Dictation would change the words of an edit that is already on its way.
+    .disabled(chat.isSendingEdit)
     .accessibilityLabel(isListening ? "Stop dictation" : "Dictate")
     .accessibilityIdentifier("composer.mic")
   }
 
   private var sendButton: some View {
-    let isOn = chat.canSend || chat.showsStop
+    // An edit on its way already took its words; the button is off until they have gone.
+    let isOn = (chat.canSend && !chat.isSendingEdit) || chat.showsStop
     return Button {
       if chat.showsStop {
         Task { await chat.stop() }

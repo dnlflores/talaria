@@ -107,6 +107,40 @@ final class EditTests: XCTestCase {
     XCTAssertEqual(bubbles(question).count, 0, "the old words are nowhere")
   }
 
+  /// The edit goes with the words it had at Send: while it is on its way the composer keeps them
+  /// and refuses typing, so nothing typed then is silently dropped when the draft comes back.
+  func testTypingWaitsWhileTheEditIsOnItsWay() {
+    app.launchEnvironment["TALARIA_PREVIEW_EDIT_DELAY"] = "8"
+    app.launch()
+    startEditing()
+    input.tap()
+    input.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: question.count + 2))
+    input.typeText(edited)
+    waitFor("value == '\(edited)'", input)
+    app.buttons["Send"].tap()
+
+    // On its way: the bar stays (Cancel and Send are off), and typing changes nothing.
+    XCTAssertTrue(bar.exists)
+    XCTAssertFalse(app.buttons["composer.editing.cancel"].isEnabled, "an edit on its way can't be cancelled")
+    XCTAssertFalse(app.buttons["Send"].isEnabled, "nor sent again")
+    XCTAssertTrue(app.keyboards.firstMatch.exists, "the keyboard stays up")
+    input.typeText(", and the docs")
+    XCTAssertEqual(composerText, edited, "the locked composer refused the typing")
+    XCTAssertTrue(bar.exists, "still on its way while typing was tried")
+    shoot("edit-locked")
+
+    // Once it has gone: the edit shows once, as it was at Send, and the draft comes back.
+    waitFor("count == 1", bubbles(edited), timeout: 15)
+    waitFor("count == 0", bubbles(question))
+    XCTAssertEqual(texts(containing: "and the docs").count, 0, "the refused words went nowhere")
+    waitFor("exists == false", bar, timeout: 5)
+    waitFor("value == '\(draft)'", input)
+    // And the composer takes typing again.
+    input.typeText(" more")
+    waitFor("value == '\(draft) more'", input)
+    shoot("edit-unlocked")
+  }
+
   func testCancelBringsTheDraftBack() {
     app.launch()
     startEditing()

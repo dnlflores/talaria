@@ -604,6 +604,11 @@ no confirmation there; older turns are left to the desktop.
 - **Send:** while editing, the send button (and a hardware Return) sends the edit
   (`sendEdit`), never into the queue: if a reply started meanwhile it says so in a toast and
   the edit stays. Words that read as a `/command` are refused, since an edit sends words.
+  The words are taken at Send, so until they have gone out or come back the composer is locked
+  (`ChatModel.isSendingEdit`): its text view refuses typing, pasting and new lines
+  (`ComposerInput.isLocked`) with the keyboard left up, and Send, Cancel and dictation are off.
+  Words that still change the draft then (dictation landing late) stay in the composer ahead
+  of the set-aside draft (`finishEditing`), never dropped.
 - **Same path as Try again:** the edit runs through `takeBackNewestTurn`, the code Try again
   uses: the snapshot pick, `showsMacTurn`, the `session.mutate` `rewind` at the snapshot's
   fences, the kept request and its exact replay, the claim, the reload and the newest-row check.
@@ -635,10 +640,12 @@ words a claimed rewind sends;
 nothing of the old turn in the stored history, the draft coming back, Cancel, a view behind the
 Mac, the same words sent elsewhere, a reply started meanwhile, a `/command`, pictures, a
 lost rewind answer replayed on the next Send, a Try again after leaving that finishes the
-edit, and a refused edit's words kept after leaving, with the chat reopened or still closed;
+edit, a refused edit's words kept after leaving, with the chat reopened or still closed, and
+the locked composer while a rewind's answer is held;
 `EditTests` (UI) long-presses the message, edits
 and sends or cancels against the offline preview (`--scroll-preview`, whose stand-in takes the
-turn off and streams a canned reply).
+turn off and streams a canned reply; `TALARIA_PREVIEW_EDIT_DELAY` holds the edit on its way so
+the test can type into the locked composer and see nothing change).
 
 ## Pictures
 

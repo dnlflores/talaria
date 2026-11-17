@@ -144,6 +144,9 @@ final class ChatModel: Identifiable {
   }
   /// The newest message being edited in the composer (Edit), until it goes out or is cancelled.
   private(set) var editing: Editing?
+  /// The edit is on its way: the words it sends were taken at Send, so the composer holds them
+  /// and takes no typing until they have gone out or come back.
+  var isSendingEdit: Bool { editing != nil && sendingHere }
   /// Bumped when the composer should take the keyboard (Edit put words in it).
   private(set) var focusComposer = 0
   var attachments: [ComposerAttachment] = []
@@ -1811,6 +1814,20 @@ final class ChatModel: Identifiable {
     }
   }
 
+  /// The edit's words leave the composer: the bar goes and the draft set aside comes back. The
+  /// composer takes no typing while the edit is on its way (`isSendingEdit`), but if its words
+  /// changed after Send anyway (dictation that was still landing), what it holds now is not what
+  /// went out, so it stays ahead of that draft. Returns whether it did.
+  @discardableResult
+  private func finishEditing(sent words: String) -> Bool {
+    guard let editing else { return false }
+    self.editing = nil
+    let now = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    let changed = !now.isEmpty && now != words.trimmingCharacters(in: .whitespacesAndNewlines)
+    draft = changed ? EditTurn.keeping(edited: now, stash: editing.stash) : editing.stash
+    return changed
+  }
+
   /// Puts `words` ahead of the draft set aside for an edit, not into the words being edited.
   private func setAside(_ words: String) {
     guard var editing, !editing.stash.contains(words) else { return }
@@ -1941,10 +1958,7 @@ final class ChatModel: Identifiable {
           // Unless that copy is sending this very edit (the rewind carries its words), it did
           // not replace the message with these words.
           guard operation.isClaimed, operation.edit == edit else { return await movedOn() }
-          if !isClosed, let editing {
-            self.editing = nil
-            draft = editing.stash
-          }
+          if !isClosed { finishEditing(sent: edit) }
         }
         if !isClosed { await reloadAfterRewind() }
         return
@@ -1997,12 +2011,11 @@ final class ChatModel: Identifiable {
         throw error
       }
       guard receipt.isCurrent(newestRowID: newest) else { return await movedOn(onScreen: true) }
-      if plan.isEdit, text == edit, !isClosed, let editing {
+      if plan.isEdit, text == edit, !isClosed, editing != nil {
         // The bar goes and the draft set aside comes back as the edited words leave the composer.
-        self.editing = nil
-        draft = editing.stash
+        let keptChanged = finishEditing(sent: text)
         let sent = await deliver(text: text, picked: [], origin: .composer)
-        if !sent, !isClosed {
+        if !sent, !isClosed, !keptChanged {
           // Not sent: the edited words come back to the composer, the draft after them.
           draft = EditTurn.keeping(edited: text, stash: draft)
         }
@@ -2111,14 +2124,20 @@ final class ChatModel: Identifiable {
     }
     var text = user.sentText ?? user.text
     if let edit = resend.edit {
+      // `TALARIA_PREVIEW_EDIT_DELAY` (seconds) holds the edit on its way, as a slow Mac would,
+      // so a test can try the composer while it is locked.
+      if let delay = ProcessInfo.processInfo.environment["TALARIA_PREVIEW_EDIT_DELAY"].flatMap(Double.init), delay > 0 {
+        sendingHere = true
+        try? await Task.sleep(for: .seconds(delay))
+        sendingHere = false
+      }
       guard let editing, editing.itemID == user.id else {
         keepEditedWords(edit)
         app?.show(Self.editChanged, kind: .failure)
         return
       }
       text = edit
-      self.editing = nil
-      draft = editing.stash
+      finishEditing(sent: edit)
     }
     if let index = state.items.lastIndex(where: { $0.id == user.id }) { state.items = Array(state.items[..<index]) }
     state.items.append(.user(text, timestamp: now))

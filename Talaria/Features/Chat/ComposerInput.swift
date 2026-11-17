@@ -13,6 +13,9 @@ struct ComposerInput: UIViewRepresentable {
   var maxLines: Int = 8
   /// Bumped to give the text view the keyboard, with the cursor at the end (Edit filled it).
   var focusRequest = 0
+  /// An edit is on its way with the words taken at Send: the text stays as it is and every
+  /// change is refused, while the keyboard stays where it was.
+  var isLocked = false
   /// Return on a hardware keyboard (no Shift or Option).
   var onReturn: () -> Void
   @Environment(\.palette) private var palette
@@ -41,7 +44,8 @@ struct ComposerInput: UIViewRepresentable {
       view.text = text
       view.invalidateIntrinsicContentSize()
     }
-    view.textColor = UIColor(palette.foreground)
+    view.isLocked = isLocked
+    view.textColor = UIColor(isLocked ? palette.foregroundMuted : palette.foreground)
     view.tintColor = UIColor(palette.primary)
     view.accessibilityLabel = placeholder
     if context.coordinator.focusRequest != focusRequest {
@@ -80,6 +84,10 @@ struct ComposerInput: UIViewRepresentable {
       focusRequest = parent.focusRequest
     }
 
+    func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
+      !parent.isLocked
+    }
+
     func textViewDidChange(_ textView: UITextView) {
       if parent.text != textView.text { parent.text = textView.text }
       textView.invalidateIntrinsicContentSize()
@@ -92,6 +100,8 @@ struct ComposerInput: UIViewRepresentable {
 /// commits the text.
 final class ReturnKeyTextView: UITextView {
   var onReturn: (() -> Void)?
+  /// Refuses typing, pasting and new lines (`ComposerInput.isLocked`).
+  var isLocked = false
   /// Presses whose begin was handled here: their end must not reach UIKit either.
   private var handled: Set<UIPress> = []
 
@@ -108,11 +118,18 @@ final class ReturnKeyTextView: UITextView {
       super.pressesBegan(presses, with: event)
     case .newLine:
       handled.insert(press)
-      insertText("\n")
+      if !isLocked { insertText("\n") }
     case .send:
       handled.insert(press)
       onReturn?()
     }
+  }
+
+  override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+    if isLocked, action == #selector(paste(_:)) || action == #selector(cut(_:)) || action == #selector(delete(_:)) {
+      return false
+    }
+    return super.canPerformAction(action, withSender: sender)
   }
 
   override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {

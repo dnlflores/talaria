@@ -1,4 +1,6 @@
 @testable import HermesKit
+import SwiftUI
+import UIKit
 import XCTest
 
 @testable import Talaria
@@ -296,6 +298,31 @@ final class EditDeliveryTests: XCTestCase {
     XCTAssertTrue(applied)
     XCTAssertEqual(history(session), ["user: A", "assistant: Answer A"], "the old turn came off; its answer is held")
     return (app, chat, session, sending)
+  }
+
+  func testTheComposerTakesNoTypingWhileTheEditIsOnItsWay() async throws {
+    let (app, chat, session, sending) = try await editInFlight("edit-locked")
+    XCTAssertTrue(chat.isSendingEdit, "the composer is locked while the rewind waits")
+    // The production text view refuses every change while locked.
+    let input = ComposerInput(text: .constant("B edited"), placeholder: "", isLocked: chat.isSendingEdit, onReturn: {})
+    let view = ReturnKeyTextView()
+    view.text = "B edited"
+    XCTAssertFalse(
+      input.makeCoordinator().textView(view, shouldChangeTextIn: NSRange(location: 8, length: 0), replacementText: ", and the docs"))
+    view.isLocked = true
+    XCTAssertFalse(view.canPerformAction(#selector(UIResponderStandardEditActions.paste(_:)), withSender: nil))
+    // Words that still land (dictation finishing after Send) are not what went out: they stay.
+    chat.draft = "B edited, and include the docs"
+    fixture.release()
+    await sending.value
+    XCTAssertFalse(chat.isSendingEdit)
+    XCTAssertEqual(fixture.submitted.map(\.text), ["B edited"], "the edit goes as it was at Send")
+    XCTAssertEqual(history(session), ["user: A", "assistant: Answer A", "user: B edited"])
+    XCTAssertEqual(chat.draft, "B edited, and include the docs\n\nHalf a thought", "the later words are kept, the draft after them")
+    XCTAssertEqual(app.preferences.draft(for: session), chat.draft)
+    // Unlocked once it has gone: the composer takes typing again.
+    let unlocked = ComposerInput(text: .constant(""), placeholder: "", isLocked: chat.isSendingEdit, onReturn: {})
+    XCTAssertTrue(unlocked.makeCoordinator().textView(view, shouldChangeTextIn: NSRange(location: 0, length: 0), replacementText: "x"))
   }
 
   /// The person leaves the chat and opens it again.
