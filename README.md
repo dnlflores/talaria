@@ -120,6 +120,12 @@ T3 Tools.
   or stop it first; a message with pictures says it can't be sent again. If
   another device moved the chat on meanwhile, nothing is resent and the chat
   reloads.
+- **Edit your last message:** long-press your newest message and pick Edit to
+  fix a typo or change what you asked. Its words go into the composer under an
+  "Editing your message" bar (Cancel brings back what you were writing), and
+  Send replaces that turn on the Mac with the new words and a fresh reply. If
+  the chat moved on meanwhile, nothing is replaced and your edit stays in the
+  composer. Messages with pictures, files or a skill are not offered Edit.
 - **Side questions and background tasks:** `/btw what file were you editing?`
   asks a quick question from what the chat knows so far, and `/bg <task>`
   (or `/background`) runs a task in a session of its own. Either one goes out
@@ -328,6 +334,10 @@ files, queued messages) when the chat opens again, with no Mac;
 `/retry` against the offline preview, and `RetryDeliveryTests` (also
 `TalariaTests`) checks what the stand-in gateway's history holds after Try
 again, with no Mac;
+`EditTests` long-presses the last message, picks Edit, changes and sends the
+words or cancels, against the offline preview, and `EditDeliveryTests` (also
+`TalariaTests`) checks the stand-in gateway's history after an edit and that a
+chat that moved on keeps the edit in the composer, with no Mac;
 `SideLifecycleTests` (same target) checks `/btw` and `/bg` answers that land
 after leaving a chat, on read-only and watched reopens, and before their task
 id, with no Mac;

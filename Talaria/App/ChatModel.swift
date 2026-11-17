@@ -137,10 +137,18 @@ final class ChatModel: Identifiable {
 
   var draft: String {
     didSet {
-      app?.preferences.setDraft(draft, for: storedID)
+      // While a message is being edited, the draft kept for this chat is the one set aside.
+      app?.preferences.setDraft(editing?.stash ?? draft, for: storedID)
       slashDraftChanged()
     }
   }
+  /// The newest message being edited in the composer (Edit), until it goes out or is cancelled.
+  private(set) var editing: Editing?
+  /// The edit is on its way: the words it sends were taken at Send, so the composer holds them
+  /// and takes no typing until they have gone out or come back.
+  var isSendingEdit: Bool { editing != nil && sendingHere }
+  /// Bumped when the composer should take the keyboard (Edit put words in it).
+  private(set) var focusComposer = 0
   var attachments: [ComposerAttachment] = []
   var sendWhenReady = false
   /// Messages written while a reply runs. They go out one per turn once it ends, or now on request.
@@ -455,12 +463,15 @@ final class ChatModel: Identifiable {
   var info: SessionInfo { state.info }
   /// A reply is running or a message is on its way, so what is sent now waits in the queue.
   var isBusy: Bool { state.isStreaming || isSending }
-  /// Sending now would queue the message rather than start a turn. `/btw` and `/bg` never queue.
+  /// Sending now would queue the message rather than start a turn. `/btw` and `/bg` never queue,
+  /// and neither does an edit.
   var sendQueues: Bool {
-    isBusy && !continuesAsNewVersion && SlashInvocation(draft).flatMap(SideCommand.init) == nil
+    isBusy && editing == nil && !continuesAsNewVersion && SlashInvocation(draft).flatMap(SideCommand.init) == nil
   }
   var canSend: Bool {
     guard !isReadOnly, !isBranching else { return false }
+    // An edit sends its words alone; files picked before it wait for the next message.
+    if editing != nil { return !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     // A photo still being shrunk has no bytes yet; it is ready in a moment.
     if attachments.contains(where: { $0.status == .preparing }) { return false }
     return !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || attachments.contains { $0.isUsable }
@@ -1068,6 +1079,11 @@ final class ChatModel: Identifiable {
   /// The composer's send. While a reply runs the message waits in the queue; otherwise it goes now.
   func send() async {
     guard !isReadOnly else { return }
+    // An edit replaces the newest turn: never queued, and never run as a command.
+    if editing != nil {
+      await sendEdit()
+      return
+    }
     // `/retry` runs here, never queued or sent as words: while a reply runs it says to wait.
     if let command = SlashInvocation(draft), isRetry(command) {
       draft = ""
@@ -1126,9 +1142,11 @@ final class ChatModel: Identifiable {
   /// `display` is what the bubble shows when that differs from what is sent (a skill sends the
   /// expanded skill and shows the invocation that was typed); `typed` is what goes back to the
   /// composer if it fails. The Mac's copy is recognised by what was sent, whatever the bubble shows.
+  /// True when the Mac took the turn.
+  @discardableResult
   private func deliver(
     text: String, display: String? = nil, typed: String? = nil, picked: [ComposerAttachment], origin: Origin
-  ) async {
+  ) async -> Bool {
     let typed = typed ?? display ?? text
     #if DEBUG
     if isSlashPreview {
@@ -1137,10 +1155,10 @@ final class ChatModel: Identifiable {
       state.items.append(item)
       scrollToEnd += 1
       sendingHere = false
-      return
+      return true
     }
     #endif
-    guard let client else { return }
+    guard let client else { return false }
     // A new turn settles any Try again whose answer was lost: it is never replayed after this.
     Self.retireRetry(rewindKey)
     var item = TranscriptItem.outgoing(text, shown: display, timestamp: now)
@@ -1207,6 +1225,7 @@ final class ChatModel: Identifiable {
       PushCenter.shared.noteSent(profile: profile, storedID: storedID, title: title)
       app?.recordSent(self)
       app?.scheduleReload(after: 2.5)
+      return true
     } catch {
       state.isStreaming = false
       let wrapped = error as? HermesError ?? .transport(error.localizedDescription)
@@ -1217,14 +1236,14 @@ final class ChatModel: Identifiable {
         case .composer: leaveBehind(words: typed, attachments: picked)
         case .queue(let entry): leaveBehind(queued: [entry], paused: true)
         }
-        return
+        return false
       }
       if wrapped.isOwnedElsewhere {
         // Open on the Mac: nothing was sent. Keep the words and the attachments, and explain.
         state.items.removeAll { $0.id == itemID }
         attachments = picked + attachments
         await refused(message: wrapped.localizedDescription, text: typed)
-        return
+        return false
       }
       update(itemID) {
         $0.isPending = false
@@ -1246,6 +1265,7 @@ final class ChatModel: Identifiable {
         try? await Task.sleep(for: .seconds(6))
         self?.state.items.removeAll { $0.id == itemID && $0.isFailed }
       }
+      return false
     }
   }
 
@@ -1412,7 +1432,10 @@ final class ChatModel: Identifiable {
   /// the composer, queued messages in their place in the queue. Queued messages wait for a running
   /// reply; with none running they are held until sent by hand.
   func takeBack(_ left: LeftBehind) {
-    if !left.words.isEmpty { keepAsDraft(left.words) }
+    if !left.words.isEmpty {
+      // While a message is being edited, the words wait with the draft set aside for it.
+      if editing != nil { setAside(left.words) } else { keepAsDraft(left.words) }
+    }
     if !left.attachments.isEmpty { attachments = left.attachments + attachments }
     // Saved queued words only stand in for a queue the app lost when it restarted; the live
     // shared queue is the original, with its files.
@@ -1533,7 +1556,8 @@ final class ChatModel: Identifiable {
 
   /// The composer's text changed: show, narrow or hide the `/` menu.
   private func slashDraftChanged() {
-    let query = SlashMenu.query(in: draft)
+    // An edit sends words, so no `/` menu opens over it.
+    let query = editing == nil ? SlashMenu.query(in: draft) : nil
     guard query != slashQuery else { return }
     slashQuery = query
     slashTask?.cancel()
@@ -1645,13 +1669,14 @@ final class ChatModel: Identifiable {
   }
   #endif
 
-  // MARK: Try again
+  // MARK: Try again and Edit
 
-  /// Try agains whose rewind went out and whose resend nobody has claimed yet, by conversation
-  /// (`profile/storedID`), shared by every copy of the chat: the answer may be lost, or still on
-  /// its way to a copy that was left. The next Try again sends that exact request first, as the
-  /// desktop app does (`replay_only`): the Mac answers it with the receipt it already wrote, so a
-  /// turn is never taken back twice, and the copy that gets a receipt first does the one resend.
+  /// Try agains (and edits) whose rewind went out and whose resend nobody has claimed yet, by
+  /// conversation (`profile/storedID`), shared by every copy of the chat: the answer may be lost,
+  /// or still on its way to a copy that was left. The next Try again or edit sends that exact
+  /// request first, as the desktop app does (`replay_only`): the Mac answers it with the receipt it
+  /// already wrote, so a turn is never taken back twice, and the copy that gets a receipt first
+  /// does the one resend.
   private static var retryOperations: [String: RetryOperation] = [:]
   private var rewindKey: String { "\(profile)/\(storedID)" }
 
@@ -1659,7 +1684,7 @@ final class ChatModel: Identifiable {
   /// on it again, wherever its answer lands.
   private static func retireRetry(_ key: String, _ operation: RetryOperation? = nil) {
     guard let waiting = retryOperations[key], operation == nil || waiting === operation else { return }
-    _ = waiting.claim()
+    waiting.retire()
     retryOperations[key] = nil
   }
 
@@ -1682,19 +1707,143 @@ final class ChatModel: Identifiable {
     canRetry ? RetryTurn.offeredItems(in: state.items) : []
   }
 
+  /// The message the transcript offers Edit on: the newest from the person, when Try again is
+  /// offered and its words can be edited (no pictures, files or skill).
+  var editOffers: Set<UUID> {
+    canRetry ? EditTurn.offeredItems(in: state.items) : []
+  }
+
   static let retryBusy = "Hermes is still replying. Wait for it to finish or stop it, then try again."
   static let retryNothing = "Nothing to try again yet."
   static let retryUnsupported = "That message has pictures or attachments, so it can't be sent again as it was."
   static let retryUnavailable = "Try again isn't available in this chat."
   static let retryChanged = "The chat changed on the Mac meanwhile. Try again."
+  static let editBusy = "The chat started a reply on the Mac meanwhile. Your edit is still here: send it once the reply ends."
+  static let editChanged = "The chat changed on the Mac meanwhile, so your message wasn't replaced. Your edit is in the composer."
+  static let editUnavailable = "Edit isn't available in this chat."
+  static let editCommand = "An edit sends words, not a / command. Cancel the edit to run a command."
+
+  /// A message being edited in the composer: which one (the item on screen, and its stored row
+  /// once known), and the draft that was in the composer, which comes back afterwards.
+  struct Editing: Equatable {
+    let itemID: UUID
+    var rowID: Int?
+    var stash: String
+  }
+
+  /// What goes out once the newest turn is taken back.
+  @MainActor private enum Resend {
+    /// Try again: the words the Mac took back.
+    case same
+    /// Edit: the person's new words, in place of the message being edited (`editing`).
+    case edited(String)
+
+    var edit: String? {
+      if case .edited(let words) = self { return words }
+      return nil
+    }
+    var busy: String { edit == nil ? ChatModel.retryBusy : ChatModel.editBusy }
+    var unavailable: String { edit == nil ? ChatModel.retryUnavailable : ChatModel.editUnavailable }
+    var changed: String { edit == nil ? ChatModel.retryChanged : ChatModel.editChanged }
+    var failed: String { edit == nil ? "Couldn't try again" : "Couldn't send your edit" }
+  }
 
   /// Try again on the newest turn (`/retry`, or the transcript's menu): that message and
   /// everything after it come off the Mac's copy, then the same words go out as a new turn.
   /// `command` is the typed `/retry`, under which notices show; from the menu they are toasts.
-  /// Never rewinds from a stale view: when the Mac's newest message is not the stored row on
-  /// screen, or the chat moves on before the rewind lands or before the words go out again,
-  /// nothing more is taken back or sent and the chat reloads.
   func retry(command: SlashInvocation? = nil) async {
+    await takeBackNewestTurn(.same, command: command)
+  }
+
+  /// Edit on the newest message: its words go into the composer under an "Editing your message"
+  /// bar, and what was being written there is set aside until the edit goes out or is cancelled.
+  func beginEdit(_ item: TranscriptItem) {
+    guard editOffers.contains(item.id), let words = EditTurn.words(of: item) else { return }
+    let stash = editing?.stash ?? draft
+    // Set first: while editing, the draft kept for this chat is the one set aside.
+    editing = Editing(itemID: item.id, rowID: item.rowID, stash: stash)
+    draft = words
+    focusComposer += 1
+  }
+
+  /// Cancel on the editing bar: the edited words go, and the draft set aside comes back.
+  func cancelEdit() {
+    guard let editing, !sendingHere else { return }
+    self.editing = nil
+    draft = editing.stash
+  }
+
+  /// The composer's send while editing: the edit replaces the newest turn, now or not at all.
+  private func sendEdit() async {
+    let words = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard editing != nil, !words.isEmpty, !sendingHere else { return }
+    guard SlashInvocation(words) == nil else {
+      app?.show(Self.editCommand)
+      return
+    }
+    await takeBackNewestTurn(.edited(words))
+  }
+
+  /// The edit cannot replace the message any more (the chat moved on, or the turn was already
+  /// taken back): the bar goes, and the composer on screen keeps the edited words, with the draft
+  /// that was set aside after them. A copy of the chat that was left hands them to the chat's
+  /// draft (`recoverEditedWords`).
+  private func keepEditedWords(_ words: String) {
+    if !isClosed, let editing {
+      self.editing = nil
+      let current = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+      draft = EditTurn.keeping(edited: current.isEmpty ? words : draft, stash: editing.stash)
+    } else {
+      recoverEditedWords(words)
+    }
+  }
+
+  /// Edited words that did not go out, put ahead of the chat's draft so neither is lost: in this
+  /// composer while it is on screen, otherwise as words a closed chat had not sent
+  /// (`leaveBehind`), which the copy on screen takes now and the next copy to open takes from the
+  /// saved draft. Words already in the composer are not added again.
+  private func recoverEditedWords(_ words: String) {
+    let words = words.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !words.isEmpty else { return }
+    if isClosed {
+      leaveBehind(words: words)
+    } else if editing != nil {
+      if !draft.contains(words) { setAside(words) }
+    } else if !draft.contains(words) {
+      keepAsDraft(words)
+    }
+  }
+
+  /// The edit's words leave the composer: the bar goes and the draft set aside comes back. The
+  /// composer takes no typing while the edit is on its way (`isSendingEdit`), but if its words
+  /// changed after Send anyway (dictation that was still landing), what it holds now is not what
+  /// went out, so it stays ahead of that draft. Returns whether it did.
+  @discardableResult
+  private func finishEditing(sent words: String) -> Bool {
+    guard let editing else { return false }
+    self.editing = nil
+    let now = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    let changed = !now.isEmpty && now != words.trimmingCharacters(in: .whitespacesAndNewlines)
+    draft = changed ? EditTurn.keeping(edited: now, stash: editing.stash) : editing.stash
+    return changed
+  }
+
+  /// Puts `words` ahead of the draft set aside for an edit, not into the words being edited.
+  private func setAside(_ words: String) {
+    guard var editing, !editing.stash.contains(words) else { return }
+    let stash = editing.stash.trimmingCharacters(in: .whitespacesAndNewlines)
+    editing.stash = [words, stash].filter { !$0.isEmpty }.joined(separator: "\n\n")
+    self.editing = editing
+    app?.preferences.setDraft(editing.stash, for: storedID)
+  }
+
+  /// Takes the newest turn off the Mac's copy, then sends `resend`'s words as a new turn: Try
+  /// again's same words, or an edit's new ones. Never rewinds from a stale view: when the Mac's
+  /// newest message is not the stored row on screen (for an edit, the message being edited), or
+  /// the chat moves on before the rewind lands or before the words go out, nothing more is taken
+  /// back or sent and the chat reloads. An edit that does not go keeps its words in the composer,
+  /// or in the chat's draft once its copy of the chat was left.
+  private func takeBackNewestTurn(_ resend: Resend, command: SlashInvocation? = nil) async {
     func say(_ text: String, failure: Bool = false) {
       if let command {
         addNotice(text, for: command)
@@ -1702,23 +1851,50 @@ final class ChatModel: Identifiable {
         app?.show(text, kind: failure ? .failure : .info)
       }
     }
-    guard !isReadOnly, !continuesAsNewVersion else { return say(Self.retryUnavailable) }
-    // A toast, not a card: a card added now would land in the middle of the running reply.
+    let edit = resend.edit
+    // This copy's edit was handed back to the composer already.
+    var keptEdit = false
+    // An edit's words this run sends once it claims a rewind (its own, or another copy's replayed
+    // here), which it must not lose if they cannot go out.
+    var claimedEdit: String?
+    /// The edits this run cannot send stay where the person finds them, once each: this copy's in
+    /// its composer (the bar goes), a claimed one ahead of the chat's draft, on screen or saved.
+    func keepEdits() {
+      if let edit, !keptEdit {
+        keptEdit = true
+        keepEditedWords(edit)
+      }
+      if let claimed = claimedEdit {
+        claimedEdit = nil
+        if claimed != edit { recoverEditedWords(claimed) }
+      }
+    }
+    /// The chat is not as this view showed it: show the Mac's copy (on the copy on screen once
+    /// the turn was taken back), then say so.
+    func movedOn(onScreen: Bool = false) async {
+      await (onScreen ? (visibleCopy ?? self) : self).reloadAfterRewind()
+      let changed = edit != nil || claimedEdit != nil ? Self.editChanged : resend.changed
+      keepEdits()
+      say(changed, failure: true)
+    }
+    guard !isReadOnly, !continuesAsNewVersion else { return say(resend.unavailable) }
+    // A toast, not a card: a card added now would land in the middle of the running reply. An
+    // edit stays in the composer, to be sent once the reply ends; it never waits in the queue.
     guard !isBusy, !isRunningElsewhere else {
-      app?.show(Self.retryBusy)
+      app?.show(resend.busy)
       return
     }
     #if DEBUG
-    if isScrollPreview { return await previewRetry() }
+    if isScrollPreview { return await previewTakeBack(resend) }
     #endif
     guard let client else { return say(HermesError.notConnected.localizedDescription, failure: true) }
     sendingHere = true
-    // Set once this Try again holds the one resend, until its words have gone out.
+    // Set once this rewind holds the one resend, until its words have gone out.
     var ownsResend = false
     defer {
       sendingHere = false
       if ownsResend { queueState.isResending = false }
-      // What was sent meanwhile waited behind the Try again; it goes now, from the copy on screen.
+      // What was sent meanwhile waited behind the resend; it goes now, from the copy on screen.
       (visibleCopy ?? self).drainQueue()
     }
     let key = rewindKey
@@ -1726,9 +1902,9 @@ final class ChatModel: Identifiable {
       try await ensureLive()
       guard liveID != nil else { throw HermesError.notConnected }
       var taken: (operation: RetryOperation, receipt: RewindReceipt)?
-      // A Try again still waiting on its answer goes first (the answer was lost, or is still on its
+      // A rewind still waiting on its answer goes first (the answer was lost, or is still on its
       // way to a copy of this chat that was left): the same request again, which the Mac answers
-      // with the receipt it already wrote if it landed.
+      // with the receipt it already wrote if it landed. Its edit, if it was one, goes with it.
       if let waiting = Self.retryOperations[key] {
         do {
           let replayed = try await rewindAgain(waiting.request, client: client)
@@ -1749,17 +1925,21 @@ final class ChatModel: Identifiable {
         if !snapshot.subscriptionID.isEmpty { subscriptionID = snapshot.subscriptionID }
         switch RetryTurn.pick(from: snapshot.rows) {
         case .nothing:
+          // An edit's message is on screen, so a Mac with nothing to go back to has moved on.
+          if edit != nil { return await movedOn() }
           return say(Self.retryNothing)
         case .unsupported:
+          // The message being edited has no pictures, so the Mac's newest is another one.
+          if edit != nil { return await movedOn() }
           return say(Self.retryUnsupported)
         case .target(let rowID, _):
-          guard try await showsMacTurn(rowID, client: client) else {
+          guard try await showsMacTurn(rowID, client: client), isEditTarget(rowID, resend) else {
             // The notice goes after the reload, which shows the Mac's copy in place of this one.
-            await reloadAfterRewind()
-            say(Self.retryChanged, failure: true)
-            return
+            return await movedOn()
           }
-          let operation = RetryOperation(request: RewindRequest(targetRowID: rowID, fences: snapshot.fences))
+          // Known now, so an answer that is lost can be matched to this edit when it is replayed.
+          if edit != nil { editing?.rowID = rowID }
+          let operation = RetryOperation(request: RewindRequest(targetRowID: rowID, fences: snapshot.fences), edit: edit)
           Self.retireRetry(key)
           Self.retryOperations[key] = operation
           do {
@@ -1771,18 +1951,41 @@ final class ChatModel: Identifiable {
         }
       }
       guard let taken else { return say(Self.retryNothing) }
-      // One resend per Try again: a copy of this chat that got the receipt first has sent it.
-      guard Self.claimRetry(key, taken.operation) else {
+      let operation = taken.operation
+      // One resend per rewind: a copy of this chat that got the receipt first has sent it.
+      guard Self.claimRetry(key, operation) else {
+        if let edit {
+          // Unless that copy is sending this very edit (the rewind carries its words), it did
+          // not replace the message with these words.
+          guard operation.isClaimed, operation.edit == edit else { return await movedOn() }
+          if !isClosed { finishEditing(sent: edit) }
+        }
         if !isClosed { await reloadAfterRewind() }
         return
       }
+      // This copy sends the rewind's words now, so it keeps them if they cannot go.
+      claimedEdit = operation.edit
       let receipt = taken.receipt
-      guard receipt.didRewind else { return say(Self.retryNothing) }
+      guard receipt.didRewind else {
+        if edit != nil || claimedEdit != nil { return await movedOn() }
+        return say(Self.retryNothing)
+      }
+      // An edit is never changed back to the words the Mac took back, whoever claims its rewind;
+      // an edit of the message taken back sends its words; any other edit stays in the composer.
+      let plan = EditTurn.resend(
+        claimed: operation.edit, retryText: receipt.retryText, caller: edit,
+        callerEditsTarget: EditTurn.matches(receipt, rowID: editing?.rowID))
+      claimedEdit = plan.isEdit ? plan.words : nil
       // From here until the words have gone out, every copy of this chat is busy: what is sent
       // meanwhile waits behind them, and no other Try again starts.
       ownsResend = true
       queueState.isResending = true
-      guard let text = receipt.retryText, !text.isEmpty else {
+      if let kept = plan.kept {
+        keptEdit = true
+        keepEditedWords(kept)
+        say(Self.editChanged, failure: true)
+      }
+      guard let text = plan.words, !text.isEmpty else {
         // Rows came off but there are no words to send: show the chat as it is now.
         await reloadAfterRewind()
         say(Self.retryNothing)
@@ -1800,28 +2003,52 @@ final class ChatModel: Identifiable {
         newest = try await client.newestRowID(storedID: storedID, profile: profile)
       } catch {
         // Taken back, but the Mac's copy cannot be read now: the words wait in the composer.
-        let composer = visibleCopy ?? self
-        if composer.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { composer.draft = text }
+        keepEdits()
+        if !plan.isEdit {
+          let composer = visibleCopy ?? self
+          if composer.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { composer.draft = text }
+        }
         throw error
       }
-      guard receipt.isCurrent(newestRowID: newest) else {
-        await (visibleCopy ?? self).reloadAfterRewind()
-        say(Self.retryChanged, failure: true)
+      guard receipt.isCurrent(newestRowID: newest) else { return await movedOn(onScreen: true) }
+      if plan.isEdit, text == edit, !isClosed, editing != nil {
+        // The bar goes and the draft set aside comes back as the edited words leave the composer.
+        let keptChanged = finishEditing(sent: text)
+        let sent = await deliver(text: text, picked: [], origin: .composer)
+        if !sent, !isClosed, !keptChanged {
+          // Not sent: the edited words come back to the composer, the draft after them.
+          draft = EditTurn.keeping(edited: text, stash: draft)
+        }
         return
       }
-      // Through the normal send path: if they do not go, they land in the composer.
-      await (visibleCopy ?? self).deliver(text: text, display: RetryTurn.display(for: text), picked: [], origin: .composer)
+      // Through the normal send path, from the copy on screen: if they do not go, they land in
+      // its composer (an edit's ahead of what is there), or in the chat's draft once it is left.
+      let composer = visibleCopy ?? self
+      let sent = await composer.deliver(
+        text: text, display: plan.isEdit ? nil : RetryTurn.display(for: text), picked: [], origin: .composer)
+      if !sent, plan.isEdit, !composer.isClosed { composer.recoverEditedWords(text) }
     } catch {
       let wrapped = error as? HermesError ?? .transport(error.localizedDescription)
       if wrapped.isStaleFence || Self.lostTarget(wrapped) {
-        await reloadAfterRewind()
-        say(Self.retryChanged, failure: true)
-      } else if case .rpc(_, _, "session_busy") = wrapped {
-        say(Self.retryBusy)
+        await movedOn()
       } else {
-        say("Couldn't try again: \(wrapped.localizedDescription)", failure: true)
+        // Nobody sees this copy's editing bar any more: its words wait in the chat's draft.
+        if isClosed { keepEdits() }
+        if case .rpc(_, _, "session_busy") = wrapped {
+          say(resend.busy)
+        } else {
+          say("\(resend.failed): \(wrapped.localizedDescription)", failure: true)
+        }
       }
     }
+  }
+
+  /// For an edit, whether the Mac's newest message (`rowID`) is the message being edited: the
+  /// same item on screen, and the same stored row it was when Edit was picked, if that was known.
+  private func isEditTarget(_ rowID: Int, _ resend: Resend) -> Bool {
+    guard resend.edit != nil else { return true }
+    guard let editing, editing.rowID == nil || editing.rowID == rowID else { return false }
+    return EditTurn.isTarget(state.items, itemID: editing.itemID, rowID: rowID)
   }
 
   /// The Mac answered the rewind with a refusal, so nothing came off. Anything else (a dropped
@@ -1888,14 +2115,30 @@ final class ChatModel: Identifiable {
   private func isRetry(_ command: SlashInvocation) -> Bool { command.name == "retry" }
 
   #if DEBUG
-  /// Offline: Try again on the preview transcript takes its newest turn off and plays a fresh
-  /// reply through the real event handling.
-  private func previewRetry() async {
+  /// Offline: Try again (or an edit) on the preview transcript takes its newest turn off, shows
+  /// the words that go out instead, and plays a fresh reply through the real event handling.
+  private func previewTakeBack(_ resend: Resend) async {
     guard let user = state.items.last(where: { $0.kind == .user && !$0.isLocal }) else {
       app?.show(Self.retryNothing)
       return
     }
-    let text = user.sentText ?? user.text
+    var text = user.sentText ?? user.text
+    if let edit = resend.edit {
+      // `TALARIA_PREVIEW_EDIT_DELAY` (seconds) holds the edit on its way, as a slow Mac would,
+      // so a test can try the composer while it is locked.
+      if let delay = ProcessInfo.processInfo.environment["TALARIA_PREVIEW_EDIT_DELAY"].flatMap(Double.init), delay > 0 {
+        sendingHere = true
+        try? await Task.sleep(for: .seconds(delay))
+        sendingHere = false
+      }
+      guard let editing, editing.itemID == user.id else {
+        keepEditedWords(edit)
+        app?.show(Self.editChanged, kind: .failure)
+        return
+      }
+      text = edit
+      finishEditing(sent: edit)
+    }
     if let index = state.items.lastIndex(where: { $0.id == user.id }) { state.items = Array(state.items[..<index]) }
     state.items.append(.user(text, timestamp: now))
     scrollToEnd += 1
@@ -2524,7 +2767,7 @@ final class ChatModel: Identifiable {
     livenessTask = nil
     slashTask?.cancel()
     slashTask = nil
-    app?.preferences.setDraft(draft, for: storedID)
+    app?.preferences.setDraft(editing?.stash ?? draft, for: storedID)
     // Picked files wait for the next copy of the chat, as the words do.
     if !attachments.isEmpty { app?.leaveBehind(LeftBehind(attachments: attachments), storedID: storedID) }
     if !queue.isEmpty {
@@ -2564,22 +2807,34 @@ final class ChatModel: Identifiable {
   }
 }
 
-/// One Try again, from its rewind to its single resend, shared by every copy of the chat
+/// One Try again or edit, from its rewind to its single resend, shared by every copy of the chat
 /// (`ChatModel.retryOperations`). Whoever gets a receipt for it first claims the resend; once
-/// claimed or retired it is never acted on again, wherever another answer to it lands.
+/// claimed or retired it is never acted on again, wherever another answer to it lands. An edit's
+/// new words travel with it, so whichever copy claims it sends the edit, never the old words.
 @MainActor final class RetryOperation {
   let request: RewindRequest
+  /// The edited words that go out in place of the turn this rewind takes back; nil for Try again.
+  let edit: String?
+  /// A copy of the chat took the resend (rather than it being retired unsent).
+  private(set) var isClaimed = false
   private var isSettled = false
 
-  init(request: RewindRequest) {
+  init(request: RewindRequest, edit: String? = nil) {
     self.request = request
+    self.edit = edit
   }
 
-  /// Takes the operation for the caller; false when it was taken already.
+  /// Takes the operation for the caller; false when it was taken or retired already.
   func claim() -> Bool {
     guard !isSettled else { return false }
     isSettled = true
+    isClaimed = true
     return true
+  }
+
+  /// Ends the operation with nobody sending it.
+  func retire() {
+    isSettled = true
   }
 }
 
