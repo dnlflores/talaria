@@ -24,7 +24,7 @@ struct ComposerView: View {
         QueuePanel(chat: chat)
           .transition(.move(edge: .bottom).combined(with: .opacity))
       }
-      if !chat.attachments.isEmpty {
+      if !chat.attachments.isEmpty, chat.editing == nil {
         ScrollView(.horizontal, showsIndicators: false) {
           HStack(spacing: 8) {
             ForEach(chat.attachments) { attachment in
@@ -44,9 +44,13 @@ struct ComposerView: View {
         SlashMenuPanel(chat: chat)
           .transition(.move(edge: .bottom).combined(with: .opacity))
       }
+      if chat.editing != nil {
+        EditingBar(isSending: chat.isSending) { chat.cancelEdit() }
+          .transition(.move(edge: .bottom).combined(with: .opacity))
+      }
 
       VStack(alignment: .leading, spacing: 8) {
-        ComposerInput(text: $chat.draft, placeholder: placeholder) {
+        ComposerInput(text: $chat.draft, placeholder: placeholder, focusRequest: chat.focusComposer) {
           // Return on a hardware keyboard; Shift-Return adds a line (ComposerInput).
           if chat.canSend { send() }
         }
@@ -82,6 +86,7 @@ struct ComposerView: View {
     .padding(.bottom, 8)
     .animation(.snappy(duration: 0.25), value: chat.queue.entries.map(\.id.uuidString) + chat.macQueue.map(\.id))
     .animation(.snappy(duration: 0.2), value: chat.slashItems.isEmpty)
+    .animation(.snappy(duration: 0.2), value: chat.editing == nil)
     .photosPicker(isPresented: $showsPhotos, selection: $photoItems, maxSelectionCount: 6, matching: .images)
     .onChange(of: photoItems) { _, items in
       guard !items.isEmpty else { return }
@@ -105,6 +110,7 @@ struct ComposerView: View {
 
   private var placeholder: String {
     if chat.continuesAsNewVersion { return "Continue in a new version" }
+    if chat.editing != nil { return "Edit your message" }
     if chat.sendQueues { return "Queue a follow-up" }
     return "Ask \(app.title(forProfile: chat.profile))"
   }
@@ -142,6 +148,9 @@ struct ComposerView: View {
         .overlay { Circle().strokeBorder(palette.border, lineWidth: 1) }
         .contentShape(Circle())
     }
+    // An edit sends words only; picked files wait for the next message.
+    .disabled(chat.editing != nil)
+    .opacity(chat.editing != nil ? 0.4 : 1)
     .accessibilityLabel("Attach")
   }
 
@@ -268,6 +277,43 @@ struct ComposerView: View {
     } else {
       chat.addFile(data: data, name: url.lastPathComponent, mimeType: type?.preferredMIMEType ?? "application/octet-stream")
     }
+  }
+}
+
+/// Above the composer while the newest message is being edited: what the send button will do,
+/// and Cancel, which brings back the draft that was set aside.
+private struct EditingBar: View {
+  /// The edit is on its way; it can no longer be cancelled.
+  let isSending: Bool
+  let cancel: () -> Void
+  @Environment(\.palette) private var palette
+
+  var body: some View {
+    HStack(spacing: 6) {
+      Image(systemName: "pencil")
+        .font(.system(size: 12, weight: .semibold))
+      Text("Editing your message")
+        .font(AppFont.labelMedium)
+      Spacer(minLength: 8)
+      Button(action: cancel) {
+        Text("Cancel")
+          .font(AppFont.labelMedium)
+          .foregroundStyle(isSending ? palette.foregroundMuted : palette.primaryText)
+          .frame(height: 28)
+          .padding(.horizontal, 6)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .disabled(isSending)
+      .accessibilityIdentifier("composer.editing.cancel")
+    }
+    .foregroundStyle(palette.foregroundMuted)
+    .padding(.leading, 14)
+    .padding(.trailing, 8)
+    .frame(minHeight: 36)
+    .glassEffect(.regular, in: .rect(cornerRadius: 18))
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("composer.editing")
   }
 }
 

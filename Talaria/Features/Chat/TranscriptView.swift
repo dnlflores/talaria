@@ -80,8 +80,9 @@ struct TranscriptView: View {
             EarlierRow(isLoading: chat.isLoadingOlder) { loadEarlier() }
           }
           let offers = chat.retryOffers
+          let edits = chat.editOffers
           ForEach(shown) { row in
-            rowView(row, offers: offers).id(row.id)
+            rowView(row, offers: offers, edits: edits).id(row.id)
           }
           if let activity = chat.activity {
             WorkingRow(activity: activity, startedAt: chat.turnStartedAt)
@@ -267,11 +268,20 @@ struct TranscriptView: View {
     return { [chat] in Task { await chat.retry() } }
   }
 
+  /// Edit, for the newest message from the person while Try again is offered on it and its words
+  /// can be edited (`ChatModel.editOffers`); nil elsewhere, and never on a reply.
+  private func editAction(_ item: TranscriptItem, edits: Set<UUID>) -> (() -> Void)? {
+    guard edits.contains(item.id) else { return nil }
+    return { [chat] in chat.beginEdit(item) }
+  }
+
   @ViewBuilder
-  private func rowView(_ row: TranscriptRow, offers: Set<UUID>) -> some View {
+  private func rowView(_ row: TranscriptRow, offers: Set<UUID>, edits: Set<UUID>) -> some View {
     switch row {
     case .user(let item):
-      UserBubble(item: item, profile: chat.profile, storedID: chat.storedID, retry: retryAction(item, offers: offers))
+      UserBubble(
+        item: item, profile: chat.profile, storedID: chat.storedID,
+        retry: retryAction(item, offers: offers), edit: editAction(item, edits: edits))
     case .answer(let item):
       AnswerView(item: item, retry: retryAction(item, offers: offers))
     case .commentary(let item):
@@ -348,6 +358,7 @@ private struct UserBubble: View {
   let profile: String
   let storedID: String
   var retry: (() -> Void)? = nil
+  var edit: (() -> Void)? = nil
   @Environment(\.palette) private var palette
 
   var body: some View {
@@ -375,7 +386,7 @@ private struct UserBubble: View {
           .padding(.vertical, 10)
           .background(palette.userBubble, in: RoundedRectangle(cornerRadius: Metrics.bubbleRadius, style: .continuous))
           .opacity(item.isPending ? 0.6 : 1)
-          .retryMenu(text: item.text, retry: retry)
+          .retryMenu(text: item.text, retry: retry, edit: edit)
           .accessibilityIdentifier("transcript.user")
       }
       HStack(spacing: 0) {
@@ -464,10 +475,13 @@ private struct AnswerView: View {
 }
 
 /// Long-pressing the newest message or reply of an idle chat: Copy, and Try again, which takes that
-/// turn off the Mac's copy and sends the same words again. Other messages keep no menu.
+/// turn off the Mac's copy and sends the same words again. The newest message also offers Edit,
+/// which puts its words in the composer to change before they replace the turn. Other messages
+/// keep no menu.
 private struct RetryMenu: ViewModifier {
   let text: String
   let retry: (() -> Void)?
+  var edit: (() -> Void)? = nil
 
   func body(content: Content) -> some View {
     // One view either way, so the message keeps its identity when the offer comes and goes; a
@@ -475,6 +489,10 @@ private struct RetryMenu: ViewModifier {
     content.contextMenu {
       if let retry {
         Button("Copy", systemImage: "square.on.square") { UIPasteboard.general.string = text }
+        if let edit {
+          Button("Edit", systemImage: "pencil", action: edit)
+            .accessibilityIdentifier("transcript.edit")
+        }
         Button("Try again", systemImage: "arrow.clockwise", action: retry)
           .accessibilityIdentifier("transcript.retry")
       }
@@ -483,8 +501,8 @@ private struct RetryMenu: ViewModifier {
 }
 
 extension View {
-  fileprivate func retryMenu(text: String, retry: (() -> Void)?) -> some View {
-    modifier(RetryMenu(text: text, retry: retry))
+  fileprivate func retryMenu(text: String, retry: (() -> Void)?, edit: (() -> Void)? = nil) -> some View {
+    modifier(RetryMenu(text: text, retry: retry, edit: edit))
   }
 }
 

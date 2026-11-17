@@ -43,6 +43,9 @@ HermesKit (Swift package, no UI)
                   into a turn, a composer prefill or a notice
   RetryTurn       Try again: the stored message it goes back to, the words it sends again,
                   the rewind request kept for an exact retry, and the rewind receipt
+  EditTurn        Edit: which message offers it, the words it puts in the composer, whether
+                  the edited message is still the Mac's newest turn, and what the composer
+                  keeps when the edit cannot go
   SideAgents      `/btw` and `/bg`: the command, its `*.complete` answer, and the cards
                   (one per task id) that only this device shows
   RecentChats     the last three chats opened on the phone, and the app icon's
@@ -584,6 +587,47 @@ receipt after another device moved on, and a turn from another device, a message
 composer or a reopened copy while the chat reloads after the rewind; `RetryTests` (UI)
 long-presses the reply and the message and sends `/retry` against the offline preview
 (`--scroll-preview`).
+
+## Edit
+
+Long-pressing the newest message from the person in an idle chat also offers Edit
+(`EditTurn.offeredItems`: wherever Try again is offered on the message, never on the reply).
+It is the desktop app's edit of the newest turn
+(`apps/desktop/src/app/session/hooks/use-prompt-actions/rewind.ts`, `planEdit`), which needs
+no confirmation there; older turns are left to the desktop.
+
+- **Composer:** Edit puts the message's words in the composer (`ChatModel.beginEdit`) under an
+  "Editing your message" bar with Cancel (`composer.editing`, `composer.editing.cancel`). The
+  draft that was there is set aside in `ChatModel.editing` and is what the chat keeps as its
+  saved draft meanwhile; Cancel brings it back. Picked files stay picked but hidden, and the
+  attach button is off: an edit sends words only. No `/` menu opens over it.
+- **Send:** while editing, the send button (and a hardware Return) sends the edit
+  (`sendEdit`), never into the queue: if a reply started meanwhile it says so in a toast and
+  the edit stays. Words that read as a `/command` are refused, since an edit sends words.
+- **Same path as Try again:** the edit runs through `takeBackNewestTurn`, the code Try again
+  uses: the snapshot pick, `showsMacTurn`, the `session.mutate` `rewind` at the snapshot's
+  fences, the kept request and its exact replay, the claim, the reload and the newest-row check.
+  Only the words differ: the edited ones instead of the receipt's. An edit also requires that
+  the Mac's newest turn is the message being edited (`EditTurn.isTarget`: the same item on
+  screen and the same stored row), and a replayed receipt goes with it only if it took back
+  that row (`EditTurn.matches`). The row is noted on `editing` before the rewind goes out, so an
+  edit whose answer was lost replays the same request on the next Send.
+- **When it cannot go:** if the chat moved on (a newer message, the same words sent again
+  elsewhere, a stale fence, a receipt that is no longer current), nothing more is taken back,
+  the chat reloads, a toast says the chat changed on the Mac, the bar goes and the composer
+  keeps the edited words with the set-aside draft after them (`EditTurn.keeping`). A message
+  with pictures, files or a skill (it reads back as `/skill ...`) is not offered Edit.
+- **After it goes:** the bar goes as the words leave the composer and the set-aside draft
+  comes back once the Mac has taken the new turn. If the send fails after the rewind, the
+  edited words come back to the composer as a plain message, the draft after them.
+
+`EditTurnTests` (HermesKit) covers the offer, the words, the target and the receipt match;
+`EditDeliveryTests` (hosted) runs edits against `GatewayFixture`: one copy of the new words and
+nothing of the old turn in the stored history, the draft coming back, Cancel, a view behind the
+Mac, the same words sent elsewhere, a reply started meanwhile, a `/command`, pictures, and a
+lost rewind answer replayed on the next Send; `EditTests` (UI) long-presses the message, edits
+and sends or cancels against the offline preview (`--scroll-preview`, whose stand-in takes the
+turn off and streams a canned reply).
 
 ## Pictures
 

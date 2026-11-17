@@ -11,6 +11,8 @@ struct ComposerInput: UIViewRepresentable {
   @Binding var text: String
   var placeholder: String
   var maxLines: Int = 8
+  /// Bumped to give the text view the keyboard, with the cursor at the end (Edit filled it).
+  var focusRequest = 0
   /// Return on a hardware keyboard (no Shift or Option).
   var onReturn: () -> Void
   @Environment(\.palette) private var palette
@@ -42,6 +44,15 @@ struct ComposerInput: UIViewRepresentable {
     view.textColor = UIColor(palette.foreground)
     view.tintColor = UIColor(palette.primary)
     view.accessibilityLabel = placeholder
+    if context.coordinator.focusRequest != focusRequest {
+      context.coordinator.focusRequest = focusRequest
+      // After this update: the text is in place, and a menu that was open has let go of focus.
+      DispatchQueue.main.async {
+        view.becomeFirstResponder()
+        let end = view.endOfDocument
+        view.selectedTextRange = view.textRange(from: end, to: end)
+      }
+    }
   }
 
   func sizeThatFits(_ proposal: ProposedViewSize, uiView: ReturnKeyTextView, context: Context) -> CGSize? {
@@ -61,9 +72,12 @@ struct ComposerInput: UIViewRepresentable {
 
   final class Coordinator: NSObject, UITextViewDelegate {
     var parent: ComposerInput
+    /// The last `focusRequest` acted on; the one the view starts with is not a request.
+    var focusRequest: Int
 
     init(_ parent: ComposerInput) {
       self.parent = parent
+      focusRequest = parent.focusRequest
     }
 
     func textViewDidChange(_ textView: UITextView) {
