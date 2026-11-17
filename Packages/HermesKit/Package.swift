@@ -9,7 +9,7 @@ let package = Package(
     .library(name: "MarkdownBlocks", targets: ["MarkdownBlocks"]),
   ],
   targets: [
-    .target(name: "HermesKit"),
+    .target(name: "HermesKit", dependencies: ["MarkdownBlocks"]),
     .target(name: "MarkdownBlocks"),
     .testTarget(name: "HermesKitTests", dependencies: ["HermesKit"]),
     .testTarget(name: "MarkdownBlocksTests", dependencies: ["MarkdownBlocks"]),

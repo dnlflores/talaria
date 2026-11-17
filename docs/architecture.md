@@ -43,6 +43,8 @@ HermesKit (Swift package, no UI)
                   into a turn, a composer prefill or a notice
   RetryTurn       Try again: the stored message it goes back to, the words it sends again,
                   the rewind request kept for an exact retry, and the rewind receipt
+  ChatFind        Find in chat: a row's plain text, folding, the matches newest first and
+                  where each sits (its turn and place in it), to find it again once loaded
   SideAgents      `/btw` and `/bg`: the command, its `*.complete` answer, and the cards
                   (one per task id) that only this device shows
   RecentChats     the last three chats opened on the phone, and the app icon's
@@ -127,6 +129,36 @@ turns through the real event handling (streamed text, steps, a queued message)
 and checks that the end stays above the composer, that a chat one to two
 screens tall keeps following after a scroll, and that reading back is not
 moved.
+
+### Find in chat
+
+The chat's ••• menu (or Cmd-F with a hardware keyboard) opens a find bar under
+the title: a field, a count ("3 of 12", newest first), older and newer arrows,
+and Done. `ChatFinder` searches two lists with `ChatFind` (HermesKit): the rows
+on the phone, re-read as they change (`ChatFind.Index` keeps each row's folded
+text until its words change), and the rest of the chat, read once from the Mac
+by `ChatModel.readOlderForFind` (`HistoryWindow.readOlder` on a copy of the
+window, so neither the rows on screen nor where the next older page starts
+change). The count says "Searching..." while that read runs.
+
+Only the person's messages, answers and progress notes count, on the text as it
+reads on screen: Markdown is reduced to its words with the same block parser
+and inline rules the transcript draws with, then case, accents and width are
+folded. A match is a message, however often the word appears in it.
+
+A match in the older list is found again after its page loads by its place: the
+stored row id of the person's message that starts its turn, and its position
+among that turn's searchable rows. Pages start at a turn, so a turn reads the
+same in both lists, and a turn already loaded is counted once, on the phone.
+Stepping to such a match calls `ChatModel.loadOlder` page by page, each landing
+only once the scroll is still, until the turn is held. `TranscriptView.reveal`
+then stops following, widens the window down to the row if it was above it,
+waits for `keepPlace` to settle the rows that came in, scrolls the row to the
+top of the visible area and outlines it for a moment (`FindHighlight`, faded
+from a `TimelineView` clock). Done closes the bar and leaves the view there.
+
+`FindInChatTests` runs this offline: `--older-pages` puts forty older turns on a
+stand-in Mac for the `--scroll-preview` chat, read through the same paging code.
 
 ## Connecting to Hermes
 

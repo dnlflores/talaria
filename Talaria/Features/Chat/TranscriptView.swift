@@ -10,6 +10,8 @@ import SwiftUI
 /// show at first), then older pages from the Mac. What was on screen stays where it was.
 struct TranscriptView: View {
   let chat: ChatModel
+  /// Find in chat, while its bar is open: the row to scroll to and the one to outline.
+  var finder: ChatFinder? = nil
   @Environment(AppModel.self) private var app
   @Environment(\.palette) private var palette
   @State private var position = ScrollPosition(edge: .bottom)
@@ -60,6 +62,10 @@ struct TranscriptView: View {
     var settlingUntil = Date.distantPast
     /// Content grew while following during a gesture, which was left alone until it ends.
     var grewDuringGesture = false
+    /// A Find match whose row was just brought into the window: scrolled to once that lands.
+    var pendingReveal: UUID?
+    /// The Find match scrolled to last.
+    var revealed: UUID?
   }
 
   var body: some View {
@@ -80,8 +86,13 @@ struct TranscriptView: View {
             EarlierRow(isLoading: chat.isLoadingOlder) { loadEarlier() }
           }
           let offers = chat.retryOffers
+          let highlight = finder?.highlight
           ForEach(shown) { row in
-            rowView(row, offers: offers).id(row.id)
+            rowView(row, offers: offers)
+              .overlay {
+                if let highlight, highlight.row == row.id { FindHighlight(start: highlight.start) }
+              }
+              .id(row.id)
           }
           if let activity = chat.activity {
             WorkingRow(activity: activity, startedAt: chat.turnStartedAt)
@@ -100,6 +111,7 @@ struct TranscriptView: View {
     .scrollDismissesKeyboard(.interactively)
     .onScrollPhaseChange { _, phase in
       isUserScrolling = phase == .interacting || phase == .decelerating || phase == .tracking
+      finder?.isScrolling = isUserScrolling
       if phase == .interacting || phase == .tracking { tracker.hasScrolled = true }
       // Growth during the gesture was left alone; catch up once the scroll is still. A plain
       // drag that ends near the end is not moved afterwards.
@@ -116,6 +128,12 @@ struct TranscriptView: View {
     } action: { old, new in
       // This report is from before rows added above were offset; the next one is from after.
       if keepPlace(old: old, new: new) { return }
+      // A Find match brought into the window: the rows above it are laid out and held now.
+      if let row = tracker.pendingReveal {
+        tracker.pendingReveal = nil
+        scroll(toRow: row)
+        return
+      }
       follow(old: old, new: new)
       // Within a screen of the top, read on; a transcript shorter than the screen fills it.
       let nearTop = new.offset + new.topInset < new.container
@@ -130,6 +148,9 @@ struct TranscriptView: View {
       return viewportHeight > 0 && distanceToBottom >= viewportHeight
     } action: { _, shouldShow in
       showsJumpToLatest = shouldShow
+    }
+    .onChange(of: finder?.reveal) { _, reveal in
+      if let reveal { self.reveal(reveal.row) }
     }
     .onChange(of: chat.scrollToEnd) {
       isFollowing = true
@@ -198,6 +219,44 @@ struct TranscriptView: View {
       let index = rows.firstIndex(where: { $0.id == first })
     else { return newest }
     return min(index, newest)
+  }
+
+  /// Find: scrolls a match's message into view, under the find bar and above the composer. A row
+  /// above the window is brought in first and scrolled to once it is laid out; until then
+  /// `keepPlace` holds the view where it was.
+  private func reveal(_ id: UUID) {
+    let rows = chat.rows
+    guard let index = rows.firstIndex(where: { $0.id == id }) else { return }
+    // Reading back, not following: new text below must not pull the view away from the match.
+    isFollowing = false
+    tracker.grewDuringGesture = false
+    tracker.revealed = id
+    if index < windowStart(rows) {
+      tracker.pendingReveal = id
+      visibleLimit = rows.count - index
+      // In case the window grows without a geometry report to pick it up.
+      Task {
+        try? await Task.sleep(for: .milliseconds(300))
+        if tracker.pendingReveal == id {
+          tracker.pendingReveal = nil
+          scroll(toRow: id)
+        }
+      }
+    } else {
+      scroll(toRow: id)
+    }
+  }
+
+  private func scroll(toRow id: UUID) {
+    // Rows that settle from here on stay where they land instead of being offset back.
+    tracker.settlingUntil = .distantPast
+    withAnimation(.snappy(duration: 0.3)) { position.scrollTo(id: id, anchor: .top) }
+    // Rows above may still be finishing their layout: land on the match again once they have.
+    Task {
+      try? await Task.sleep(for: .milliseconds(450))
+      guard tracker.revealed == id, tracker.pendingReveal == nil, !isUserScrolling else { return }
+      position.scrollTo(id: id, anchor: .top)
+    }
   }
 
   /// Shows more above: rows already read first, else the next older page from the Mac.
