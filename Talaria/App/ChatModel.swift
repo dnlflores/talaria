@@ -228,6 +228,12 @@ final class ChatModel: Identifiable {
   @ObservationIgnored private(set) var isSlashPreview = false
   /// `--scroll-preview`: the offline transcript; Try again plays a canned reply.
   @ObservationIgnored private(set) var isScrollPreview = false
+  /// `--older-pages`: the canned stored rows older than what the preview holds, and how many
+  /// rows it counts as held.
+  @ObservationIgnored private var previewOlderRows: [JSONValue]?
+  @ObservationIgnored private var previewHeldRows = 0
+  /// `TALARIA_UITEST_HISTORY_FAILS=<n>`: the first `n` reads of those rows fail.
+  @ObservationIgnored private var previewFailuresLeft = 0
   #endif
 
   private weak var app: AppModel?
@@ -257,6 +263,10 @@ final class ChatModel: Identifiable {
   @ObservationIgnored private var window = HistoryWindow.complete
   /// Bumped whenever `window` changes outside `loadOlder`, so a page read for an older window is dropped.
   @ObservationIgnored private var windowGeneration = 0
+  /// Bumped when the held history is started over rather than extended (opening, a reattach whose
+  /// newest page does not line up, a rewind): what is older than the window is not what it was.
+  /// Find reads the rest of the chat again then.
+  private(set) var historyEpoch = 0
 
   /// Rows read when a chat opens and on each look for news, and per older page while scrolling up.
   /// A long agentic turn runs to a hundred rows and more, most of them tool output.
@@ -321,8 +331,39 @@ final class ChatModel: Identifiable {
       chat.state.items.append(.tool(ToolCall(callID: "scroll-preview-tool", name: "read_file", isDone: true)))
     }
     chat.state.items.append(TranscriptItem(kind: .assistant, text: "Latest reply. Everything is up to date."))
+    // `--older-pages`: more of the chat waits on the "Mac" (canned rows), read as it is scrolled
+    // up or searched (slowed by `TALARIA_UITEST_PAGE_DELAY`).
+    if ProcessInfo.processInfo.arguments.contains("--older-pages") {
+      chat.previewOlderRows = olderPagesPreview()
+      chat.previewHeldRows = chat.state.items.count
+      chat.previewFailuresLeft = ProcessInfo.processInfo.environment["TALARIA_UITEST_HISTORY_FAILS"].flatMap(Int.init) ?? 0
+      let held: [JSONValue] = (0..<chat.previewHeldRows).map { ["id": .string("held-\($0)"), "role": "assistant"] }
+      var window = HistoryWindow()
+      _ = window.take(page: held, limit: held.count)
+      chat.setWindow(window)
+    }
     chat.isLoading = false
     return chat
+  }
+
+  /// `--older-pages`: forty older turns, each a question, a step and a long answer. Only two
+  /// messages mention "zephyr" (one in Markdown, with an accent); a step's output does too, which
+  /// Find leaves out.
+  private static func olderPagesPreview() -> [JSONValue] {
+    (1...40).flatMap { turn -> [JSONValue] in
+      let id = Double(turn * 10)
+      let question = turn == 35 ? "What changed in zephyr since then?" : "Older question \(turn)"
+      var answer = (1...6).map { "Older answer \(turn), line \($0)." }.joined(separator: "\n\n")
+      if turn == 3 { answer = "The **Zéphyr** build shipped on Tuesday.\n\n" + answer }
+      return [
+        ["id": .number(id), "role": "user", "content": .string(question), "timestamp": .number(Double(turn))],
+        ["id": .number(id + 1), "role": "assistant", "content": "",
+         "tool_calls": [["id": .string("older-\(turn)"), "function": ["name": "read_file", "arguments": "{}"]]]],
+        ["id": .number(id + 2), "role": "tool", "tool_call_id": .string("older-\(turn)"),
+         "content": "zephyr appears in this step's output"],
+        ["id": .number(id + 3), "role": "assistant", "content": .string(answer), "timestamp": .number(Double(turn))],
+      ]
+    }
   }
 
   /// `--edited-files`: two edits to one file and a new file, each with an `inline_diff` in the
@@ -675,24 +716,28 @@ final class ChatModel: Identifiable {
     {
       var updated = window
       if unnamed { updated.identify(newest: page) } else { updated.absorb(newest: page) }
-      setWindow(updated)
+      setWindow(updated, extending: true)
     } else {
       next.replace(with: fresh, inflight: inflight, turnStartedAt: turnStartedAt, now: now)
       setWindow(pageWindow)
     }
   }
 
-  private func setWindow(_ new: HistoryWindow) {
+  /// `extending`: the same history with more of it held, at either end; else it starts over.
+  private func setWindow(_ new: HistoryWindow, extending: Bool = false) {
     window = new
     windowGeneration += 1
+    if !extending { historyEpoch += 1 }
     if hasOlder != new.hasOlder { hasOlder = new.hasOlder }
   }
 
   /// Reads the next older page and puts it above what is on screen. The transcript calls this as
   /// it is scrolled near the top, and passes `untilStill` so the page lands once the scrolling
   /// stops: moving the content back into place mid-fling would cut the fling short.
-  func loadOlder(untilStill: () async -> Void = {}) async {
-    guard hasOlder, !isLoadingOlder, !isLoading, !isClosed, let client else { return }
+  /// Returns whether a page landed.
+  @discardableResult
+  func loadOlder(untilStill: () async -> Void = {}) async -> Bool {
+    guard hasOlder, !isLoadingOlder, !isLoading, !isClosed, let fetch = olderPages() else { return false }
     isLoadingOlder = true
     defer { isLoadingOlder = false }
     let generation = windowGeneration
@@ -700,28 +745,83 @@ final class ChatModel: Identifiable {
     do {
       let rows = try await HistoryWindow.readOlder(
         into: &older, firstLimit: Self.olderPageRows, nextLimit: Self.olderPageRows, wholeTurns: true,
-        fetch: { [storedID, profile] offset, limit in
-          #if DEBUG
-            // UI tests stand in for a slow connection: `TALARIA_UITEST_PAGE_DELAY=<seconds>`.
-            if let delay = ProcessInfo.processInfo.environment["TALARIA_UITEST_PAGE_DELAY"].flatMap(Double.init) {
-              try await Task.sleep(for: .seconds(delay))
-            }
-          #endif
-          return try await client.historyPage(storedID: storedID, profile: profile, offset: offset, limit: limit)
-        },
-        until: { $0.contains(where: HistoryWindow.startsTurn) })
+        fetch: fetch, until: { $0.contains(where: HistoryWindow.startsTurn) })
       await untilStill()
-      // The transcript was replaced meanwhile: this page belongs to the old one.
-      guard generation == windowGeneration, !isClosed else { return }
-      setWindow(older)
+      // Whoever asked has moved on (Find closed or searching something else), or the transcript
+      // was replaced meanwhile and this page belongs to the old one: it does not land.
+      guard !Task.isCancelled, generation == windowGeneration, !isClosed else { return false }
+      setWindow(older, extending: true)
       let items = TranscriptItem.items(fromStoredRows: rows)
-      guard !items.isEmpty else { return }
+      guard !items.isEmpty else { return true }
       var next = state
       next.items.insert(contentsOf: items, at: 0)
       state = next
+      return true
     } catch {
-      if !isClosed { app?.show("Could not load earlier messages: \(error.localizedDescription)", kind: .failure) }
+      // A read given up on is not a failure to tell anyone about.
+      if !isClosed, !Task.isCancelled, !(error is CancellationError) {
+        app?.show("Could not load earlier messages: \(error.localizedDescription)", kind: .failure)
+      }
+      return false
     }
+  }
+
+  /// Reads older stored rows, `limit` at `offset` (`order=latest`), oldest first.
+  private func olderPages() -> ((_ offset: Int, _ limit: Int) async throws -> [JSONValue])? {
+    #if DEBUG
+      // UI tests stand in for a slow connection: `TALARIA_UITEST_PAGE_DELAY=<seconds>`.
+      let delay = ProcessInfo.processInfo.environment["TALARIA_UITEST_PAGE_DELAY"].flatMap(Double.init)
+      if let stored = previewOlderRows {
+        // `--older-pages`: older pages come from canned rows held before what is on screen.
+        let held = previewHeldRows
+        return { [weak self] offset, limit in
+          if let delay { try await Task.sleep(for: .seconds(delay)) }
+          if let self, self.previewFailuresLeft > 0 {
+            self.previewFailuresLeft -= 1
+            throw URLError(.notConnectedToInternet)
+          }
+          let end = max(0, stored.count - (offset - held))
+          return Array(stored[max(0, end - limit)..<end])
+        }
+      }
+    #endif
+    guard let client else { return nil }
+    return { [storedID, profile] offset, limit in
+      #if DEBUG
+        if let delay { try await Task.sleep(for: .seconds(delay)) }
+      #endif
+      return try await client.historyPage(storedID: storedID, profile: profile, offset: offset, limit: limit)
+    }
+  }
+
+  // MARK: Find in chat
+
+  /// Every stored row older than what is held, laid out as the transcript lays it out, for Find
+  /// to search. What is on screen, and where the next older page starts, stay as they are.
+  /// Throws `CancellationError` when the held history was started over while it read
+  /// (`historyEpoch`): those rows were older than a window that is gone.
+  func readOlderForFind() async throws -> (rows: [TranscriptRow], reachedStart: Bool) {
+    guard hasOlder, let fetch = olderPages() else { return ([], true) }
+    let epoch = historyEpoch
+    var rest = window
+    let rows = try await HistoryWindow.readOlder(
+      into: &rest, firstLimit: Self.olderPageRows, nextLimit: Self.olderPageRows, fetch: fetch, until: { _ in false })
+    guard epoch == historyEpoch, !Task.isCancelled else { throw CancellationError() }
+    return (TranscriptLayout.rows(for: TranscriptItem.items(fromStoredRows: rows), isStreaming: false), rest.reachedStart)
+  }
+
+  /// Loads older pages, one at a time as scrolling up would, until `found` holds. False when the
+  /// start was reached first, a page could not be read, or the caller was cancelled (then nothing
+  /// more lands).
+  func loadOlder(until found: () -> Bool, untilStill: () async -> Void) async -> Bool {
+    while !found() {
+      // A page the transcript asked for lands first.
+      while isLoadingOlder, !isClosed, !Task.isCancelled { try? await Task.sleep(for: .milliseconds(50)) }
+      guard !Task.isCancelled else { return false }
+      if found() { return true }
+      guard hasOlder, !isClosed, await loadOlder(untilStill: untilStill) else { return false }
+    }
+    return true
   }
 
   // MARK: Chats this app cannot drive right now

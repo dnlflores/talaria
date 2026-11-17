@@ -120,6 +120,14 @@ T3 Tools.
   or stop it first; a message with pictures says it can't be sent again. If
   another device moved the chat on meanwhile, nothing is resent and the chat
   reloads.
+- **Find in chat:** pick Find in chat from a chat's ••• menu (or press Cmd-F
+  with a keyboard) and type a word: the bar under the title counts the
+  messages it appears in ("3 of 12", newest first) and the arrows step to each
+  one, outlined for a moment. Your messages, answers and progress notes count,
+  ignoring case, accents and Markdown; tool output and thinking do not. Older
+  messages still on the Mac are searched too ("Searching..." while it reads),
+  and stepping to one loads the chat back to it. If those can't be read, the
+  bar says "Older not searched" with a button to try again.
 - **Edit your last message:** long-press your newest message and pick Edit to
   fix a typo or change what you asked. Its words go into the composer under an
   "Editing your message" bar (Cancel brings back what you were writing), and

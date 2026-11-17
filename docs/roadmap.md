@@ -27,6 +27,11 @@ yet.
   internal completion receipts stay out of the conversation.
 - Jump to latest stays hidden until at least one visible chat screen from the
   bottom, independently of whether new content is being followed.
+- Find in chat: the ••• menu or Cmd-F, a count of matching messages newest
+  first, stepping with an outline on each; older pages are read from the Mac
+  for the search (`GET /api/sessions/{id}/messages?order=latest`) and loaded
+  down to a match when it is stepped to. Not yet: searching across chats from
+  here (the inbox has search), marking the words inside a message.
 - A running reply keeps its newest line above the composer (queue panel and
   keyboard included) and stops following only when you scroll up; reading back
   is never moved by what arrives below.

@@ -32,15 +32,37 @@ struct ChatView: View {
   @State private var showsRename = false
   @State private var showsFiles = false
   @State private var newTitle = ""
+  /// Find in chat, while its bar is open.
+  @State private var finder: ChatFinder?
 
   var body: some View {
-    TranscriptView(chat: chat)
+    TranscriptView(chat: chat, finder: finder)
       .safeAreaInset(edge: .top, spacing: 0) {
-        if let notice {
-          ChatNotice(icon: notice.icon, text: notice.text)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+        VStack(spacing: 0) {
+          if let notice {
+            ChatNotice(icon: notice.icon, text: notice.text)
+              .padding(.horizontal, 12)
+              .padding(.vertical, 6)
+          }
+          // The bar's animation stays on the bar, as the jump button's does: on the transcript
+          // it would also animate whatever the rows did in the same update.
+          ZStack {
+            if let finder {
+              FindBar(finder: finder) { closeFind() }
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+          }
+          .animation(.snappy(duration: 0.22), value: finder != nil)
         }
+      }
+      .background {
+        // Cmd-F with a hardware keyboard, as on the Mac.
+        // No title: it would stand beside the menu's "Find in chat" for VoiceOver and UI tests.
+        Button { openFind() } label: { EmptyView() }
+          .keyboardShortcut("f", modifiers: .command)
+          .opacity(0)
+          .frame(width: 0, height: 0)
+          .accessibilityHidden(true)
       }
       .safeAreaInset(edge: .bottom, spacing: 0) {
         VStack(spacing: 0) {
@@ -125,10 +147,29 @@ struct ChatView: View {
     return nil
   }
 
+  private func openFind() {
+    if let finder {
+      finder.focus()
+    } else {
+      finder = ChatFinder(chat: chat) { [app] message in app.show(message, kind: .failure) }
+    }
+  }
+
+  /// Leaves the transcript where the last step put it; Jump to latest still goes back down.
+  private func closeFind() {
+    finder?.close()
+    finder = nil
+  }
+
   private var moreMenu: some View {
     let row = app.row(chat.storedID)
     let family = app.family(of: chat.storedID)
     return Menu {
+      Button {
+        openFind()
+      } label: {
+        Label("Find in chat", systemImage: "magnifyingglass")
+      }
       Button {
         newTitle = chat.title == "New chat" ? "" : chat.title
         showsRename = true
