@@ -20,6 +20,8 @@ final class EditDeliveryTests: XCTestCase {
   }
 
   override func tearDown() async throws {
+    // Answers a test held and never let go.
+    fixture.release()
     for app in apps {
       await app.client?.rpc.stop()
       app.preferences.serverAddress = savedAddress
@@ -274,5 +276,78 @@ final class EditDeliveryTests: XCTestCase {
     let sent = await eventually { self.fixture.submitted.count == 1 }
     XCTAssertTrue(sent)
     XCTAssertEqual(history(session), ["user: A", "assistant: Answer A", "user: B"])
+  }
+
+  // MARK: After leaving the chat
+
+  /// A stored chat with turns A and B, on screen, with `Half a thought` set aside for an edit of B
+  /// to `B edited` whose rewind the Mac has applied but not yet answered.
+  private func editInFlight(_ name: String) async throws -> (AppModel, ChatModel, String, Task<Void, Never>) {
+    let (app, chat, session) = try await openStored(name, seed: [
+      ("user", "A"), ("assistant", "Answer A"), ("user", "B"), ("assistant", "Answer B"),
+    ])
+    app.chatAppeared(chat)
+    chat.draft = "Half a thought"
+    chat.beginEdit(try newestMessage(chat))
+    chat.draft = "B edited"
+    fixture.holdNextMutateAnswer()
+    let sending = Task { await chat.send() }
+    let applied = await eventually { self.fixture.mutateRequests.count == 1 }
+    XCTAssertTrue(applied)
+    XCTAssertEqual(history(session), ["user: A", "assistant: Answer A"], "the old turn came off; its answer is held")
+    return (app, chat, session, sending)
+  }
+
+  /// The person leaves the chat and opens it again.
+  private func reopen(_ old: ChatModel, in app: AppModel, session: String) async -> ChatModel {
+    app.chatDisappeared(old)
+    let chat = ChatModel(app: app, profile: "preview", storedID: session, row: nil, live: nil)
+    await chat.open()
+    app.chatAppeared(chat)
+    return chat
+  }
+
+  func testATryAgainAfterLeavingSendsTheEditNotTheOldWords() async throws {
+    let (app, old, session, sending) = try await editInFlight("edit-replayed")
+    let chat = await reopen(old, in: app, session: session)
+    XCTAssertEqual(chat.draft, "Half a thought", "the reopened chat keeps the draft set aside")
+    // Try again replays the rewind the left copy sent, and finishes that edit.
+    await chat.retry()
+    let sent = await eventually { self.fixture.submitted.count == 1 }
+    XCTAssertTrue(sent)
+    // The left copy's answer arrives late: it sends nothing more.
+    fixture.release()
+    await sending.value
+    XCTAssertEqual(fixture.submitted.map(\.text), ["B edited"], "the edit went, not the old words")
+    XCTAssertEqual(Set(fixture.mutateRequests.map(\.requestID)).count, 1, "one rewind, replayed")
+    XCTAssertEqual(history(session), ["user: A", "assistant: Answer A", "user: B edited"])
+    XCTAssertEqual(chat.draft, "Half a thought", "nothing added to the composer")
+  }
+
+  func testAnEditRefusedAfterLeavingKeepsItsWordsWithTheDraft() async throws {
+    let (app, old, session, sending) = try await editInFlight("edit-refused-reopened")
+    let chat = await reopen(old, in: app, session: session)
+    XCTAssertEqual(chat.draft, "Half a thought")
+    fixture.sendFromAnotherDevice(session, "C", reply: "Answer C")
+    fixture.release()
+    await sending.value
+    XCTAssertTrue(fixture.submitted.isEmpty, "an edit of a chat that moved on is not sent")
+    XCTAssertEqual(history(session), ["user: A", "assistant: Answer A", "user: C", "assistant: Answer C"])
+    XCTAssertEqual(chat.draft, "B edited\n\nHalf a thought", "the edit is where the toast says, the draft after it")
+    XCTAssertEqual(app.toast?.text, ChatModel.editChanged)
+    XCTAssertEqual(app.preferences.draft(for: session), "B edited\n\nHalf a thought")
+  }
+
+  func testAnEditRefusedWhileTheChatIsClosedComesBackOnTheNextOpen() async throws {
+    let (app, old, session, sending) = try await editInFlight("edit-refused-closed")
+    app.chatDisappeared(old)
+    fixture.sendFromAnotherDevice(session, "C", reply: "Answer C")
+    fixture.release()
+    await sending.value
+    XCTAssertTrue(fixture.submitted.isEmpty)
+    let chat = ChatModel(app: app, profile: "preview", storedID: session, row: nil, live: nil)
+    await chat.open()
+    app.chatAppeared(chat)
+    XCTAssertEqual(chat.draft, "B edited\n\nHalf a thought", "kept with the saved draft, though no copy was on screen")
   }
 }

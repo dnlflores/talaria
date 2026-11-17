@@ -44,6 +44,29 @@ public enum EditTurn {
     return receipt.targetID == rowID
   }
 
+  /// What goes out once a rewind is claimed (`resend(claimed:retryText:caller:callerEditsTarget:)`).
+  public struct Resend: Equatable, Sendable {
+    /// The words sent as the new turn; nil when there are none.
+    public let words: String?
+    /// Whether `words` are an edit's, not the words the Mac took back.
+    public let isEdit: Bool
+    /// The caller's edit, when this rewind does not send it: it stays in the composer.
+    public let kept: String?
+  }
+
+  /// What goes out after the copy of a chat claims a rewind's one resend. The rewind may be one
+  /// another copy sent and is replayed here after its answer was lost (`claimed` is its edit's
+  /// words, nil for Try again), and the caller may be an edit (`caller`) or Try again (nil).
+  /// An edit always beats Try again: a Try again never sends the words the Mac took back in
+  /// place of an edit, and an edit of the message the rewind took back (`callerEditsTarget`)
+  /// sends its words. Between two edits of that message the caller's, the newer, go. An edit
+  /// of another message is not sent and is kept for the composer.
+  public static func resend(claimed: String?, retryText: String?, caller: String?, callerEditsTarget: Bool) -> Resend {
+    if let caller, callerEditsTarget { return Resend(words: caller, isEdit: true, kept: nil) }
+    if let claimed { return Resend(words: claimed, isEdit: true, kept: caller == claimed ? nil : caller) }
+    return Resend(words: retryText, isEdit: false, kept: caller)
+  }
+
   /// What the composer holds when an edit could not replace the message: the edited words, then
   /// the draft that was set aside for the edit, so neither is lost.
   public static func keeping(edited: String, stash: String) -> String {

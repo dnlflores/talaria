@@ -90,6 +90,40 @@ struct EditTurnTests {
     #expect(!EditTurn.matches(nothing, rowID: 12), "nothing came off")
   }
 
+  // MARK: What a claimed rewind sends
+
+  @Test func tryAgainNeverChangesAnEditBackToTheOldWords() {
+    // A Try again replays a rewind another copy sent for an edit: the edit goes.
+    let replayed = EditTurn.resend(claimed: "B edited", retryText: "B", caller: nil, callerEditsTarget: false)
+    #expect(replayed == .init(words: "B edited", isEdit: true, kept: nil))
+    // A Try again of its own: the words the Mac took back.
+    #expect(EditTurn.resend(claimed: nil, retryText: "B", caller: nil, callerEditsTarget: false)
+      == .init(words: "B", isEdit: false, kept: nil))
+  }
+
+  @Test func anEditOfTheMessageTakenBackSendsItsWords() {
+    // Its own rewind, replayed after the answer was lost.
+    #expect(EditTurn.resend(claimed: "Second", retryText: "Secnod", caller: "Second", callerEditsTarget: true)
+      == .init(words: "Second", isEdit: true, kept: nil))
+    // A Try again's rewind of that message: the edit beats it.
+    #expect(EditTurn.resend(claimed: nil, retryText: "Secnod", caller: "Second", callerEditsTarget: true)
+      == .init(words: "Second", isEdit: true, kept: nil))
+    // An earlier edit of that message: the newer words go.
+    #expect(EditTurn.resend(claimed: "Secon", retryText: "Secnod", caller: "Second", callerEditsTarget: true)
+      == .init(words: "Second", isEdit: true, kept: nil))
+  }
+
+  @Test func anEditOfAnotherMessageIsKept() {
+    // The rewind took back another turn: its own words go, and the edit stays in the composer.
+    #expect(EditTurn.resend(claimed: nil, retryText: "Other", caller: "Mine, edited", callerEditsTarget: false)
+      == .init(words: "Other", isEdit: false, kept: "Mine, edited"))
+    #expect(EditTurn.resend(claimed: "Other, edited", retryText: "Other", caller: "Mine, edited", callerEditsTarget: false)
+      == .init(words: "Other, edited", isEdit: true, kept: "Mine, edited"))
+    // The same words are not kept as well as sent.
+    #expect(EditTurn.resend(claimed: "Same", retryText: "Old", caller: "Same", callerEditsTarget: false)
+      == .init(words: "Same", isEdit: true, kept: nil))
+  }
+
   // MARK: Keeping the words
 
   @Test func neitherTheEditNorTheDraftIsLost() {

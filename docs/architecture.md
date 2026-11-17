@@ -44,8 +44,8 @@ HermesKit (Swift package, no UI)
   RetryTurn       Try again: the stored message it goes back to, the words it sends again,
                   the rewind request kept for an exact retry, and the rewind receipt
   EditTurn        Edit: which message offers it, the words it puts in the composer, whether
-                  the edited message is still the Mac's newest turn, and what the composer
-                  keeps when the edit cannot go
+                  the edited message is still the Mac's newest turn, the words a claimed
+                  rewind sends, and what the composer keeps when the edit cannot go
   SideAgents      `/btw` and `/bg`: the command, its `*.complete` answer, and the cards
                   (one per task id) that only this device shows
   RecentChats     the last three chats opened on the phone, and the app icon's
@@ -609,23 +609,34 @@ no confirmation there; older turns are left to the desktop.
   fences, the kept request and its exact replay, the claim, the reload and the newest-row check.
   Only the words differ: the edited ones instead of the receipt's. An edit also requires that
   the Mac's newest turn is the message being edited (`EditTurn.isTarget`: the same item on
-  screen and the same stored row), and a replayed receipt goes with it only if it took back
-  that row (`EditTurn.matches`). The row is noted on `editing` before the rewind goes out, so an
+  screen and the same stored row). The row is noted on `editing` before the rewind goes out, so an
   edit whose answer was lost replays the same request on the next Send.
+- **The edit travels with its rewind:** the kept request (`RetryOperation`) carries the edited
+  words, so whichever copy of the chat claims its one resend sends the edit: a Try again from a
+  copy opened after leaving replays it and sends the edited words, never the old ones, and the
+  left copy's late answer then sends nothing. `EditTurn.resend` picks the words: an edit beats
+  Try again, an edit of the message the rewind took back (`EditTurn.matches`) sends its words,
+  and an edit of another message stays in the composer.
 - **When it cannot go:** if the chat moved on (a newer message, the same words sent again
   elsewhere, a stale fence, a receipt that is no longer current), nothing more is taken back,
   the chat reloads, a toast says the chat changed on the Mac, the bar goes and the composer
-  keeps the edited words with the set-aside draft after them (`EditTurn.keeping`). A message
-  with pictures, files or a skill (it reads back as `/skill ...`) is not offered Edit.
+  keeps the edited words with the set-aside draft after them (`EditTurn.keeping`). When the
+  answer lands after the chat was left, the words go ahead of the draft of the copy on screen,
+  or into the saved draft for the next copy to open (`recoverEditedWords`, through
+  `leaveBehind`). A message with pictures, files or a skill (it reads back as `/skill ...`) is
+  not offered Edit.
 - **After it goes:** the bar goes as the words leave the composer and the set-aside draft
   comes back once the Mac has taken the new turn. If the send fails after the rewind, the
   edited words come back to the composer as a plain message, the draft after them.
 
-`EditTurnTests` (HermesKit) covers the offer, the words, the target and the receipt match;
+`EditTurnTests` (HermesKit) covers the offer, the words, the target, the receipt match and the
+words a claimed rewind sends;
 `EditDeliveryTests` (hosted) runs edits against `GatewayFixture`: one copy of the new words and
 nothing of the old turn in the stored history, the draft coming back, Cancel, a view behind the
-Mac, the same words sent elsewhere, a reply started meanwhile, a `/command`, pictures, and a
-lost rewind answer replayed on the next Send; `EditTests` (UI) long-presses the message, edits
+Mac, the same words sent elsewhere, a reply started meanwhile, a `/command`, pictures, a
+lost rewind answer replayed on the next Send, a Try again after leaving that finishes the
+edit, and a refused edit's words kept after leaving, with the chat reopened or still closed;
+`EditTests` (UI) long-presses the message, edits
 and sends or cancels against the offline preview (`--scroll-preview`, whose stand-in takes the
 turn off and streams a canned reply).
 
